@@ -211,3 +211,66 @@ def test_clearing_the_cost_clears_both_columns(admin_client):
     assert row['cost_price'] == 0
     assert row['opening_cost'] == 0
     assert _ledger(db, pid) == [], 'a costless product has no ledger to seed'
+
+
+# ── the rendered form must show the BASIS, in the edit branch only ────────────
+#
+# These exist because the first attempt at this fix relabelled the wrong block.
+# templates/products/form.html holds TWO identical cost boxes — the edit branch
+# opens at `{% if action == 'edit' %}` and the new-product branch after its
+# `{% else %}` — and every DB-level test above stayed green while the page kept
+# rendering the old label off the other branch. A page-wide substring check
+# would not have caught it either: both branches live in the same FILE, so the
+# assertion has to be scoped to the element the box is actually in.
+
+def _cost_box_cell(html):
+    """The one column that contains the cost input, as its own fragment."""
+    from lxml import html as lh
+
+    doc = lh.fromstring(html)
+    inputs = doc.xpath("//input[@name='cost_price']")
+    assert len(inputs) == 1, f'expected exactly one cost input, got {len(inputs)}'
+    cell = inputs[0].getparent()
+    while cell is not None and 'col-' not in (cell.get('class') or ''):
+        cell = cell.getparent()
+    assert cell is not None, 'cost input is not inside a layout column'
+    return inputs[0], cell
+
+
+def test_edit_form_shows_the_basis_labelled_as_the_basis(admin_client):
+    c, db = admin_client
+    pid = _seed_product(db, cost=33.0)
+    # Diverge the two columns the way Put's product was, so an assertion on the
+    # rendered value can actually tell them apart. Equal values would pass
+    # whichever column the template reads.
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE products SET cost_price=99.0 WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+
+    resp = c.get(f'/products/{pid}/edit')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+
+    box, cell = _cost_box_cell(html)
+    text = ' '.join(cell.itertext())
+
+    assert box.get('value') == '33.0', 'the box must render opening_cost, not cost_price'
+    assert 'ต้นทุนยกมา' in text, f'label is not the basis: {text.strip()[:80]!r}'
+
+
+def test_new_product_form_keeps_its_own_cost_label(admin_client):
+    """Control: the relabel must land in the edit branch and ONLY there.
+
+    Without this, relabelling the other branch of the same template passes
+    every other test in this file.
+    """
+    c, _db = admin_client
+
+    resp = c.get('/products/new')
+    assert resp.status_code == 200
+    _box, cell = _cost_box_cell(resp.get_data(as_text=True))
+    text = ' '.join(cell.itertext())
+
+    assert 'ต้นทุน' in text, 'control: the new-product form lost its cost box entirely'
+    assert 'ต้นทุนยกมา' not in text, 'the relabel landed in the new-product branch'

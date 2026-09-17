@@ -55,11 +55,15 @@
             <div class="col-12"><hr class="my-1"></div>
 
             <div class="col-md-4">
-              <label class="form-label">ต้นทุน (฿)</label>
+              <label class="form-label">ต้นทุนยกมา (฿)</label>
               <div class="input-group">
                 <span class="input-group-text">฿</span>
                 <input type="number" name="cost_price" class="form-control"
-                       value="{{ product.cost_price or '' }}" step="0.01" min="0" placeholder="0.00">
+                       value="{{ product.opening_cost or '' }}" step="0.01" min="0" placeholder="0.00">
+              </div>
+              <div class="form-text small">
+                ฐานคำนวณต้นทุน ถ้ามีใบซื้อ ระบบจะถัวเฉลี่ยต่อจากนี้เป็น
+                <strong>ต้นทุน (WACC)</strong> ที่แสดงในหน้าสินค้า
               </div>
             </div>
             <div class="col-md-4">
@@ -284,15 +288,11 @@
             <div class="col-12"><hr class="my-1"></div>
 
             <div class="col-md-3">
-              <label class="form-label">ต้นทุนยกมา (฿)</label>
+              <label class="form-label">ต้นทุน (฿)</label>
               <div class="input-group">
                 <span class="input-group-text">฿</span>
                 <input type="number" name="cost_price" class="form-control"
-                       value="{{ product.opening_cost or '' }}" step="0.01" min="0" placeholder="0.00">
-              </div>
-              <div class="form-text small">
-                ฐานคำนวณต้นทุน ถ้ามีใบซื้อ ระบบจะถัวเฉลี่ยต่อจากนี้เป็น
-                <strong>ต้นทุน (WACC)</strong> ที่แสดงในหน้าสินค้า
+                       value="{{ product.cost_price or '' }}" step="0.01" min="0" placeholder="0.00">
               </div>
             </div>
             <div class="col-md-3">
