@@ -63,6 +63,28 @@ _TOTAL_WIDTH = 14
 _DOC_DISCOUNT_WIDTH = 11  # sliced past but never stored — no caller reads it
 _NET_WIDTH = 14
 
+# The anchor itself — `re.Match.end()` of the VAT-type digit, i.e. the
+# character position the four widths above are counted from — is ALSO a
+# constant in the current report layout, not just self-consistent per line:
+# measured against every real transaction line in the full sales + purchase
+# CSV history (148 files, 20,068 lines), it is 65 in 100% of them, zero
+# exceptions. That is what makes the widths above trustworthy at all: they
+# were measured relative to THIS anchor value, on THIS report layout.
+#
+# A LEFTWARD or per-line shift (an early field overflowing its own width on
+# one anomalous line) is already handled — the anchor is computed fresh from
+# each line's own regex match, not assumed. What is NOT handled by that alone
+# is a RIGHTWARD, report-wide layout change: if BSN's report generator ever
+# widens a field before the VAT-type digit (or the digit itself moves for any
+# other reason) across a WHOLE new export, every line's anchor would move
+# together, and slicing at the OLD fixed widths would silently return
+# plausible-looking wrong numbers instead of failing — exactly the class of
+# bug #525 was. Asserting the anchor against this known constant turns that
+# into the same fail-loud rejection as a blank total/net or Express's own
+# '***' overflow marker, instead of a silent mis-slice nobody notices for
+# years.
+_MONEY_COLS_ANCHOR = 65
+
 # What a populated discount cell may hold, once its exact slot is known: blank,
 # percent (possibly compound, "25+5%"), or baht (comma-thousands allowed).
 # total/net are always a plain (optionally comma-grouped) number.
@@ -82,8 +104,11 @@ def _extract_money_columns(line: str, anchor: int):
     """Slice the four fixed-width money columns starting at `anchor`
     (the `re.Match.end()` of the VAT-type digit). Returns
     (discount, total_raw, net_raw) with `discount` already stripped, or
-    `None` if the fixed total/net slots don't hold a plausible number — the
-    caller treats that exactly like a regex non-match (line rejected)."""
+    `None` if the anchor doesn't match the known layout, or the fixed
+    total/net slots don't hold a plausible number — the caller treats that
+    exactly like a regex non-match (line rejected)."""
+    if anchor != _MONEY_COLS_ANCHOR:
+        return None
     discount = line[anchor:anchor + _DISCOUNT_WIDTH].strip()
     pos = anchor + _DISCOUNT_WIDTH
     total_raw = line[pos:pos + _TOTAL_WIDTH].strip()
