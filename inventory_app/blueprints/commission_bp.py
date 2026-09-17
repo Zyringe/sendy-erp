@@ -17,6 +17,7 @@ from datetime import date
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, abort, send_file)
 
+import access_control
 import models
 from database import get_connection
 import commission as commission_mod
@@ -34,6 +35,21 @@ def _commission_pay_accounts_ctx(conn):
     accounts = hrq.get_active_cashbook_accounts(conn, non_transfer_only=True)
     default_account_id = _default_account_id_for_user(conn, session.get('user_id'))
     return accounts, default_account_id
+
+
+def _can_cancel_payout():
+    """Whether the CURRENT session's role may POST
+    commission.commission_delete_payout — read from the real POST whitelist
+    (access_control.role_can_post), never a hand-typed role tuple, so the
+    cancel button and the gate that refuses the POST cannot drift apart
+    (#550; same derivation #542/#548 use for the cashbook lock wording).
+
+    Gates the "ยกเลิกการจ่าย" trash form on commission_payouts.html and
+    commission_drilldown.html. Put's call 2026-09-17: hide the control for
+    roles that cannot cancel, rather than grant them the permission.
+    """
+    return access_control.role_can_post(
+        session.get('role', ''), 'commission.commission_delete_payout')
 
 
 def _months_with_payment_activity():
@@ -333,6 +349,7 @@ def commission_payouts_list():
     conn.close()
     return render_template('commission_payouts.html',
                            payouts=payouts,
+                           can_cancel_payout=_can_cancel_payout(),
                            year_month=year_month, sp_code=sp_code,
                            months=months,
                            salespersons=[dict(r) for r in sp_rows],
@@ -365,7 +382,8 @@ def commission_drilldown(sp_code):
     if not year_month:
         return render_template('commission_drilldown.html',
                                sp_code=sp_code, sp_name=sp_code, year_month='',
-                               lines=[], invoices=[], months=months, summary=None)
+                               lines=[], invoices=[], months=months, summary=None,
+                               can_cancel_payout=_can_cancel_payout())
     lines = commission_mod.get_lines_for_salesperson(year_month, sp_code)
     summary_rows = commission_mod.get_commission_for_month(year_month, sp_code)
     summary = summary_rows[0] if summary_rows else None
@@ -427,6 +445,7 @@ def commission_drilldown(sp_code):
     paid_amount = sum(p['amount_paid'] for p in payouts)
     return render_template('commission_drilldown.html',
                            sp_code=sp_code, sp_name=sp_name,
+                           can_cancel_payout=_can_cancel_payout(),
                            year_month=year_month, months=months,
                            invoices=invoices, summary=summary,
                            invoice_commissions=invoice_commissions,

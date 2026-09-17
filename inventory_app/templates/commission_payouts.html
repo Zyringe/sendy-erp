@@ -77,12 +77,17 @@
           <td class="small text-subtle td-hide-mobile">{{ p.note or '' }}</td>
           <td class="text-center small text-subtle td-hide-mobile">{{ p.paid_by or '—' }}</td>
           <td class="text-center small text-subtle td-hide-mobile">{{ p.created_at }}</td>
+          {# The <td> itself always renders, empty or not, so the body keeps the
+             same column count as <thead> (and the colspan of the empty state)
+             for the roles that see no button. Only the FORM is gated (#550). #}
           <td class="text-end td-actions">
+            {% if can_cancel_payout %}
             <form method="post" action="{{ url_for('commission.commission_delete_payout', payout_id=p.id) }}"
                   onsubmit="return confirm('ลบรายการจ่าย {{ p.amount_paid }} ของ {{ p.salesperson_code }} {{ p.year_month }}?')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="btn btn-link text-danger btn-sm p-0"><i class="bi bi-trash"></i></button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% else %}
