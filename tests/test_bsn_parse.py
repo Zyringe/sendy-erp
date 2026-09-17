@@ -256,6 +256,31 @@ def test_parse_sales_both_discounts_populated_control(tmp_path):
     assert e['net']      == 117.00
 
 
+def test_parse_sales_rejects_a_rightward_anchor_shift(tmp_path):
+    """If the VAT-type digit ever lands somewhere OTHER than the one offset
+    (65) measured across the entire real CSV corpus (148 files, 20,068
+    lines, zero exceptions), the line must be REJECTED, not silently sliced
+    at the old fixed widths against the new position. This is what makes a
+    future report-layout change fail loud instead of returning plausible
+    but wrong numbers — the exact failure mode #525 itself was.
+
+    Built from a real, otherwise-valid line (case 1) with one extra leading
+    space inserted, which shifts every field — including the VAT-type digit
+    — one character to the right without changing any value."""
+    import pytest
+    shifted_line = (
+        '"       09/05/67   IV6900920-  1        24.00 ผง          145.00  1'
+        '                  3480.00     170.00       3446.26"'
+    )
+    p = _write_sales_csv(tmp_path, "ขาย_525_rightward_shift.csv", [(
+        '"  ทดสอบ525shift\xa0/99ท525shift"',
+        '"   ลูกบิด\xa0#130\xa0AC\xa0\'S/D\'\xa0/031บ4527"',
+        shifted_line,
+    )])
+    with pytest.raises(ValueError):
+        parse_weekly.parse_sales(p)
+
+
 def test_purchase_net_with_comma_doc_discount():
     """Regression (RR6700192): when the doc-level discount column carries a
     comma-thousands value (e.g. '1,800.00'), the pre-b998736 _DISCOUNT_COL
