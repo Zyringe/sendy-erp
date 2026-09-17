@@ -53,7 +53,7 @@
         {% for mod in visible_modules %}
         <li>
           <a class="dropdown-item {% if mod.key == active_module %}active{% endif %}"
-             href="{{ url_for(mod.first_endpoint) }}">
+             href="{{ url_for(mod.landing) }}">
             <i class="bi {{ mod.icon }} me-2"></i>{{ mod.name }}
           </a>
         </li>

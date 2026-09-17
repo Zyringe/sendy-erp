@@ -65,19 +65,35 @@ def test_ar_overview_renders_and_totals_match(tmp_db):
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────
 
-def test_customers_tab_total_matches_and_staff_can_view(tmp_db):
+def _as(role, username='probe'):
     from app import app as a
     a.config['TESTING'] = True
     c = a.test_client()
     with c.session_transaction() as s:
-        s['user_id'] = 3; s['username'] = 'staffer'; s['role'] = 'staff'
-    r = c.get('/ar?tab=customers')
+        s['user_id'], s['username'], s['role'] = 3, username, role
+    return c
+
+
+def test_customers_tab_gives_staff_the_drilldown_and_the_record_a_call_notice(tmp_db):
+    """Put's §5 call, 2026-09-17: staff chases debt.
+
+    This asserted the opposite until then — no drill-down link, and a notice
+    reading "ต้องสิทธิ์ Manager+". Staff could already open /ar and the
+    per-customer page was the one thing it could not reach, which is what made
+    team-driven dunning impossible.
+    """
+    r = _as('staff').get('/ar?tab=customers')
     assert r.status_code == 200, 'staff must VIEW the customers tab'
     body = r.data.decode()
-    # staff sees the list (read) but NOT the dunning drill-down (manager-gated
-    # detail) — and is shown the view-only notice naming the right requirement.
-    assert 'ดูบิล/ทวง' not in body, 'staff must not get the manager-gated drill-down link'
-    assert 'ต้องสิทธิ์ Manager+' in body, 'staff should see the view-only notice'
+    assert 'ดูบิล/ทวง' in body, 'staff needs the way into the follow-up workspace'
+    # The notice now says what staff may DO, and names no role.
+    assert 'ต้องสิทธิ์ Manager+' not in body
+    assert 'บันทึกการทวง' in body
+
+    # Control: the shareholder reads the same tab and gets the other notice,
+    # so the assertions above are about staff and not about the block vanishing.
+    sh = _as('shareholder').get('/ar?tab=customers').data.decode()
+    assert 'บันทึกการทวง</span>ไม่ได้' in sh, 'the view-only notice stopped rendering'
 
 
 # ── Task 4 ────────────────────────────────────────────────────────────────────

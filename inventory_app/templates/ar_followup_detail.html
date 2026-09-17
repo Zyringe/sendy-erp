@@ -42,8 +42,8 @@
   </div>
 </div>
 
-{# ── Add outreach form (admin only) ─────────────────────────────────────── #}
-{% if is_admin %}
+{# ── Add outreach form — whoever may POST it ────────────────────────────── #}
+{% if can_post('accounting.ar_followup_log_new') %}
 <div class="card mb-3">
   <div class="card-header py-2"><strong>บันทึกการติดตามใหม่</strong></div>
   <div class="card-body py-3">
@@ -173,7 +173,7 @@
             <th>นัดติดตามอีก</th>
             <th>บันทึก</th>
             <th>โดย</th>
-            {% if is_admin %}<th></th>{% endif %}
+            {% if can_post('accounting.ar_followup_log_delete') %}<th></th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -190,7 +190,7 @@
             <td class="small">{{ f.next_action_date or '—' }}</td>
             <td class="small">{{ f.notes or '—' }}</td>
             <td class="small text-subtle">{{ f.created_by }}</td>
-            {% if is_admin %}
+            {% if can_post('accounting.ar_followup_log_delete') %}
             <td class="text-end">
               <form method="post" action="{{ url_for('accounting.ar_followup_log_delete', log_id=f.id) }}"
                     onsubmit="return confirm('ลบรายการนี้?');" class="d-inline">

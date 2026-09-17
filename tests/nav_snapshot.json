@@ -594,28 +594,6 @@
   "general@me.leave": [
    {
     "kind": "section",
-    "label": "ภาพรวม"
-   },
-   {
-    "href": "/",
-    "icon": "bi-speedometer2",
-    "kind": "link",
-    "label": "Dashboard"
-   },
-   {
-    "href": "/alerts",
-    "icon": "bi-exclamation-triangle",
-    "kind": "link",
-    "label": "แจ้งเตือน"
-   },
-   {
-    "href": "/review",
-    "icon": "bi-clipboard-check",
-    "kind": "link",
-    "label": "ตรวจบิล"
-   },
-   {
-    "kind": "section",
     "label": "ของฉัน"
    },
    {
@@ -701,40 +679,6 @@
     "icon": "bi-cash-stack",
     "kind": "link",
     "label": "สลิปเงินเดือน"
-   },
-   {
-    "kind": "section",
-    "label": "นำเข้าข้อมูล"
-   },
-   {
-    "href": "/import-data",
-    "icon": "bi-box-arrow-in-down",
-    "kind": "link",
-    "label": "นำเข้าข้อมูล"
-   },
-   {
-    "href": "/import-express-dbf",
-    "icon": "bi-file-earmark-arrow-up",
-    "kind": "link",
-    "label": "นำเข้า Express (DBF)"
-   },
-   {
-    "href": "/mapping",
-    "icon": "bi-tags",
-    "kind": "link",
-    "label": "ผูกรหัส BSN"
-   },
-   {
-    "href": "/unit-conversions",
-    "icon": "bi-arrow-left-right",
-    "kind": "link",
-    "label": "แปลงหน่วย"
-   },
-   {
-    "href": "/customers/normalize",
-    "icon": "bi-person-check",
-    "kind": "link",
-    "label": "ตรวจข้อมูลลูกค้า"
    }
   ],
   "general|finance": [
@@ -776,28 +720,6 @@
   "general|operation": [
    {
     "kind": "section",
-    "label": "คลังสินค้า"
-   },
-   {
-    "href": "/products",
-    "icon": "bi-grid-3x3-gap",
-    "kind": "link",
-    "label": "สินค้า"
-   },
-   {
-    "href": "/transactions",
-    "icon": "bi-arrow-left-right",
-    "kind": "link",
-    "label": "ประวัติสต็อก"
-   },
-   {
-    "href": "/conversions",
-    "icon": "bi-scissors",
-    "kind": "link",
-    "label": "แปลงสินค้า"
-   },
-   {
-    "kind": "section",
     "label": "ของฉัน"
    },
    {
@@ -816,28 +738,6 @@
   "general|overview": [
    {
     "kind": "section",
-    "label": "ภาพรวม"
-   },
-   {
-    "href": "/",
-    "icon": "bi-speedometer2",
-    "kind": "link",
-    "label": "Dashboard"
-   },
-   {
-    "href": "/alerts",
-    "icon": "bi-exclamation-triangle",
-    "kind": "link",
-    "label": "แจ้งเตือน"
-   },
-   {
-    "href": "/review",
-    "icon": "bi-clipboard-check",
-    "kind": "link",
-    "label": "ตรวจบิล"
-   },
-   {
-    "kind": "section",
     "label": "ของฉัน"
    },
    {
@@ -854,68 +754,6 @@
    }
   ],
   "general|trade": [
-   {
-    "kind": "section",
-    "label": "การค้า"
-   },
-   {
-    "href": "/trade-dashboard",
-    "icon": "bi-bar-chart-line",
-    "kind": "link",
-    "label": "ภาพรวมการค้า"
-   },
-   {
-    "href": "/sales",
-    "icon": "bi-graph-up-arrow",
-    "kind": "link",
-    "label": "ยอดขาย"
-   },
-   {
-    "href": "/purchases",
-    "icon": "bi-truck",
-    "kind": "link",
-    "label": "ยอดซื้อ"
-   },
-   {
-    "href": "/customers",
-    "icon": "bi-people",
-    "kind": "link",
-    "label": "ลูกค้า"
-   },
-   {
-    "href": "/suppliers",
-    "icon": "bi-truck",
-    "kind": "link",
-    "label": "ผู้จำหน่าย"
-   },
-   {
-    "href": "/call",
-    "icon": "bi-telephone-outbound",
-    "kind": "link",
-    "label": "โทรหาลูกค้า"
-   },
-   {
-    "kind": "section",
-    "label": "ขายออนไลน์"
-   },
-   {
-    "href": "/ecommerce",
-    "icon": "bi-bag-heart",
-    "kind": "link",
-    "label": "รายการขายออนไลน์"
-   },
-   {
-    "href": "/marketplace",
-    "icon": "bi-receipt",
-    "kind": "link",
-    "label": "คำสั่งซื้อ Marketplace"
-   },
-   {
-    "href": "/marketplace/review",
-    "icon": "bi-clipboard-check",
-    "kind": "link",
-    "label": "ต้องตรวจการจับคู่ใบกำกับ"
-   },
    {
     "kind": "section",
     "label": "ของฉัน"
@@ -1412,6 +1250,12 @@
     "icon": "bi-person-check",
     "kind": "link",
     "label": "ตรวจข้อมูลลูกค้า"
+   },
+   {
+    "href": "/naming",
+    "icon": "bi-pencil-square",
+    "kind": "link",
+    "label": "ตั้งชื่อสินค้า"
    }
   ],
   "shareholder|finance": [
@@ -1450,7 +1294,42 @@
     "label": "ค่าคอมพนักงานขาย"
    }
   ],
-  "shareholder|hr": [],
+  "shareholder|hr": [
+   {
+    "kind": "section",
+    "label": "บุคลากร (HR)"
+   },
+   {
+    "href": "/hr/",
+    "icon": "bi-person-badge",
+    "kind": "link",
+    "label": "HR Dashboard"
+   },
+   {
+    "href": "/hr/employees",
+    "icon": "bi-people",
+    "kind": "link",
+    "label": "พนักงาน"
+   },
+   {
+    "href": "/hr/leave",
+    "icon": "bi-calendar-x",
+    "kind": "link",
+    "label": "การลา"
+   },
+   {
+    "href": "/hr/advances",
+    "icon": "bi-cash",
+    "kind": "link",
+    "label": "เบิกล่วงหน้า"
+   },
+   {
+    "href": "/hr/payroll",
+    "icon": "bi-cash-coin",
+    "kind": "link",
+    "label": "Payroll"
+   }
+  ],
   "shareholder|operation": [
    {
     "kind": "section",
@@ -1698,6 +1577,22 @@
    }
   ],
   "staff|finance": [
+   {
+    "kind": "section",
+    "label": "การเงิน"
+   },
+   {
+    "href": "/ar",
+    "icon": "bi-receipt-cutoff",
+    "kind": "link",
+    "label": "ลูกหนี้ (AR)"
+   },
+   {
+    "href": "/ap",
+    "icon": "bi-bank",
+    "kind": "link",
+    "label": "เจ้าหนี้ (AP)"
+   },
    {
     "kind": "section",
     "label": "ของฉัน"

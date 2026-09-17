@@ -24,8 +24,31 @@ tmp DB and render no sidebar at all).
 
 ⚠ nav_snapshot.json was captured from base.html at commit 60d4956, BEFORE any
 refactor edit — that is the entire point of it. Regenerate
-(`~/.virtualenvs/erp/bin/python tests/test_nav_snapshot.py --capture`) ONLY for a
-deliberate, reviewed nav change. NEVER to make a red test green.
+(`DATA_DIR=<a .backup copy> ~/.virtualenvs/erp/bin/python tests/test_nav_snapshot.py
+--capture`) ONLY for a deliberate, reviewed nav change. NEVER to make a red test
+green. The capture imports `app`, so point DATA_DIR at a COPY: it would otherwise
+run `init_db()` against whatever DB it finds.
+
+Regenerated once, 2026-09-17, when nav started filtering every link through
+`permissions.may_see`. Eight of A's 53 entries moved and each was checked:
+
+  staff|finance         +/ar +/ap            Put's Q3 — staff chases debt, and
+                                             both pages were already openable
+                                             by URL while the link was hidden
+  shareholder|hr        +5 HR links          the `is_manager` landmine: the
+                                             module switcher already let her in
+                                             and the section rendered nothing
+  shareholder|data      +/naming             same shape, one link
+  general|{overview,operation,trade,data}    -20 links the kiosk could never
+  general@me.leave                           open; the module-scoped view was a
+                                             frozen port of a base.html that
+                                             only gated by active_module, and
+                                             `inject_auth` blanks the kiosk's
+                                             switcher anyway, so this was dead
+
+B — WHICH link highlights — did not move at all, in any of its 76 entries. That
+is the half a link-set diff cannot see, and it is what says the per-link
+matchers were left alone.
 """
 import os
 

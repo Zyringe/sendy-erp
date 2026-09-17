@@ -22,12 +22,18 @@ Two gates, never one (see `CONTEXT.md`, "render gate vs access gate"):
     access gate   may_see()      denies on an unknown endpoint
     render gate   the sidebar    falls back to 'overview', never raises
 
-`require_login` reads this module: it IS the access gate now, the hardcoded
-prefix list it used to carry is gone, and the ten route-local `_require_*`
-helpers are gone with it — every rule they enforced is a row below.
-`tests/test_nav.py` holds the render side to the same answer. What is left is
-for `nav.py` and the Jinja context to READ it rather than be checked against
-it, and for a `may_post` to give the POST allowlists the same treatment.
+All three readers ask this module now. `require_login` IS the access gate, and
+the hardcoded prefix list plus the ten route-local `_require_*` helpers are
+gone — every rule they enforced is a row below. `nav.py` filters each link
+through `may_see`, so the sidebar cannot offer a door that bounces, and the
+module switcher derives both its visibility and its landing endpoint the same
+way. Templates ask directly, through the `may_see` / `can_post` callables
+`inject_auth` puts in the Jinja context.
+
+What is left is the POST side: `_ROLE_POST_OK` is still its own allowlist, and
+a `may_post` here would give it the same treatment. It fails CLOSED today
+(57 endpoints are admin-only purely by omission), which is why it was never the
+urgent half.
 """
 
 from typing import NamedTuple
@@ -157,6 +163,8 @@ PAGES = {
         Access(OFFICE, 'open to staff today and intended to stay open'),
     'accounting.express_ar_customer':
         Access(OFFICE, 'the per-customer AR drill-down staff needs before phoning'),
+    'accounting.ar_followup_customer':
+        Access(OFFICE, 'the follow-up workspace; staff may log a call, not delete one'),
 
     # ── the ten route-local guards, moved here ───────────────────────────────
     # accounting: the AR follow-up LOG. Both are POST-only, so an ADMIN_ONLY
@@ -167,7 +175,7 @@ PAGES = {
     # promise-to-pay from every reader. Creating is what PR 3b opens to staff;
     # deleting stays here until it can be scoped to the rows a user wrote.
     'accounting.ar_followup_log_new':
-        Access(ADMIN_ONLY, 'writes a collection-call record', msg='ต้องใช้บัญชี Admin'),
+        Access(OFFICE, 'staff chases debt, so staff files the record of the call'),
     'accounting.ar_followup_log_delete':
         Access(ADMIN_ONLY, 'hides a collection-call record from every UI reader',
                msg='ต้องใช้บัญชี Admin'),

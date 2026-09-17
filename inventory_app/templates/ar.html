@@ -215,7 +215,7 @@
 <div class="alert alert-secondary py-2 mb-3 small">
   <i class="bi bi-info-circle me-1"></i>
   ยอดจาก Express snapshot ของ BSN · เรียงตามยอดค้างมากสุด
-  {% if is_ar_manager %}
+  {% if may_see('accounting.ar_followup_export') %}
   · <a href="{{ url_for('accounting.ar_followup_export') }}">ดาวน์โหลด CSV</a>
   {% endif %}
 </div>
@@ -277,7 +277,7 @@
         {% for r in customer_rows %}
         <tr>
           <td>
-            {% if is_ar_manager %}
+            {% if may_see('accounting.ar_followup_customer') %}
             <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
                class="text-decoration-none fw-bold">{{ r.customer }}</a>
             {% else %}
@@ -300,7 +300,7 @@
             {% endif %}
           </td>
           <td>
-            {% if is_ar_manager %}
+            {% if may_see('accounting.ar_followup_customer') %}
             <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
                class="btn btn-sm btn-outline-secondary py-0">ดูบิล/ทวง</a>
             {% endif %}
@@ -315,17 +315,15 @@
   </div>
 </div>
 
-{% if is_ar_admin %}
+{% if can_post('accounting.ar_followup_log_new') %}
 <div class="mt-2 small text-subtle">
   <i class="bi bi-shield-lock me-1"></i>ดูรายละเอียด + <span class="fw-bold">บันทึกการทวง</span> → คลิก "ดูบิล/ทวง" ด้านบน
 </div>
-{% elif is_ar_manager %}
+{% elif may_see('accounting.ar_followup_customer') %}
+{# Naming a role here is the drift this project removed: the set that may
+   record a call is whatever `can_post` says, and it now holds staff too. #}
 <div class="mt-2 small text-subtle">
-  <i class="bi bi-shield-lock me-1"></i>ดูรายละเอียด/บิลได้ — <span class="fw-bold">บันทึกการทวง</span>ต้องสิทธิ์ Admin
-</div>
-{% else %}
-<div class="mt-2 small text-subtle">
-  <i class="bi bi-eye me-1"></i>คุณดูยอดรวมรายลูกค้าได้ — รายละเอียด/บันทึกการทวงต้องสิทธิ์ Manager+
+  <i class="bi bi-shield-lock me-1"></i>ดูรายละเอียด/บิลได้ — <span class="fw-bold">บันทึกการทวง</span>ไม่ได้
 </div>
 {% endif %}
 
