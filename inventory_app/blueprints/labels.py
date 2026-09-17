@@ -20,13 +20,13 @@ GET  /api/labels/search              Phase 3 — JSON search for the picker
 
 Access: manage/edit/company-block = admin only (plan decision D6 — only Put
 edits label data). print/search = admin/manager/staff (plan decision D6 —
-everyone except พนักงานทั่วไป(`general`) + `shareholder` prints). Mirrors
-hr.py's local `_require_admin()` pattern — no shared helper across blueprints.
+everyone except พนักงานทั่วไป(`general`) + `shareholder` prints). Both rules are
+declared in `permissions.py` and enforced by the gate before any route here runs.
 
 Python 3.9 — Optional[...] not X | None.
 """
 from flask import (Blueprint, render_template, request, redirect, url_for,
-                   flash, session, abort, jsonify)
+                   flash, abort, jsonify)
 
 from database import get_connection
 from paging import page_arg
@@ -34,16 +34,6 @@ from paging import page_arg
 bp_labels = Blueprint('labels', __name__)
 
 _PER_PAGE = 50
-
-
-def _require_admin():
-    if session.get('role') != 'admin':
-        abort(403)
-
-
-def _require_print_role():
-    if session.get('role') not in ('admin', 'manager', 'staff'):
-        abort(403)
 
 
 def _where_clause(q, review):
@@ -82,7 +72,6 @@ def _list_labels(conn, q, review, page):
 
 @bp_labels.route('/labels/manage')
 def manage():
-    _require_admin()
     q = request.args.get('q', '').strip()
     review = request.args.get('review', '')
     page = page_arg(request.args)
@@ -104,7 +93,6 @@ def manage():
 
 @bp_labels.route('/labels/<int:label_id>/edit', methods=['GET', 'POST'])
 def edit(label_id):
-    _require_admin()
     conn = get_connection()
     try:
         row = conn.execute(
@@ -149,7 +137,6 @@ def edit(label_id):
 
 @bp_labels.route('/labels/bulk-size', methods=['POST'])
 def bulk_size():
-    _require_admin()
     f = request.form
     label_size = f.get('label_size')
     back = dict(q=f.get('q', ''), review=f.get('review', ''), page=f.get('page', 1))
@@ -195,7 +182,6 @@ _COMPANY_BLOCK_FIELDS = (
 
 @bp_labels.route('/labels/company-block', methods=['GET', 'POST'])
 def company_block():
-    _require_admin()
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM label_company_block ORDER BY id LIMIT 1").fetchone()
@@ -226,7 +212,6 @@ def company_block():
 
 @bp_labels.route('/labels/print')
 def print_page():
-    _require_print_role()
     conn = get_connection()
     try:
         company = conn.execute(
@@ -239,7 +224,6 @@ def print_page():
 
 @bp_labels.route('/api/labels/search')
 def search_api():
-    _require_print_role()
     q = (request.args.get('q') or '').strip()
     if not q:
         return jsonify({'items': []})

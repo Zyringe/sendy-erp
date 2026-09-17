@@ -1,13 +1,20 @@
-"""The gate's acceptance table: what switching `require_login` to the
-declaration actually moved.
+"""The gate's acceptance table: what moving permission into one module
+actually changed.
 
-`require_login` reads `permissions.py` now. `nav.py`, the ten route-local
-`_require_*` helpers and the POST allowlists are untouched and stay for the
-next PR. What these tests pin is that the declaration is COMPLETE, that it is
-MINIMAL, and that the switch moved exactly the twelve cells named in
-`EXPECTED_LOSSES` and no others — the list `_today_may_see` below models the
-pre-switch gate to produce, which is what makes this a migration record rather
-than a tautology.
+`require_login` reads `permissions.py`, and so do the ten route-local
+`_require_*` helpers now that they are gone. `nav.py` and the POST allowlists
+are untouched and stay for the next PR. What these tests pin is that the
+declaration is COMPLETE, that it is MINIMAL, and that the move denied exactly
+the nine cells named in `EXPECTED_LOSSES` and granted none — `_today_may_see`
+below reconstructs what the pre-module gates answered, which is what makes
+this a migration record rather than a tautology.
+
+⚠ The table was twelve cells while the oracle modelled `require_login` alone.
+Three of those — `accounting.ar_followup_export`, `ar_followup_log_new`,
+`ar_followup_log_delete` for `staff` — were already refused inside the route by
+`_arf_require_manager` / `_arf_require_admin`, so counting them as movement was
+the same over-count that put five redirect shims in the original table. The
+oracle layers both gates now and they cancel.
 
 Every sweep here asserts its COUNT before its property and carries a control,
 because a role x endpoint matrix is the textbook vacuous test
@@ -30,39 +37,93 @@ DESK_ROLES = ('admin', 'manager', 'staff', 'shareholder')
 # than an import of the thing under test.
 STAFF_BLOCKED_PREFIXES = ('hr.', 'cashbook.', 'naming.', 'commission.')
 
+# The ten route-local `_require_*` helpers, transcribed from their bodies
+# before they were deleted. They fired INSIDE the route, after `require_login`
+# had already let the request through, so the oracle below has to layer them or
+# every endpoint they guarded reads as a brand-new denial.
+#
+# ⚠ `hr.employee_entitlements` is deliberately absent. Its `_require_admin()`
+# call sat inside the `if request.method == "POST"` branch, so manager and
+# shareholder READ that page both before and after. An AST sweep that walked
+# the whole function body reported it as admin-only and produced a baseline
+# claiming this PR granted two cells it never touched.
+_ADMIN = ('admin',)
+ROUTE_GUARDS_BEFORE_PR3A = {
+    # labels.py::_require_admin / _require_print_role
+    'labels.manage': _ADMIN, 'labels.edit': _ADMIN,
+    'labels.bulk_size': _ADMIN, 'labels.company_block': _ADMIN,
+    'labels.print_page': ('admin', 'manager', 'staff'),
+    'labels.search_api': ('admin', 'manager', 'staff'),
+    # hr.py::_require_admin
+    'hr.employee_new': _ADMIN, 'hr.employee_edit': _ADMIN,
+    'hr.employee_salary_add': _ADMIN, 'hr.employee_wht_add': _ADMIN,
+    'hr.leave_new': _ADMIN, 'hr.leave_edit': _ADMIN, 'hr.leave_delete': _ADMIN,
+    'hr.payroll_generate': _ADMIN, 'hr.payroll_finalize': _ADMIN,
+    'hr.payroll_reopen': _ADMIN, 'hr.payroll_item_edit': _ADMIN,
+    # hr.py::_require_admin_or_manager
+    'hr.leave_approve': ('admin', 'manager'), 'hr.leave_reject': ('admin', 'manager'),
+    # hr.py::_require_pay_role — wider than the two above ON PURPOSE, and the
+    # same set as the hr blueprint's own default, which is why it needs no row
+    # in PAGES and why these two cells do not move.
+    'hr.payroll_item_pay': ('admin', 'manager', 'shareholder'),
+    'hr.payroll_item_unpay': ('admin', 'manager', 'shareholder'),
+    # commission_bp.py::_require_admin — the rule CRUD, not the dashboards
+    'commission.commission_overrides_list': _ADMIN,
+    'commission.commission_overrides_new': _ADMIN,
+    'commission.commission_overrides_edit': _ADMIN,
+    'commission.commission_overrides_toggle': _ADMIN,
+    'commission.commission_overrides_delete': _ADMIN,
+    'commission.commission_reassign_list': _ADMIN,
+    'commission.commission_reassign_new': _ADMIN,
+    'commission.commission_reassign_edit': _ADMIN,
+    'commission.commission_reassign_toggle': _ADMIN,
+    'commission.commission_reassign_delete': _ADMIN,
+    # vat_sub.py::_require_manager (the four pages a browser can open)
+    'vat_sub.index': ('admin', 'manager', 'shareholder'),
+    'vat_sub.product_view': ('admin', 'manager', 'shareholder'),
+    'vat_sub.planning': ('admin', 'manager', 'shareholder'),
+    'vat_sub.group_detail': ('admin', 'manager', 'shareholder'),
+    # reconcile.py::_require_manager (all four endpoints of the blueprint)
+    'reconcile.index': ('admin', 'manager', 'shareholder'),
+    'reconcile.apply': ('admin', 'manager', 'shareholder'),
+    'reconcile.dismiss': ('admin', 'manager', 'shareholder'),
+    'reconcile.reopen': ('admin', 'manager', 'shareholder'),
+    # accounting.py::_arf_require_manager / _arf_require_admin
+    'accounting.ar_followup_customer': ('admin', 'manager', 'shareholder'),
+    'accounting.ar_followup_export': ('admin', 'manager', 'shareholder'),
+    'accounting.ar_followup_log_new': _ADMIN,
+    'accounting.ar_followup_log_delete': _ADMIN,
+}
+
 EXPECTED_GAINS = set()
 
-# Switching the gate to the declaration denies these twelve cells. The gate is
-# method-agnostic, exactly as the six checks it replaces were, so this table is
-# swept over EVERY endpoint in the URL map and not just the GET ones.
+# The declaration denies these nine cells that no pre-module gate did. The
+# gate is method-agnostic, exactly as the six checks it replaces were, so this
+# table is swept over EVERY endpoint in the URL map and not just the GET ones.
 EXPECTED_LOSSES = {
-    # Refused today by a route-local guard: flash
+    # Refused today by an accounting guard: flash
     # 'ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager' then redirect to '/'. The gate
     # now says the same words from one place.
     ('staff', 'accounting.accounting_summary'),
-    ('staff', 'accounting.ar_followup_export'),
     ('staff', 'accounting.cashflow_dashboard'),
     ('staff', 'accounting.financial_health'),
     ('staff', 'accounting.revenue_dashboard'),
     ('staff', 'accounting.revenue_unmapped_drilldown'),
     # Refused today by an inline abort(403) in the route. Still 403.
     ('staff', 'products.product_cost_history'),
-    # POST-only, and refused today by the POST allowlist: nobody but admin
-    # holds them, so the refusal moves EARLIER, from the POST gate to the
-    # access gate. The visible text changes from 'ไม่มีสิทธิ์ดำเนินการนี้'.
-    ('staff', 'accounting.ar_followup_log_new'),
-    ('staff', 'accounting.ar_followup_log_delete'),
     # `admin.user_delete` is absent from `_ENDPOINT_MODULE`, which is why the
     # old admin_module check missed it and the POST allowlist was what refused
-    # it. The `admin` blueprint declaration catches it.
+    # it. The `admin` blueprint declaration catches it. POST-only, so the
+    # refusal moves EARLIER, from the POST gate to the access gate, and the
+    # visible text changes from 'ไม่มีสิทธิ์ดำเนินการนี้'.
     ('manager', 'admin.user_delete'),
     ('shareholder', 'admin.user_delete'),
     ('staff', 'admin.user_delete'),
 }
 
 # The exact refusal each GET-reachable loss must produce: (status, flash) with
-# flash None meaning "no message expected". These seven are the ones a browser
-# can open; the other five are POST-only.
+# flash None meaning "no message expected". These six are the ones a browser
+# can open; the other three are POST-only.
 #
 # ⚠ Recorded HERE as literals, deliberately. An earlier version read the
 # expected shape back from `permissions.refusal` — the very thing under test —
@@ -74,7 +135,6 @@ ACCOUNTING_GUARD_MSG = 'ต้องเข้าสู่ระบบด้ว�
 
 EXPECTED_REFUSAL = {
     ('staff', 'accounting.accounting_summary'):         (302, ACCOUNTING_GUARD_MSG),
-    ('staff', 'accounting.ar_followup_export'):         (302, ACCOUNTING_GUARD_MSG),
     ('staff', 'accounting.cashflow_dashboard'):         (302, ACCOUNTING_GUARD_MSG),
     ('staff', 'accounting.financial_health'):           (302, ACCOUNTING_GUARD_MSG),
     ('staff', 'accounting.revenue_dashboard'):          (302, ACCOUNTING_GUARD_MSG),
@@ -110,10 +170,13 @@ def _all_endpoints(a):
 
 
 def _today_may_see(role, endpoint):
-    """The pre-switch verdict from `require_login`, read independently.
+    """The verdict every gate that predates `permissions.py` would give.
 
-    Route-local guards are deliberately NOT modelled: this is the gate the
-    declaration replaces, and the guards layer on top of it either way.
+    Two layers, in the order a request met them: `require_login`'s six
+    hardcoded checks, then whichever route-local `_require_*` helper the
+    blueprint carried. Modelling only the first would read all 43 guarded
+    endpoints as fresh denials; modelling neither would read them as fresh
+    grants. Both layers are transcribed independently of the module under test.
     """
     import access_control as ac
     import permissions as P
@@ -125,7 +188,8 @@ def _today_may_see(role, endpoint):
         return False
     if endpoint.startswith(STAFF_BLOCKED_PREFIXES) and role == 'staff':
         return False
-    return True
+    guard = ROUTE_GUARDS_BEFORE_PR3A.get(endpoint)
+    return guard is None or role in guard
 
 
 # ── completeness ─────────────────────────────────────────────────────────────
@@ -199,25 +263,29 @@ def test_every_declaration_carries_a_reason(tmp_db):
 def test_no_declaration_refuses_a_desk_role_silently(tmp_db):
     """A desk role that is turned away must be told something, or told 403.
 
-    The four Thai strings were on screen before this PR and a refusal that
-    dropped them would be a silent UI change dressed up as a refactor. The
-    kiosk is the deliberate exception (`permissions.SILENT`), so only rows
-    that exclude a DESK role are in scope.
+    The Thai strings were on screen before the module existed and a refusal
+    that dropped them would be a silent UI change dressed up as a refactor.
+    The kiosk is the deliberate exception (`permissions.SILENT`), so only desk
+    roles are swept.
+
+    Swept through `refusal()` rather than by reading rows, because the shape a
+    role actually gets depends on WHICH row answers: the area's, when the role
+    is outside the area altogether, and the page's when it is inside. Reading
+    `PAGES[e].deny` alone would report a shape nobody receives.
     """
     import permissions as P
-    rows = [(name, row) for name, row in
-            list(P.AREAS.items()) + list(P.PAGES.items())
-            if any(r not in row.see for r in DESK_ROLES)]
-    # Count first, or the property below is vacuous. Six AREAS (accounting,
-    # admin, cashbook, commission, hr, naming) + three PAGES
-    # (products.product_cost_history, admin_exit_simulate, admin_simulate_role).
-    assert len(rows) == 9, sorted(n for n, _ in rows)
-    mute = [n for n, row in rows if row.deny != P.FORBID and not row.msg]
-    assert mute == [], mute
-    # Control: the two shapes both really occur, so this is not passing because
-    # every row happens to be a 403 (or every row happens to carry a message).
-    assert [n for n, row in rows if row.deny == P.FORBID]
-    assert [n for n, row in rows if row.msg]
+    a = _app()
+    refused = [(role, e) for e in _all_endpoints(a) for role in DESK_ROLES
+               if not P.may_see(role, e)]
+    # Count first, or the property below is vacuous.
+    assert len(refused) > 100, len(refused)
+    mute = [(role, e) for role, e in refused
+            if P.refusal(role, e) == (P.BOUNCE, '')]
+    assert mute == [], sorted(mute)
+    # Control: both shapes really occur across the sweep, so this is not
+    # passing because everything happens to be a 403 (or everything a message).
+    shapes = {P.refusal(role, e)[0] for role, e in refused}
+    assert shapes == {P.FORBID, P.BOUNCE}, shapes
 
 
 # ── the matrix ───────────────────────────────────────────────────────────────
@@ -498,11 +566,11 @@ def test_every_expected_loss_is_a_real_page_admin_can_open(tmp_db, tmp_db_conn):
 
     # Counts before the loops, so a row silently leaving the table cannot make
     # this pass by iterating over less.
-    assert len(EXPECTED_LOSSES) == 12
-    assert len(EXPECTED_REFUSAL) == 7
+    assert len(EXPECTED_LOSSES) == 9
+    assert len(EXPECTED_REFUSAL) == 6
     assert set(EXPECTED_REFUSAL) < EXPECTED_LOSSES
     post_only = EXPECTED_LOSSES - set(EXPECTED_REFUSAL)
-    assert len(post_only) == 5, sorted(post_only)
+    assert len(post_only) == 3, sorted(post_only)
     assert all('GET' not in (r.methods or set())
                for r in a.url_map.iter_rules()
                if r.endpoint in {e for _role, e in post_only}), sorted(post_only)
@@ -546,7 +614,7 @@ def test_recorded_refusals_match_the_declaration(tmp_db):
     """
     import permissions as P
     shape = {P.FORBID: 403, P.BOUNCE: 302}
-    assert len(EXPECTED_REFUSAL) == 7
+    assert len(EXPECTED_REFUSAL) == 6
     drift = []
     for (role, endpoint), (want_status, want_msg) in sorted(EXPECTED_REFUSAL.items()):
         deny, msg = P.refusal(role, endpoint)
@@ -580,3 +648,118 @@ def test_redirect_shims_still_redirect_for_staff(tmp_db):
         elif not ar.headers['Location'].endswith(want_target):
             diverged.append((endpoint, 'target', ar.headers['Location']))
     assert diverged == [], diverged
+
+
+# ── the ten route-local guards, after the move ───────────────────────────────
+
+def test_no_route_local_permission_helper_survives(tmp_db):
+    """The ten helpers are gone, and no eleventh grew back.
+
+    Source-level, so it catches a helper that exists but is never called — the
+    shape that would quietly become the source of truth again.
+    """
+    import pathlib
+    import re
+    bp = pathlib.Path(__file__).resolve().parents[1] / 'inventory_app' / 'blueprints'
+    files = sorted(bp.glob('*.py'))
+    assert len(files) >= 15, files          # control: the sweep found the tree
+    pattern = re.compile(r'^def _[a-z_]*require[a-z_]*\(', re.M)
+    offenders = [(f.name, pattern.findall(f.read_text())) for f in files]
+    assert [(n, hits) for n, hits in offenders if hits] == []
+    # Control: the pattern can match. It is the one the plan prescribes after
+    # a plain `^def _require_` sweep missed `_arf_require_manager` entirely.
+    assert pattern.findall('def _arf_require_manager():\n')
+
+
+# (role, url, status, flash) for the refusals the ten helpers used to deliver.
+# The pairs matter more than the rows: each page appears twice, once for a role
+# INSIDE the blueprint (which gets the page row's 403) and once for a role
+# OUTSIDE it (which gets the area's own words).
+MOVED_REFUSALS = [
+    # labels — area OFFICE, four admin pages, two OPERATORS pages
+    ('manager',     '/labels/manage',        403, None),
+    ('staff',       '/labels/manage',        403, None),
+    ('shareholder', '/labels/print',         403, None),
+    ('general',     '/labels/manage',        302, None),
+    # hr — area MANAGEMENT with its own words, eleven admin pages
+    ('manager',     '/hr/employees/new',     403, None),
+    ('shareholder', '/hr/employees/new',     403, None),
+    ('staff',       '/hr/employees/new',     302, 'ไม่มีสิทธิ์เข้าถึงระบบบุคลากร'),
+    # commission — same shape
+    ('manager',     '/commission/overrides', 403, None),
+    ('staff',       '/commission/overrides', 302, 'ไม่มีสิทธิ์เข้าถึงระบบคอมมิชชั่น'),
+    # vat_sub — area OFFICE, so staff meets the PAGE row and its words
+    ('staff',       '/vat-sub',              302, 'ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager'),
+    # reconcile — the whole blueprint is MANAGEMENT, so staff meets the AREA
+    ('staff',       '/reconcile',            302, 'ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager'),
+]
+
+
+def test_the_moved_guards_refuse_exactly_as_they_did_in_the_route(tmp_db):
+    """Every refusal `_require_*` used to raise, now raised by the gate.
+
+    Recorded as literals for the same reason `EXPECTED_REFUSAL` is: reading
+    the shape back out of `permissions.refusal` would pin nothing.
+    """
+    a = _app()
+    assert len(MOVED_REFUSALS) == 11
+    # Positive control: an allowed role gets a real page on the same URLs, so
+    # a blanket failure cannot read as a pass.
+    admin = _client(a, 'admin')
+    for url in sorted({u for _r, u, _s, _m in MOVED_REFUSALS}):
+        assert admin.get(url).status_code == 200, url
+
+    wrong = []
+    for role, url, want_status, want_msg in MOVED_REFUSALS:
+        c = _client(a, role)
+        resp = c.get(url, follow_redirects=False)
+        flashes = _flashes(c)
+        if resp.status_code != want_status:
+            wrong.append((role, url, 'want %d' % want_status, resp.status_code))
+        elif want_msg is not None and want_msg not in flashes:
+            wrong.append((role, url, 'flash missing', want_msg, flashes))
+        elif want_msg is None and flashes:
+            wrong.append((role, url, 'unexpected flash', flashes))
+    assert wrong == [], wrong
+
+
+def test_the_kiosk_is_bounced_home_by_a_403_area_too(tmp_db):
+    """`general` never meets a 403 raised on a page INSIDE an area it may enter.
+
+    The area answers first for a role the area excludes, which is what keeps
+    the kiosk — which has no chrome to render an error page into — on the
+    bounce it has always had. Reading the page row first turned 37 of these
+    into 403s (measured 2026-09-17).
+    """
+    kiosk = _client(_app(), 'general')
+    resp = kiosk.get('/labels/manage', follow_redirects=False)
+    assert resp.status_code == 302, resp.status_code
+    assert resp.headers['Location'].endswith('/m/stock'), resp.headers['Location']
+    assert _flashes(kiosk) == [], _flashes(kiosk)
+
+
+def test_employee_entitlements_reads_for_manager_and_writes_for_admin_only(tmp_db, tmp_db_conn):
+    """The one guard that sat inside a POST branch, so the page has two answers.
+
+    `hr.employee_entitlements` gets NO declaration: an admin-only see-set would
+    take the page away from manager and shareholder, who read it today. Its
+    POST stays admin-only by omission from the POST allowlists, which is the
+    mechanism 55 other write endpoints already rely on, and this is what says
+    so out loud.
+    """
+    import access_control as ac
+    a = _app()
+    row = tmp_db_conn.execute('SELECT id FROM employees ORDER BY id LIMIT 1').fetchone()
+    assert row is not None, 'no employees in the test DB, the sweep would be vacuous'
+    url = '/hr/employees/%d/entitlements' % row[0]
+
+    for role in ('admin', 'manager', 'shareholder'):
+        assert _client(a, role).get(url).status_code == 200, role
+    assert _client(a, 'staff').get(url, follow_redirects=False).status_code == 302
+
+    assert 'hr.employee_entitlements' not in ac._MANAGER_POST_OK
+    for role in ('manager', 'shareholder'):
+        c = _client(a, role)
+        posted = c.post(url, data={'year': '2026'}, follow_redirects=False)
+        assert posted.status_code == 302, (role, posted.status_code)
+        assert 'ไม่มีสิทธิ์ดำเนินการนี้' in _flashes(c), (role, _flashes(c))

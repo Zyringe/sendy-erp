@@ -673,20 +673,6 @@ def revenue_unmapped_drilldown():
 
 # ── AR Follow-up workspace ───────────────────────────────────────────────────
 
-def _arf_require_manager():
-    if session.get('role') not in ('admin', 'manager', 'shareholder'):
-        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
-        return redirect(url_for('dashboard'))
-    return None
-
-
-def _arf_require_admin():
-    if session.get('role') != 'admin':
-        flash('ต้องใช้บัญชี Admin', 'danger')
-        return redirect(url_for('accounting.ar_dashboard', tab='customers'))
-    return None
-
-
 @bp_accounting.route('/accounting/ar-followup')
 def ar_followup():
     """Redirect stub — content moved to /ar?tab=customers (AR consolidation)."""
@@ -699,10 +685,6 @@ def ar_followup_customer(customer_key):
     `customer_code` (preferred, stable) or a customer name (legacy bookmark
     or orphan customer). Resolved by `arf_mod._resolve_target` inside the
     detail/followup helpers."""
-    redirect_ = _arf_require_manager()
-    if redirect_:
-        return redirect_
-
     invoices = arf_mod.get_customer_ar_detail(customer=customer_key)
     followups = arf_mod.get_customer_followups(customer=customer_key)
     total_outstanding = round(sum(i['outstanding'] for i in invoices), 2)
@@ -739,10 +721,6 @@ def ar_followup_customer(customer_key):
 
 @bp_accounting.route('/accounting/ar-followup/log/new', methods=['POST'])
 def ar_followup_log_new():
-    redirect_ = _arf_require_admin()
-    if redirect_:
-        return redirect_
-
     # ONE identity input. The posted `customer` / `customer_code` fields are
     # display-only and deliberately ignored — resolving them independently let
     # a stale tab or a tampered request file collection history against a
@@ -810,10 +788,6 @@ def ar_followup_log_new():
 
 @bp_accounting.route('/accounting/ar-followup/log/<int:log_id>/delete', methods=['POST'])
 def ar_followup_log_delete(log_id):
-    redirect_ = _arf_require_admin()
-    if redirect_:
-        return redirect_
-
     customer_key = (request.form.get('customer_key') or '').strip()
     # Soft delete (mig 160): attribute it to the login, not to display text,
     # and only claim success when a row actually changed.
@@ -829,10 +803,6 @@ def ar_followup_log_delete(log_id):
 
 @bp_accounting.route('/accounting/ar-followup/export.csv')
 def ar_followup_export():
-    redirect_ = _arf_require_manager()
-    if redirect_:
-        return redirect_
-
     rows = arf_mod.customer_ranking()
     import csv as _csv
     import io as _io

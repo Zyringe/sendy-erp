@@ -30,7 +30,7 @@ Lives in MAIN view (session's active_book toggle never applies here — the
 VAT book is cross-read via models.open_vat_book(), independent of the
 parity-page system, plan §4.10).
 """
-from flask import Blueprint, render_template, request, redirect, url_for, flash, session
+from flask import Blueprint, render_template, request, redirect, url_for, flash
 
 import book_registry
 import models
@@ -38,13 +38,6 @@ import vat_math
 from database import get_connection
 
 bp_vat_sub = Blueprint('vat_sub', __name__, url_prefix='/vat-sub')
-
-
-def _require_manager():
-    if session.get('role') not in ('admin', 'manager', 'shareholder'):
-        flash('ต้องเข้าสู่ระบบด้วยบัญชี Admin หรือ Manager', 'danger')
-        return redirect(url_for('dashboard'))
-    return None
 
 
 def _flash_result(result, ok_message):
@@ -67,18 +60,12 @@ def _group_choices(conn, group_ids):
 
 @bp_vat_sub.route('')
 def index():
-    redirect_ = _require_manager()
-    if redirect_:
-        return redirect_
     return render_template('vat_sub/index.html',
                            vat_freshness=book_registry.vat_book_freshness())
 
 
 @bp_vat_sub.route('/product/<int:product_id>')
 def product_view(product_id):
-    redirect_ = _require_manager()
-    if redirect_:
-        return redirect_
     conn = get_connection()
     book_conn = models.open_vat_book()
     try:
@@ -107,9 +94,6 @@ def product_view(product_id):
 
 @bp_vat_sub.route('/planning')
 def planning():
-    redirect_ = _require_manager()
-    if redirect_:
-        return redirect_
     conn = get_connection()
     book_conn = models.open_vat_book()
     try:
@@ -124,9 +108,6 @@ def planning():
 
 @bp_vat_sub.route('/group/<int:group_id>')
 def group_detail(group_id):
-    redirect_ = _require_manager()
-    if redirect_:
-        return redirect_
     conn = get_connection()
     book_conn = models.open_vat_book()
     try:

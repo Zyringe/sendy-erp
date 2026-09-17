@@ -49,24 +49,6 @@ BANK_OPTIONS = [
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _require_admin():
-    if session.get("role") != "admin":
-        abort(403)
-
-
-def _require_admin_or_manager():
-    if session.get("role") not in ("admin", "manager"):
-        abort(403)
-
-
-def _require_pay_role():
-    """Gate for salary pay-event routes (จ่ายแล้ว / ยกเลิกการจ่าย). Deliberately
-    NOT `_require_admin_or_manager` — that gate excludes shareholder, and the
-    mother (a shareholder) must be able to record salary transfers she makes."""
-    if session.get("role") not in ("admin", "manager", "shareholder"):
-        abort(403)
-
-
 def _be_year(iso_date: Optional[str]) -> str:
     """Convert 'YYYY-MM-DD' to 'DD/MM/พ.ศ.' Thai display string."""
     if not iso_date:
@@ -161,7 +143,6 @@ def employee_list():
 
 @bp_hr.route("/employees/new", methods=["GET", "POST"])
 def employee_new():
-    _require_admin()
     companies = hrq.get_companies()
     if request.method == "POST":
         data = request.form.to_dict()
@@ -227,7 +208,6 @@ def employee_detail(id: int):
 
 @bp_hr.route("/employees/<int:id>/edit", methods=["POST"])
 def employee_edit(id: int):
-    _require_admin()
     emp = hrq.get_employee(id)
     if not emp:
         abort(404)
@@ -258,7 +238,6 @@ def employee_edit(id: int):
 
 @bp_hr.route("/employees/<int:id>/salary", methods=["POST"])
 def employee_salary_add(id: int):
-    _require_admin()
     emp = hrq.get_employee(id)
     if not emp:
         abort(404)
@@ -282,7 +261,6 @@ def employee_wht_add(id: int):
     """Set the employee's standing WHT rate from a given date onward — same
     UX as employee_salary_add, writing an employee_wht_history row that
     hr.resolve_wht() picks up for every payroll run generated afterward."""
-    _require_admin()
     emp = hrq.get_employee(id)
     if not emp:
         abort(404)
@@ -320,7 +298,6 @@ def employee_entitlements(id: int):
         abort(404)
     year = int(request.args.get("year") or date.today().year)
     if request.method == "POST":
-        _require_admin()
         year = int(request.form.get("year", year))
         leave_types = hrq.get_leave_types()
         for lt in leave_types:
@@ -400,7 +377,6 @@ def leave_list():
 
 @bp_hr.route("/leave/new", methods=["GET", "POST"])
 def leave_new():
-    _require_admin()
     employees = hrq.get_employees(active_only=True)
     leave_types = hrq.get_leave_types()
     if request.method == "POST":
@@ -425,7 +401,6 @@ def leave_new():
 
 @bp_hr.route("/leave/<int:id>/edit", methods=["POST"])
 def leave_edit(id: int):
-    _require_admin()
     req = hrq.get_leave_request(id)
     if not req:
         abort(404)
@@ -440,7 +415,6 @@ def leave_edit(id: int):
 
 @bp_hr.route("/leave/<int:rid>/approve", methods=["POST"])
 def leave_approve(rid: int):
-    _require_admin_or_manager()
     req = hrq.get_leave_request(rid)
     if not req or req["status"] != "pending":
         flash("ไม่พบคำขอหรือสถานะไม่ถูกต้อง", "warning")
@@ -466,7 +440,6 @@ def leave_approve(rid: int):
 
 @bp_hr.route("/leave/<int:rid>/reject", methods=["POST"])
 def leave_reject(rid: int):
-    _require_admin_or_manager()
     req = hrq.get_leave_request(rid)
     if not req or req["status"] != "pending":
         flash("ไม่พบคำขอหรือสถานะไม่ถูกต้อง", "warning")
@@ -492,7 +465,6 @@ def leave_reject(rid: int):
 
 @bp_hr.route("/leave/<int:id>/delete", methods=["POST"])
 def leave_delete(id: int):
-    _require_admin()
     try:
         hrq.delete_leave_request(id)
         flash("ลบรายการลาเรียบร้อย", "success")
@@ -554,7 +526,6 @@ def payroll_list():
 
 @bp_hr.route("/payroll/generate", methods=["POST"])
 def payroll_generate():
-    _require_admin()
     year_month = request.form.get("year_month", "").strip()
     company_id = request.form.get("company_id", "").strip()
     if not year_month or not company_id:
@@ -620,7 +591,6 @@ def payroll_detail(run_id: int):
 @bp_hr.route("/payroll/<int:run_id>/item/<int:item_id>/pay", methods=["POST"])
 def payroll_item_pay(run_id: int, item_id: int):
     """Post a per-employee salary pay-event ("จ่ายแล้ว" — ADR 0006)."""
-    _require_pay_role()
     run = hrq.get_payroll_run(run_id)
     if not run:
         abort(404)
@@ -649,7 +619,6 @@ def payroll_item_pay(run_id: int, item_id: int):
 @bp_hr.route("/payroll/<int:run_id>/item/<int:item_id>/unpay", methods=["POST"])
 def payroll_item_unpay(run_id: int, item_id: int):
     """Void a salary pay-event ("ยกเลิกการจ่าย" — ADR 0006)."""
-    _require_pay_role()
     run = hrq.get_payroll_run(run_id)
     if not run:
         abort(404)
@@ -665,7 +634,6 @@ def payroll_item_unpay(run_id: int, item_id: int):
 
 @bp_hr.route("/payroll/<int:run_id>/item/<int:item_id>", methods=["POST"])
 def payroll_item_edit(run_id: int, item_id: int):
-    _require_admin()
     run = hrq.get_payroll_run(run_id)
     if not run:
         abort(404)
@@ -710,7 +678,6 @@ def payroll_item_edit(run_id: int, item_id: int):
 
 @bp_hr.route("/payroll/<int:run_id>/finalize", methods=["POST"])
 def payroll_finalize(run_id: int):
-    _require_admin()
     run = hrq.get_payroll_run(run_id)
     if not run:
         abort(404)
@@ -744,7 +711,6 @@ def payroll_finalize(run_id: int):
 
 @bp_hr.route("/payroll/<int:run_id>/reopen", methods=["POST"])
 def payroll_reopen(run_id: int):
-    _require_admin()
     run = hrq.get_payroll_run(run_id)
     if not run:
         abort(404)
