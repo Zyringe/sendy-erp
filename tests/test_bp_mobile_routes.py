@@ -132,3 +132,111 @@ def test_sales_trip_outstanding_still_excludes_hs_cash_sale(tmp_db):
     assert 'ร้านทดสอบค้างชำระ514' in body, 'control — the IV customer is on the page'
     assert '7,777' not in body, 'HS cash sale must never render as outstanding debt'
     assert '5,555' in body, 'a real unpaid IV must still render as outstanding debt'
+
+
+def _trip_due(html, customer_name):
+    """The ฿ figure rendered on ONE customer's /m/sales-trip row, as a float.
+
+    Scoped to that customer's own `<a href="/m/customer/...">` block on
+    purpose: `trip-cust-due` and any given amount also appear elsewhere on the
+    page (every other customer's row, the group banner), so a page-wide
+    substring test answers a different question. Parses the number out rather
+    than matching the formatted string — the template renders '{:,.0f}'.
+
+    Returns None when the row rendered with no figure at all, and ASSERTS that
+    the row is on the page: an absent row would make a "no figure" assertion
+    vacuously true.
+    """
+    import re
+    blocks = [b for b in html.split('<a href="/m/customer/')
+              if 'trip-cust-name">{}<'.format(customer_name) in b]
+    assert len(blocks) == 1, (
+        'control failed — expected exactly 1 /m/sales-trip row for {!r}, found {}. '
+        'Without the row on the page every assertion about its figure is vacuous.'
+        .format(customer_name, len(blocks)))
+    m = re.search(r'trip-cust-due">฿([\d,]+)', blocks[0])
+    return float(m.group(1).replace(',', '')) if m else None
+
+
+def test_sales_trip_outstanding_excludes_written_off_bill(tmp_db):
+    """#568: /m/sales-trip's outstanding is what a rep is told the shop owes
+    before walking in, so it must drop documents the accountant wrote off —
+    the WHOLE ar_writeoffs table, not sales_filters' revenue-only
+    `excludes_revenue = 1` subset (ADR 0012).
+
+    ⚠ The far-side row is deliberately flagged 0. That is the shape of both
+    write-offs that actually reach this population on prod (IV6701775
+    ฿10,200.00 and IV6801241 ฿2.00, both `excludes_revenue = 0`, measured
+    2026-09-17), and a fixture flagged 1 would sit on the KEEPING side of a
+    flag-only filter — the clause would never fire and deleting it would stay
+    green (#471).
+
+    Controls, both in this run: an ordinary unpaid bill of the same shape for a
+    second customer still renders its debt, and the written-off customer's own
+    row is asserted present (by `_trip_due`) before its figure is asserted
+    absent. Then the ar_writeoffs row alone is deleted and the page re-read, so
+    the disappearance is pinned to THAT row and not to some other filter.
+    """
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    # Force the state; never inherit it — tmp_db is a clone of the live DB.
+    conn.execute("DELETE FROM customers WHERE code IN ('C-WO568','C-OK568')")
+    conn.execute("DELETE FROM sales_transactions WHERE doc_base IN ('IV-WO568','IV-OK568')")
+    conn.execute("DELETE FROM ar_writeoffs WHERE doc_no IN ('IV-WO568','IV-OK568')")
+    # ภาคตะวันออก (customer_geo.region_of on the address) scopes the request to
+    # a small deterministic group, same trick as the tests above.
+    conn.execute(
+        "INSERT INTO customers (code, name, address) VALUES "
+        "('C-WO568','ร้านทดสอบตัดหนี้568','123 ถ.สุขุมวิท ชลบุรี'),"
+        "('C-OK568','ร้านทดสอบค้างจริง568','456 ถ.สุขุมวิท ชลบุรี')")
+    # Two unpaid IVs of identical shape. The only difference is the write-off.
+    conn.execute("""INSERT INTO sales_transactions
+                      (date_iso, doc_no, doc_base, customer, customer_code,
+                       qty, unit, unit_price, vat_type, total, net)
+                    VALUES ('2026-07-01','IV-WO568-1','IV-WO568','ร้านทดสอบตัดหนี้568','C-WO568',
+                            1,'ตัว',12345.0,1,12345.0,12345.0)""")
+    conn.execute("""INSERT INTO sales_transactions
+                      (date_iso, doc_no, doc_base, customer, customer_code,
+                       qty, unit, unit_price, vat_type, total, net)
+                    VALUES ('2026-07-01','IV-OK568-1','IV-OK568','ร้านทดสอบค้างจริง568','C-OK568',
+                            1,'ตัว',6789.0,1,6789.0,6789.0)""")
+    conn.execute("""INSERT INTO ar_writeoffs
+                      (doc_no, customer_code, customer_name, amount, type,
+                       writeoff_date, reason, excludes_revenue)
+                    VALUES ('IV-WO568','C-WO568','ร้านทดสอบตัดหนี้568',12345.0,'expense',
+                            '2026-06-05','#568 fixture — bad debt, revenue kept',0)""")
+    conn.commit()
+    # The far-side property, asserted rather than assumed: a row this clause
+    # excludes and the flag-only reading does NOT.
+    flag = conn.execute(
+        "SELECT excludes_revenue FROM ar_writeoffs WHERE doc_no='IV-WO568'").fetchone()[0]
+    assert flag == 0, 'fixture drifted to the keeping side of a flag-only filter'
+    conn.close()
+
+    from app import app
+    app.config['TESTING'] = True
+    c = app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
+    from urllib.parse import quote
+    url = f"/m/sales-trip?region={quote('ภาคตะวันออก')}"
+    body = c.get(url).get_data(as_text=True)
+
+    assert _trip_due(body, 'ร้านทดสอบค้างจริง568') == 6789.0, (
+        'control failed — an ordinary unpaid IV of the same shape must still '
+        'render as outstanding debt, or this test proves nothing about write-offs')
+    leaked = _trip_due(body, 'ร้านทดสอบตัดหนี้568')
+    assert leaked is None, (
+        'written-off IV-WO568 (฿12,345.00, excludes_revenue=0, written off '
+        '2026-06-05) leaked into /m/sales-trip as ฿{} — a rep would be told a '
+        'forgiven bill is owed (#568)'.format(leaked))
+
+    # Pin the cause: drop ONLY the ar_writeoffs row and the same bill returns.
+    conn = sqlite3.connect(tmp_db)
+    conn.execute("DELETE FROM ar_writeoffs WHERE doc_no='IV-WO568'")
+    conn.commit()
+    conn.close()
+    body2 = c.get(url).get_data(as_text=True)
+    assert _trip_due(body2, 'ร้านทดสอบตัดหนี้568') == 12345.0, (
+        'control failed — with the ar_writeoffs row gone the bill must reappear, '
+        'otherwise something other than the write-off exclusion hid it')

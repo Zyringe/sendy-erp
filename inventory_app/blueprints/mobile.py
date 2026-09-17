@@ -227,6 +227,25 @@ def sales_trip():
                           JOIN received_payments rp ON rp.id = pi.re_id
                          WHERE pi.doc_no = s.doc_base
                            AND rp.cancelled = 0)
+                    -- A rep opens this screen before walking into the shop,
+                    -- so this figure is COLLECTABILITY — which excludes the
+                    -- WHOLE ar_writeoffs table, not the revenue-only
+                    -- `excludes_revenue = 1` subset (#568, ADR 0012; the four
+                    -- readings of this table sit side by side at
+                    -- price_lookup._WRITEOFF_SUBQUERY). Same clause and reason
+                    -- as models.payments.find_customers_for_transfer. Note the
+                    -- ล่าสุด subquery above deliberately does NOT take the
+                    -- whole table (Put, 2026-09-17: a written-off bill is
+                    -- still a purchase). Measured on prod 2026-09-17: both
+                    -- write-offs reaching this population are flagged 0, so
+                    -- the flag reading removes nothing — นางด้วง (เมืองพีน)
+                    -- showed ฿10,200.00 owed on IV6701775, written off
+                    -- 2026-06-05.
+                    -- LOAD-BEARING: ar_writeoffs.doc_no must stay NOT NULL
+                    -- (mig 095) — one NULL makes `NOT IN (SELECT ...)`
+                    -- evaluate to NULL for every row and every figure here
+                    -- silently becomes 0.
+                    AND s.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)
                ) AS outstanding
           FROM customers c
      LEFT JOIN salespersons sp ON sp.code = c.salesperson
