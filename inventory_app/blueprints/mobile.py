@@ -208,7 +208,7 @@ def sales_trip():
                -- 2026-09-14 (none of them loses a date).
                (SELECT MAX(date_iso) FROM sales_transactions s
                  WHERE s.customer = c.name
-                   AND {price_lookup.evidence_filter('s')}) AS last_sale,
+                   AND {price_lookup.purchase_population_filter('s')}) AS last_sale,
                (SELECT ROUND(SUM({vat_math.cash_sql('s')}), 2)
                   FROM sales_transactions s
                   WHERE s.customer = c.name

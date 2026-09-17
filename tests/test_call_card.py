@@ -483,11 +483,12 @@ def _assemble_db():
     and a peer (C002).
 
     2e (PR C): carries the full column/table set price_lookup's
-    evidence_filter + latest_evidence + epochs_for_pairs need --
+    price_evidence_filter / purchase_population_filter + latest_evidence +
+    epochs_for_pairs need --
     products.cost_price/is_active/brand_id, a `brands` table,
     sales_transactions.doc_base, and product_price_history/audit_log/
     ar_writeoffs (all empty by default, so every pair's epoch is None and
-    evidence_filter's static conditions are the only new constraint the
+    both #554 populations' static conditions are the only new constraint the
     existing bills must clear -- they do, doc_base is a clean 'IV1'/'IV2',
     no marketplace/write-off rows).
     """

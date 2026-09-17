@@ -250,10 +250,19 @@
   of a product. A freebie-only invoice or a credit note does not count.
 
 - **ซื้อล่าสุด (last purchase date)** — the latest date with a paid invoice line; never a
-  credit note or a freebie-only document. Computed over the price resolver's evidence
-  population (`price_lookup.evidence_filter`) — the same population `last_paid` uses. Distinct
-  from the header's existing "ช่วงเวลา" activity range, which stays a raw
-  `MIN/MAX(date_iso)` and can end on a credit note.
+  credit note or a freebie-only document. Computed over the PURCHASE population
+  (`price_lookup.purchase_population_filter`). Distinct from the header's existing
+  "ช่วงเวลา" activity range, which stays a raw `MIN/MAX(date_iso)` and can end on a
+  credit note.
+
+  > ⚠ **Purchase is not the same population as price evidence** (#554, Put 2026-09-17).
+  > A bill the accountant wrote off but did NOT flag `excludes_revenue` still counts
+  > as a purchase — the goods moved and the shop engaged, we just never got paid — so
+  > ซื้อล่าสุด / ครั้งที่ซื้อ / เงียบ / win-back / เสนอเพิ่ม read
+  > `purchase_population_filter` (the flag only). Anything that answers "is this a
+  > price someone agreed to" (`last_paid`, `lowest`, peer prices, the ซื้อบ่อย card's
+  > last price) reads `price_evidence_filter`, which drops the WHOLE `ar_writeoffs`
+  > table. Four questions, two answers: see price_lookup.py's `_WRITEOFF_SUBQUERY`.
 
 - **ส่วนลด (line discount)** — the discount keyed on an invoice line. Either percentages,
   where `15+5%` compounds (never back-computed into one effective percentage), or a baht
@@ -302,8 +311,8 @@
 
 - **เสนอเพิ่ม → ขายดีที่ร้านนี้ยังไม่มี (#498)** — up to 10 in-stock, active, priced products
   that at least 3 *other* B2B shops bought in the trailing 24 months, that this shop has
-  **never** bought (all-time — same `price_lookup.evidence_filter` population ครั้งที่ซื้อ
-  counts). Every exclusion (already-bought, inactive, out of stock, **no resolvable price**)
+  **never** bought (all-time — same `price_lookup.purchase_population_filter`
+  population ครั้งที่ซื้อ counts). Every exclusion (already-bought, inactive, out of stock, **no resolvable price**)
   applies BEFORE grouping: one row per `products.sub_category`, taking the highest-ranked
   candidate that actually qualifies (an unpriced top candidate never blocks a priced,
   lower-ranked candidate sharing its sub-category — review round 1). A sub-category this

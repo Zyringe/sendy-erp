@@ -9,7 +9,10 @@ sales_transactions rows, independent of how any caller builds that scope
 (see test_497_customer_page_winback_notes.py for the call-card /
 customer-page wiring).
 
-Seam: pure computation over sales_transactions + price_lookup.evidence_filter.
+Seam: pure computation over sales_transactions +
+price_lookup.purchase_population_filter (the PURCHASE half of the #554 split:
+a written-off-but-unflagged bill is still a purchase this shop made, so
+win-back counts it — Put, 2026-09-17).
 Prior art for fixtures: tests/test_493_slice2_product_card.py.
 """
 import os
@@ -97,7 +100,7 @@ def _scope():
     return 'customer_code = ?', [TEST_CODE]
 
 
-# ── Population: evidence_filter must apply ──────────────────────────────────
+# ── Population: purchase_population_filter must apply ────────────────────────
 
 def test_two_paid_invoices_never_flagged_despite_other_document_types(cust):
     """The issue's own acceptance case: a product judged on paid invoices
@@ -105,7 +108,10 @@ def test_two_paid_invoices_never_flagged_despite_other_document_types(cust):
     credit note dated after the last invoice, and a not-a-sale (written-off)
     document. With only 2 REAL paid invoices, it must never be flagged —
     even though the raw row count (5) and raw distinct-date count (5) would
-    both clear the >=3 threshold if evidence_filter were not applied."""
+    both clear the >=3 threshold if purchase_population_filter were not
+    applied. NOTE the write-off here is FLAGGED (excludes_revenue = 1, invoiced
+    in error) — that one is out of both #554 populations; an UNflagged
+    write-off would still count as a purchase."""
     conn, pid = cust
     _line(conn, doc_base='IV49700', suffix=1, pid=pid, date_iso='2026-01-01',
           qty=1, unit_price=100, net=100)

@@ -10,7 +10,10 @@ tests/test_497_winback.py exercises `winback.compute_winback` directly —
 independent of how `get_customer_summary_by_code` wires it in (see
 test_498_customer_page_suggestions.py for that seam).
 
-Population = `price_lookup.evidence_filter`, reused, never re-derived.
+Population = `price_lookup.purchase_population_filter`, reused, never
+re-derived — the PURCHASE half of the #554 split: "3 other shops bought it" is
+a purchase question, so a written-off-but-unflagged bill still counts (Put,
+2026-09-17).
 Shop key = the call list's own canonical key
 (COALESCE(NULLIF(TRIM(customer_code),''), customer)).
 

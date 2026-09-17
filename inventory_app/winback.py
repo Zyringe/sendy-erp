@@ -6,10 +6,13 @@ evidence filter: a bill name shared by two customer codes merged both
 companies' history, and freebie-only invoices / credit notes / not-a-sale
 documents all counted as purchases.
 
-Population = `price_lookup.evidence_filter`, restricted to whatever scope the
-caller passes — the SAME population `models.customers._customer_product_cards`
-counts as ครั้งที่ซื้อ, so a product's win-back flag and its purchase count on
-the customer page can never disagree about what counts as a real sale.
+Population = `price_lookup.purchase_population_filter`, restricted to whatever
+scope the caller passes — the SAME population
+`models.customers._customer_product_cards` counts as ครั้งที่ซื้อ, so a product's
+win-back flag and its purchase count on the customer page can never disagree
+about what counts as a real sale. Deliberately the PURCHASE population and not
+`price_evidence_filter`: a bill that was written off is still a purchase this
+shop made (Put, 2026-09-17, #554), and win-back asks when it last bought.
 Keyed by (product_id, unit). Eligible at >=3 distinct INVOICES (doc_base —
 the same ครั้งที่ซื้อ definition the product card counts,
 `COUNT(DISTINCT s.doc_base)`); two invoices dated the SAME day are still two
@@ -57,7 +60,7 @@ def compute_winback(conn, where, params, today=None):
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where}
-          AND {price_lookup.evidence_filter('s')}
+          AND {price_lookup.purchase_population_filter('s')}
           AND s.product_id IS NOT NULL
         ORDER BY s.product_id, s.unit, s.date_iso
     """, params).fetchall()

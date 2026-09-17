@@ -48,15 +48,17 @@ def product_peer_prices(
               doc_base/customer/ar_writeoffs — see its own tests) keeps
               passing untouched.
               Given a dict → the population is restricted to
-              price_lookup.evidence_filter('st') (excludes SR/HS returns,
-              write-offs, รายการหน้าร้าน marketplace rows, and the
-              cost-basis dummy invoices — the SAME predicate the resolver's
-              own evidence lookups use, so peers and resolve_price can never
-              silently disagree about which rows count), AND, for each
+              price_lookup.price_evidence_filter('st') (excludes SR
+              returns, EVERY written-off document (#554), รายการหน้าร้าน
+              marketplace rows, and the cost-basis dummy invoices — the SAME
+              predicate the resolver's own evidence lookups use, so peers and
+              resolve_price can never silently disagree about which rows
+              count; deliberately NOT purchase_population_filter, which keeps
+              unflagged write-offs), AND, for each
               (product_id, unit) pair PRESENT in the map with a non-None
               value, further restricted to date_iso >= that pair's date.
               A pair absent from the map, or mapped to None, still gets
-              evidence_filter but is NOT date-restricted (there is no
+              price_evidence_filter but is NOT date-restricted (there is no
               price-regime change to anchor it to) — it is never silently
               dropped and never treated as "today". Call-card callers pass
               this keyed on the (product_id, unit) PAIR (never just
@@ -90,7 +92,7 @@ def product_peer_prices(
             "SELECT product_id, unit, customer_code, qty, net, vat_type, date_iso, "
             "unit_price, discount "
             "FROM sales_transactions st "
-            f"WHERE {pl.evidence_filter('st')}",
+            f"WHERE {pl.price_evidence_filter('st')}",
         ).fetchall()
         rows = []
         for r in all_rows:

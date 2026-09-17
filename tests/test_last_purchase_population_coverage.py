@@ -1,7 +1,14 @@
 """Every per-customer "last purchase" / "purchase count" reads ONE population.
 
-`price_lookup.evidence_filter` is that population: real, paid, non-returned
-sales lines. #493 moved the customer page onto it; #513 found the call card,
+`price_lookup.purchase_population_filter` is that population: real, paid,
+non-returned sales lines. ⚠ It was called `evidence_filter` until #554 split it
+in two: a written-off-but-unflagged bill IS still a purchase (Put, 2026-09-17 —
+the goods moved and the shop engaged, we just never got paid) while it is NOT
+price evidence, so the price side reads `price_evidence_filter` instead. This
+census accepts EITHER name as "the population" — a site reading the wrong one
+is `test_554_population_split.py`'s job to name, per site — except for the four
+ซื้อ surfaces below, which are pinned to the purchase half here.
+#493 moved the customer page onto it; #513 found the call card,
 the /call worklist and the mobile sales-trip list still reading raw rows, so a
 credit note read as a recent purchase and the เงียบ badge — the only signal
 that surfaces a customer who stopped buying — went out on exactly the customer
@@ -13,7 +20,8 @@ inventory_app/ that reads sales_transactions and is keyed to a customer (it
 names the customer or customer_code column, or it lives in a function whose
 name says customer) is measured twice — its DATE-OF-LAST-ROW and
 DOCUMENT-COUNT aggregates (MAX(date_iso), MAX(s.date_iso),
-COUNT(DISTINCT doc_base)), and its evidence_filter call sites. Each function is
+COUNT(DISTINCT doc_base)), and its population call sites (either #554 name).
+Each function is
 listed in ALLOWED with BOTH numbers and a reason, so adding, removing or
 re-pointing an aggregate changes a number and cannot hide behind the old entry.
 
@@ -59,8 +67,14 @@ _STALE_AGG = re.compile(
     r'MAX\(\s*(?:\w+\.)?date_iso\s*\)'
     r'|COUNT\(\s*DISTINCT\s*\(?\s*(?:\w+\.)?doc_base\s*\)',
     re.IGNORECASE)
-# The population, however it is spelled at the call site (`pl` or the full name).
-_HELPER = re.compile(r'\{\s*(?:pl|price_lookup)\s*\.\s*evidence_filter\s*\(')
+# The population, however it is spelled at the call site (`pl` or the full
+# name) and whichever of the two #554 predicates it is.
+_HELPER = re.compile(
+    r'\{\s*(?:pl|price_lookup)\s*\.\s*'
+    r'(?:price_evidence_filter|purchase_population_filter)\s*\(')
+# The PURCHASE half specifically — what a ซื้อ-labelled surface must read (#554).
+_PURCHASE_HELPER = re.compile(
+    r'\{\s*(?:pl|price_lookup)\s*\.\s*purchase_population_filter\s*\(')
 _CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b', re.IGNORECASE)
 # A SQL comment is prose. The comment on the very line this sweep exists to
 # protect says "a raw MAX(date_iso) showed a rep a RETURN", and counting that
@@ -71,7 +85,7 @@ _SQL_COMMENT = re.compile(r'--[^\n]*|/\*.*?\*/', re.DOTALL)
 def _code_only(sql):
     return _SQL_COMMENT.sub(' ', sql)
 
-# site -> (raw aggregates, evidence_filter call sites, why that is right).
+# site -> (raw aggregates, population call sites (either #554 name), why).
 # A census, not a blocklist: every customer-keyed query is listed, the
 # filtered ones included, because the pair is what changes when someone
 # adds, removes or re-points an aggregate. `(1, 1)` is the goal shape — one
@@ -96,10 +110,15 @@ ALLOWED = {
         'last_purchase_date subquery (#493); the raw COUNT/MAX beside it feed '
         'จำนวนเอกสาร and the ช่วงเวลา end, same split as the detail page.'),
     'models/customers.py::_customer_product_cards': (1, 2,
-        'สินค้าที่ซื้อบ่อย: times_bought per (product, unit) over the evidence '
-        'population (#493 slice 2). Per-product, and already filtered.'),
+        'สินค้าที่ซื้อบ่อย: times_bought per (product, unit) over the PURCHASE '
+        'population (#493 slice 2). Per-product, and already filtered. Its two '
+        'call sites are deliberately one of EACH since #554: times_bought is '
+        'purchase_population_filter, while the last bill whose net/qty is '
+        'rendered to a rep AS A PRICE is price_evidence_filter.'),
     'peer_pricing.py::product_peer_prices': (0, 1,
-        'peer prices for one product over the evidence population. No date or '
+        'peer prices for one product over the PRICE-evidence population '
+        '(price_evidence_filter, #554 — a written-off bill is not a price the '
+        'market agreed to). No date or '
         'document-count aggregate of its own; listed so the census covers every '
         'reader of the population, not only the ones holding an aggregate.'),
     # ── per PRODUCT, not per customer ──
@@ -132,8 +151,8 @@ ALLOWED = {
     'models/ecommerce_overview.py::get_marketplace_freshness': (1, 0,
         'how fresh a PLATFORM\'s imported sales are, keyed on the หน้าร้าน '
         'pseudo-customers. Data freshness for Shopee/Lazada/TikTok, not a B2B '
-        "customer's buying history — and evidence_filter excludes หน้าร้าน "
-        'outright, so filtering it would answer NULL forever.'),
+        "customer's buying history — and BOTH #554 populations exclude "
+        'หน้าร้าน outright, so filtering it would answer NULL forever.'),
     # ── a document, or a search hint ──
     'models/customers.py::_customer_documents': (1, 0,
         'one row per DOCUMENT, and the date shown against it — for a credit '
@@ -237,7 +256,7 @@ def _app_counts(pattern):
 
 
 def _census():
-    """{site: (raw aggregates, evidence_filter call sites)} over every
+    """{site: (raw aggregates, population call sites)} over every
     customer-keyed sales_transactions query in the app."""
     aggs, helpers = _app_counts(_STALE_AGG), _app_counts(_HELPER)
     return {site: (aggs.get(site, 0), helpers.get(site, 0))
@@ -253,8 +272,9 @@ def test_every_per_customer_last_buy_or_doc_count_is_declared():
     stale = {s: n for s, n in declared.items() if found.get(s) != n}
     assert not undeclared and not stale, (
         'A per-customer last-buy date or purchase count changed. Declare it in '
-        'ALLOWED as (raw aggregates, evidence_filter call sites, reason) — and '
-        'if the surface says ซื้อ, it must read price_lookup.evidence_filter.\n'
+        'ALLOWED as (raw aggregates, population call sites, reason) — and if '
+        'the surface says ซื้อ, it must read '
+        'price_lookup.purchase_population_filter (#554).\n'
         f'  found but not declared (or counts differ): {undeclared}\n'
         f'  declared but not found at those counts: {stale}')
 
@@ -268,9 +288,15 @@ def test_every_entry_carries_a_reason(site):
 def test_the_surfaces_that_say_bought_read_the_purchase_population(site):
     """Positive control. The census above goes red on any change; this one
     names the surface, so the failure says which screen went back to raw
-    rows rather than just that a tuple moved."""
-    assert _app_counts(_HELPER).get(site, 0) >= 1, \
-        f'{site} stopped reading price_lookup.evidence_filter'
+    rows rather than just that a tuple moved.
+
+    Since #554 it pins WHICH of the two predicates, not just that one is
+    read: a ซื้อ surface on price_evidence_filter satisfies the census above
+    (still "the population") and is still wrong — it would drop a bill the
+    shop really did buy and move ซื้อล่าสุด backwards, which is exactly what
+    Put ruled against on 2026-09-17."""
+    assert _app_counts(_PURCHASE_HELPER).get(site, 0) >= 1, \
+        f'{site} stopped reading price_lookup.purchase_population_filter'
 
 
 def test_the_population_is_not_found_everywhere():
@@ -302,14 +328,21 @@ AGGREGATE_SHAPES = {
     'grouped by code': 'SELECT customer_code, MAX(date_iso) FROM sales_transactions '
                        'GROUP BY customer_code',
     'even when filtered': 'SELECT MAX(date_iso) FROM sales_transactions '
-                          "WHERE customer = ? AND {pl.evidence_filter('')}",
+                          "WHERE customer = ? AND "
+                          "{pl.purchase_population_filter('')}",
 }
 
 HELPER_SHAPES = {
     'short alias': "SELECT MAX(date_iso) FROM sales_transactions "
-                   "WHERE customer = ? AND {pl.evidence_filter('')}",
+                   "WHERE customer = ? AND {pl.purchase_population_filter('')}",
     'full name':   "SELECT MAX(date_iso) FROM sales_transactions "
-                   "WHERE customer = ? AND {price_lookup.evidence_filter('s')}",
+                   "WHERE customer = ? AND "
+                   "{price_lookup.purchase_population_filter('s')}",
+    # #554: the price half must read as "the population" to THIS census too,
+    # or a site that swapped predicates would look like it dropped the
+    # population entirely instead of taking the wrong side of the split.
+    'price half':  "SELECT MAX(date_iso) FROM sales_transactions "
+                   "WHERE customer = ? AND {pl.price_evidence_filter('st')}",
 }
 
 NOT_SITES = {
