@@ -227,29 +227,37 @@ def test_negative_wht_post_is_rejected_by_the_ROUTE_not_the_db(
     assert len(calls) == 1, "control: a valid POST should have called add_wht_history"
 
 
-def test_employee_wht_add_route_has_its_own_admin_check(tmp_db, tmp_db_conn):
-    """Defense in depth: the view itself must refuse a non-admin even when the
-    global request gate is bypassed. Calling the view function directly inside a
-    request context is what removes the neighbour from the picture — going
-    through the test client only proves the global gate works."""
-    os.environ.setdefault('SKIP_DB_INIT', '1')
-    from app import app as a
-    import blueprints.hr as bp_hr
-    from werkzeug.exceptions import HTTPException
+def test_employee_wht_add_refuses_every_role_but_admin(tmp_db, tmp_db_conn):
+    """A non-admin cannot write a WHT row, and no row appears when they try.
 
-    before = tmp_db_conn.execute(
+    This was `..._route_has_its_own_admin_check`, which called the view
+    function directly to prove the route refused even with the request gate
+    bypassed. That guard moved: `hr.employee_wht_add` is declared ADMIN_ONLY in
+    `permissions.py` and the gate refuses before the view is entered, so the
+    direct call now pins a path no request can take. What the test protected —
+    nobody but admin writes this table — is asserted here on the real request,
+    for all four non-admin roles rather than just `staff`, plus the row count
+    that says the write never happened.
+
+    `staff` and `general` are outside the `hr` area and get its Thai refusal;
+    `manager` and `shareholder` are inside it and get the 403 the route used to
+    raise. Both shapes are asserted, so a gate that collapsed them would fail.
+    """
+    form = {'effective_date': '2097-01-01', 'monthly_wht': '32',
+            'reason': 'adjust', 'note': ''}
+    count = lambda: tmp_db_conn.execute(
         "SELECT COUNT(*) FROM employee_wht_history").fetchone()[0]
-    with a.test_request_context(
-            '/hr/employees/1/wht', method='POST',
-            data={'effective_date': '2097-01-01', 'monthly_wht': '32',
-                  'reason': 'adjust', 'note': ''}):
-        from flask import session
-        session['user_id'] = 2
-        session['username'] = 'staffer'
-        session['role'] = 'staff'
-        with pytest.raises(HTTPException) as e:
-            bp_hr.employee_wht_add(1)
-        assert e.value.code == 403
+    before = count()
 
-    assert tmp_db_conn.execute(
-        "SELECT COUNT(*) FROM employee_wht_history").fetchone()[0] == before
+    for role, want in (('staff', 302), ('general', 302),
+                       ('manager', 403), ('shareholder', 403)):
+        resp = _client_as(role).post('/hr/employees/1/wht', data=form,
+                                     follow_redirects=False)
+        assert resp.status_code == want, (role, resp.status_code)
+        assert count() == before, role
+
+    # CONTROL: admin reaches the write layer through this very URL and form, so
+    # the four refusals above are about the role and not about a broken POST.
+    assert _client_as('admin').post('/hr/employees/1/wht', data=form,
+                                    follow_redirects=False).status_code == 302
+    assert count() == before + 1
