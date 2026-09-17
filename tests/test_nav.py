@@ -78,8 +78,19 @@ def test_general_drawer_is_only_of_chan_settings_and_app():
     assert eps == {'me.leave', 'me.payslip_list', 'me.account', 'help_install'}
 
 
-def test_finance_hidden_from_staff():
-    assert not any(s['section'] == 'การเงิน' for s in nav_sections('staff'))
+def test_finance_shows_staff_only_the_two_debt_pages():
+    """`staff` chases debt, so it gets การเงิน — holding AR and AP and nothing
+    else. It used to be hidden outright while /ar and /ap stayed openable by
+    URL, which is the drift this project exists to stop (Put, Q3: AR yes,
+    commission no)."""
+    import permissions as P
+    eps = [l['ep'] for s in nav_sections('staff')
+           if s['section'] == 'การเงิน' for l in s['links']]
+    assert eps == ['accounting.ar_dashboard', 'accounting.ap_dashboard'], eps
+    # The three it must NOT get, named rather than implied by the list above.
+    for ep in ('accounting.accounting_summary', 'accounting.cashflow_dashboard',
+               'commission.commission_dashboard'):
+        assert not P.may_see('staff', ep), ep
 
 
 def test_finance_visible_to_admin_manager_shareholder():
@@ -104,15 +115,18 @@ def test_admin_module_is_admin_only():
     assert any(s['section'] == 'ระบบ' for s in nav_sections('admin'))
 
 
-def test_hr_section_excludes_shareholder_matching_base_html_landmine():
-    """base.html's บุคลากร (HR) section gates session.role in ['admin','manager']
-    — NOT the _MODULE_DEFS ('admin','manager','shareholder') set. This is the
-    documented `is_manager` landmine (access_control.py :391 vs :420); NAV must
-    reproduce the section as it ACTUALLY renders, not the module switcher's more
-    generous role list."""
-    assert not any(s['section'] == 'บุคลากร (HR)' for s in nav_sections('shareholder'))
-    for role in ('admin', 'manager'):
+def test_hr_section_includes_the_shareholder_who_could_always_reach_it():
+    """The `is_manager` landmine, closed.
+
+    The module switcher has always let the shareholder into 'hr' while this
+    section's own role list rendered nothing for her, so the tab opened a blank
+    sidebar. Both now read `permissions`, where `hr` is MANAGEMENT.
+    """
+    for role in ('admin', 'manager', 'shareholder'):
         assert any(s['section'] == 'บุคลากร (HR)' for s in nav_sections(role)), role
+    # Control: the section is still gated — staff and the kiosk do not get it.
+    for role in ('staff', 'general'):
+        assert not any(s['section'] == 'บุคลากร (HR)' for s in nav_sections(role)), role
 
 
 # ── internal consistency ──────────────────────────────────────────────────────
@@ -141,26 +155,25 @@ def test_module_scoped_is_subset_of_flat(role):
         assert scoped_eps <= flat_eps, (role, module, scoped_eps - flat_eps)
 
 
-def test_general_module_scoped_shows_more_than_flat_drawer():
-    """The deliberate asymmetry: general's flat drawer (module=None) is locked
-    to ONLY ของฉัน + แอป (test_general_drawer_is_only_of_chan_and_app), but
-    module-scoped calls (nav_sections('general', 'operation') etc.) reproduce
-    base.html's PRE-EXISTING behavior faithfully — it never gated these
-    sections by role at all, only by active_module (general just could never
-    reach them in practice, via require_login's redirect, not via the sidebar).
-    Verified against tests/nav_snapshot.json's general|operation/trade/data/
-    overview entries (captured pre-refactor) — these exact eps, in this exact
-    count, is what the frozen desktop snapshot requires."""
-    assert {l['ep'] for s in nav_sections('general', 'operation') for l in s['links']} == \
-        {'products.product_list', 'inventory.transaction_history', 'inventory.conversion_list',
-         'me.leave', 'me.payslip_list'}
-    assert {l['ep'] for s in nav_sections('general', 'overview') for l in s['links']} == \
-        {'dashboard', 'inventory.alerts_view', 'review.index', 'me.leave', 'me.payslip_list'}
-    # finance/hr/cashbook/admin_module DO keep general out (explicit roles sets,
-    # not roles=None, so the flat-vs-scoped asymmetry doesn't apply to them).
-    for module in ('finance', 'hr', 'cashbook', 'admin_module'):
-        eps = {l['ep'] for s in nav_sections('general', module) for l in s['links']}
-        assert eps == {'me.leave', 'me.payslip_list'}, (module, eps)
+def test_general_gets_the_same_answer_flat_or_module_scoped():
+    """The flat-versus-scoped asymmetry is gone.
+
+    `roles=None` used to mean "everyone but general" in the drawer and
+    "literally everyone" on the desktop, because the desktop sidebar was a
+    frozen port of a base.html that only ever gated by `active_module`. The
+    kiosk was therefore handed the full คลังสินค้า / การค้า / นำเข้าข้อมูล /
+    ภาพรวม content in every module-scoped call — dead, since `inject_auth`
+    blanks `visible_modules` for it, but dead code that read as a policy.
+    Filtering each link through `may_see` answers both surfaces at once.
+    """
+    flat = {l['ep'] for s in nav_sections('general') for l in s['links']}
+    for module in ('overview', 'operation', 'trade', 'data', 'finance', 'hr',
+                   'cashbook', 'admin_module', 'settings'):
+        scoped = {l['ep'] for s in nav_sections('general', module) for l in s['links']}
+        assert scoped <= flat, (module, sorted(scoped - flat))
+    # Control: the kiosk really is offered something, so this is not passing on
+    # two empty sets.
+    assert 'me.leave' in flat and len(flat) >= 3, sorted(flat)
 
 
 def test_desktop_false_sections_dropped_when_module_scoped():
@@ -264,19 +277,17 @@ def test_the_drawer_never_offers_a_link_the_gate_refuses():
 
 
 def test_the_desktop_sidebar_never_offers_a_link_the_gate_refuses():
-    """Every DESK role, every module.
+    """Every role, every module — `general` included now.
 
-    `general` is excluded, and only here. `_section_visible` treats a section's
-    `roles=None` as "every role" in the module-scoped view, so the kiosk is
-    handed the full คลังสินค้า/การค้า/นำเข้าข้อมูล content — a frozen port of a
-    sidebar that never had a role gate, documented in that function and
-    captured in `nav_snapshot.json`. It never reaches a user: `inject_auth`
-    blanks `visible_modules` for the kiosk. The drawer test above is where
-    `general` is held to the invariant.
+    It was exempt when this landed, because the module-scoped view handed the
+    kiosk a frozen port of a sidebar that never had a role gate. The exemption
+    carried a control asserting it was still needed, and that control is what
+    went red once nav started filtering on `may_see`, which is how the
+    exemption came out rather than lingering.
     """
     import permissions as P
     offered, refused = 0, []
-    for role in ('admin', 'manager', 'staff', 'shareholder'):
+    for role in ('admin', 'manager', 'staff', 'shareholder', 'general'):
         for module in _NAV_MODULES:
             for section, ep in _nav_links(role, module):
                 offered += 1
@@ -284,7 +295,40 @@ def test_the_desktop_sidebar_never_offers_a_link_the_gate_refuses():
                     refused.append((role, module, section, ep))
     assert offered > 100, offered
     assert refused == [], refused
-    # Control: the exclusion above is real, i.e. the kiosk WOULD fail this.
-    kiosk = [(m, ep) for m in _NAV_MODULES for _s, ep in _nav_links('general', m)
-             if not P.may_see('general', ep)]
-    assert kiosk, 'the general exemption has become unnecessary, delete it'
+
+
+def test_every_module_tab_lands_somewhere_its_role_may_open():
+    """A tab that bounces is worse than a hidden one.
+
+    The switcher used to link at a hardcoded `first_endpoint`, so opening
+    `finance` to `staff` would have handed them a tab pointing at /accounting —
+    a page the gate refuses. `visible_modules_for` derives the landing from the
+    first link the role may actually see instead.
+    """
+    import permissions as P
+    from access_control import visible_modules_for
+    landings = [(role, m['key'], m['landing'])
+                for role in ('admin', 'manager', 'staff', 'shareholder')
+                for m in visible_modules_for(role)]
+    assert len(landings) > 20, landings          # control: the sweep swept
+    bad = [x for x in landings if not P.may_see(x[0], x[2])]
+    assert bad == [], bad
+    # Control: the staff/finance pair — the whole reason this exists — is in
+    # the sweep, and lands on /ar rather than the module's canonical endpoint.
+    assert ('staff', 'finance', 'accounting.ar_dashboard') in landings
+
+
+def test_a_module_with_nothing_to_offer_gets_no_tab():
+    """Visibility is derived, so a role with no link in a module has no tab."""
+    from access_control import visible_modules_for
+    keys = {role: {m['key'] for m in visible_modules_for(role)}
+            for role in ('admin', 'manager', 'staff', 'shareholder', 'general')}
+    assert keys['general'] == set(), keys['general']
+    assert 'admin_module' in keys['admin']
+    for role in ('manager', 'staff', 'shareholder'):
+        assert 'admin_module' not in keys[role], role
+    for absent in ('hr', 'cashbook'):
+        assert absent not in keys['staff'], absent
+    assert {'hr', 'cashbook', 'finance'} <= keys['shareholder']
+    # Control: staff is not simply empty — it holds the tabs it should.
+    assert {'overview', 'operation', 'trade', 'data', 'finance'} <= keys['staff']

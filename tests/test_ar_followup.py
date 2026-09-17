@@ -1039,3 +1039,154 @@ def test_non_finite_promised_amount_is_refused(tmp_db, bad):
     _seed_two_customers(tmp_db)
     _post_log(tmp_db, promised_amount=bad)
     assert _logs_for(tmp_db, 'C-KEYA') == [], f'{bad!r} was stored as a promised amount'
+
+
+# ── §5: staff chases debt (Put, Q3 / plan §5) ────────────────────────────────
+# Create only. Deleting an outreach row filters on `id` alone with no
+# `created_by` check, so a second account could hide another person's
+# promise-to-pay from every UI reader — that stays admin-only.
+#
+# A status code cannot verify any of this. Two of the surfaces are template
+# gates, so `staff` would get a 200 on a page with the controls missing; the
+# third is a row in `ar_followup_log`. These assert markup and rows.
+
+LOG_NEW_FORM = 'action="/accounting/ar-followup/log/new"'
+EXPORT_LINK = '/accounting/ar-followup/export.csv'
+
+
+def _client_as(tmp_db, role, username=None):
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'], s['username'], s['role'] = 1, username or role, role
+    return c
+
+
+def _delete_forms(html):
+    import re
+    return re.findall(r'action="/accounting/ar-followup/log/\d+/delete"', html)
+
+
+def test_staff_opens_the_followup_workspace_and_gets_the_log_form(tmp_db):
+    """⚠ Routed at a customer that really carries AR in the Express snapshot.
+
+    `_seed_two_customers` writes `customers` only, which is enough to POST
+    against but renders a page with no detail on it — so a render assertion
+    keyed on that fixture passes or fails for reasons that have nothing to do
+    with the role.
+    """
+    code = _a_live_customer_code(tmp_db)
+    url = '/accounting/ar-followup/customer/%s' % code
+
+    # Control FIRST: the page resolves this customer for a role that has always
+    # been able to open it, so a later miss is about the role under test.
+    admin_html = _client_as(tmp_db, 'admin').get(url).get_data(as_text=True)
+    assert code in admin_html, 'control: the page did not resolve %s at all' % code
+    assert LOG_NEW_FORM in admin_html
+
+    staff = _client_as(tmp_db, 'staff').get(url)
+    assert staff.status_code == 200, staff.status_code
+    html = staff.get_data(as_text=True)
+    assert code in html, 'staff landed somewhere other than the customer page'
+    assert LOG_NEW_FORM in html, 'staff cannot file a call from the page it works in'
+
+
+def test_only_the_post_allowlist_decides_who_files_a_collection_call(tmp_db):
+    """`may_see` opens the page; `_ROLE_POST_OK` is what allows the write.
+
+    `shareholder` is declared OFFICE on the endpoint like everyone else and is
+    still refused, which is the whole point of keeping the two gates separate.
+    """
+    import access_control as ac
+    import permissions as P
+    for role in ('staff', 'manager', 'shareholder'):
+        assert P.may_see(role, 'accounting.ar_followup_log_new'), role
+    assert ac.role_can_post('staff', 'accounting.ar_followup_log_new')
+    assert ac.role_can_post('manager', 'accounting.ar_followup_log_new')
+    assert not ac.role_can_post('shareholder', 'accounting.ar_followup_log_new')
+    # ⛔ deleting stays admin-only, for every other role.
+    for role in ('staff', 'manager', 'shareholder'):
+        assert not ac.role_can_post(role, 'accounting.ar_followup_log_delete'), role
+
+
+def test_a_staff_collection_call_lands_a_row_credited_to_that_user(tmp_db):
+    _seed_two_customers(tmp_db)
+    assert _logs_for(tmp_db, 'C-KEYA') == []          # precondition
+
+    r = _client_as(tmp_db, 'staff', username='louis').post(
+        '/accounting/ar-followup/log/new',
+        data={'customer_key': 'C-KEYA', 'log_date': '2026-09-17',
+              'channel': 'phone', 'result': 'promised'},
+        follow_redirects=False)
+    assert r.status_code == 302, r.status_code
+
+    rows = _logs_for(tmp_db, 'C-KEYA')
+    assert len(rows) == 1, rows
+    assert rows[0][0] == 'ลูกค้า A'
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    who = conn.execute("SELECT created_by FROM ar_followup_log"
+                       " WHERE customer_code='C-KEYA'").fetchone()[0]
+    conn.close()
+    assert who == 'louis', 'the row must name the staff member who made the call'
+
+
+def test_staff_cannot_delete_a_collection_call_and_the_row_survives(tmp_db):
+    import sqlite3
+    log_id = _seed_log_in(tmp_db)
+    for role in ('staff', 'manager', 'shareholder'):
+        c = _client_as(tmp_db, role)
+        r = c.post('/accounting/ar-followup/log/%d/delete' % log_id,
+                   data={'customer_key': 'C-RT1'}, follow_redirects=False)
+        assert r.status_code in (302, 403), (role, r.status_code)
+        conn = sqlite3.connect(tmp_db)
+        deleted = conn.execute("SELECT deleted_at FROM ar_followup_log WHERE id=?",
+                               (log_id,)).fetchone()[0]
+        conn.close()
+        assert deleted is None, '%s hid another user\'s promise-to-pay' % role
+    # Control: the row IS deletable, so the three refusals above are about the
+    # role and not about an unreachable route or a bad log_id.
+    assert _client_as(tmp_db, 'admin').post(
+        '/accounting/ar-followup/log/%d/delete' % log_id,
+        data={'customer_key': 'C-RT1'}, follow_redirects=False).status_code == 302
+    conn = sqlite3.connect(tmp_db)
+    assert conn.execute("SELECT deleted_at FROM ar_followup_log WHERE id=?",
+                        (log_id,)).fetchone()[0] is not None
+    conn.close()
+
+
+def test_staff_sees_the_delete_column_for_nobody_and_admin_sees_it_for_every_row(tmp_db):
+    """The `<th>` and the `<td>` are gated on ONE expression, so a role either
+    gets the whole column or none of it and the table keeps its shape."""
+    code = _a_live_customer_code(tmp_db)
+    _seed_log_in(tmp_db, customer='ผู้ทดสอบ', code=code)
+    url = '/accounting/ar-followup/customer/%s' % code
+
+    admin_html = _client_as(tmp_db, 'admin').get(url).get_data(as_text=True)
+    assert len(_delete_forms(admin_html)) == 1, 'control: admin must see a delete form'
+
+    staff_html = _client_as(tmp_db, 'staff').get(url).get_data(as_text=True)
+    assert _delete_forms(staff_html) == []
+    # …and the logged call still rendered, so the empty list above is a missing
+    # BUTTON rather than a missing table.
+    assert 'ผู้ทดสอบ' in admin_html and code in staff_html
+
+
+def test_the_ar_customers_tab_offers_staff_the_drilldown_but_not_the_csv(tmp_db):
+    """COUNT first. The customers table carries TWO links into the workspace
+    per row — the name and the ดูบิล/ทวง button — and they are gated
+    separately, so `... in page` is satisfied by either one surviving. Break-
+    it-once proved that: gating only the FIRST of the two on `role == admin`
+    left this test green (2026-09-17).
+    """
+    import re
+    pages = {role: _client_as(tmp_db, role).get('/ar?tab=customers').get_data(as_text=True)
+             for role in ('admin', 'staff')}
+    counts = {role: len(re.findall(r'/accounting/ar-followup/customer/', page))
+              for role, page in pages.items()}
+    assert counts['admin'] >= 2, ('control: the tab rendered no drilldown at all', counts)
+    assert counts['staff'] == counts['admin'], \
+        ('staff is offered fewer ways into the workspace than admin', counts)
+    assert EXPORT_LINK in pages['admin'], 'control: the CSV link renders for admin'
+    assert EXPORT_LINK not in pages['staff'], 'Q14: staff gets no download button'

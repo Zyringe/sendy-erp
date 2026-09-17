@@ -95,7 +95,23 @@ ROUTE_GUARDS_BEFORE_PR3A = {
     'accounting.ar_followup_log_delete': _ADMIN,
 }
 
-EXPECTED_GAINS = set()
+# Put's §5 call: staff chases debt, so staff reaches the follow-up workspace
+# and files the record of a call. `may_see` is the "is this page part of your
+# app" question, NOT the write gate — `_ROLE_POST_OK` still decides who may
+# POST, which is why `shareholder` appears here and still cannot file one
+# (`test_only_the_post_allowlist_decides_who_files_a_collection_call`).
+#
+# ⛔ `accounting.ar_followup_log_delete` is deliberately absent and stays
+# ADMIN_ONLY: `delete_outreach` filters on `id` alone with no `created_by`
+# check, so a second account could hide another person's promise-to-pay from
+# every UI reader. `accounting.ar_followup_export` is absent too (Put, Q14: no
+# download button for staff).
+EXPECTED_GAINS = {
+    ('staff', 'accounting.ar_followup_customer'),
+    ('staff', 'accounting.ar_followup_log_new'),
+    ('manager', 'accounting.ar_followup_log_new'),
+    ('shareholder', 'accounting.ar_followup_log_new'),
+}
 
 # The declaration denies these nine cells that no pre-module gate did. The
 # gate is method-agnostic, exactly as the six checks it replaces were, so this
@@ -313,6 +329,7 @@ def test_declared_matrix_moves_exactly_the_expected_cells(tmp_db):
     assert agreed > 500, agreed
     assert agreed + len(gains) + len(losses) == len(endpoints) * len(ROLES)
 
+    assert len(EXPECTED_GAINS) == 4
     assert gains == EXPECTED_GAINS, sorted(gains)
     assert losses == EXPECTED_LOSSES, {
         'unexpected': sorted(losses - EXPECTED_LOSSES),

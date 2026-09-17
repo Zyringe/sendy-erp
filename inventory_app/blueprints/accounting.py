@@ -311,16 +311,12 @@ def ar_dashboard():
     """Unified receivables page. Tabs: overview | customers | invoices | reconcile.
     VIEW open to any logged-in role (staff incl.); dunning WRITES stay manager+."""
     tab = request.args.get('tab', 'overview')
-    is_ar_manager = session.get('role') in ('admin', 'manager')
-    is_ar_admin = session.get('role') == 'admin'   # dunning log writes are admin-only
     # ONE aging read for the whole request — the overview tab reuses this same
     # object, and every tab gets the freshness verdict for the stale banner.
     aging = cf_mod.ar_aging()
     ctx = {'tab': tab,
            'aging': aging,
-           'snapshot_date': aging.get('as_of'),
-           'is_ar_manager': is_ar_manager,
-           'is_ar_admin': is_ar_admin}
+           'snapshot_date': aging.get('as_of')}
 
     if tab == 'overview':
         # WHEN each baht is chaseable, not how old it is. ar_aging answers "how

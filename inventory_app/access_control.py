@@ -12,7 +12,7 @@ import models
 import permissions
 import review_rules as rr
 from database import get_connection
-from nav import active_link, nav_sections
+from nav import active_link, module_links, nav_sections
 
 
 def pw_fingerprint(password_hash):
@@ -63,6 +63,11 @@ _STAFF_POST_OK = frozenset([
     'call.call_log_delete',
     'customer_review.normalize_confirm',
     'customer_review.normalize_skip',
+    # Chasing debt is staff work (plan §5, Put's Q3). CREATE only: deleting an
+    # outreach row filters on `id` with no `created_by` check, so a second
+    # account could hide someone else's promise-to-pay from every UI reader.
+    # `accounting.ar_followup_log_delete` stays admin-only by omission.
+    'accounting.ar_followup_log_new',
     'inventory.stock_adjust',
     # Reach the route so unauthorized mapping reviewers receive its JSON 403
     # instead of this gate's HTML redirect. The route remains authoritative.
@@ -201,64 +206,61 @@ ROLE_ORDER = ['admin', 'manager', 'staff', 'shareholder', 'general']
 
 # ── Module definitions for sidebar switcher ──────────────────────────────────
 # Each entry: key, name_th, icon (bootstrap-icons class), first_endpoint
-# (first_endpoint is used to build the switcher navigation target).
-# Roles 'admin' and 'manager' can see 'hr'; only 'admin' sees 'admin_module'.
+# (the module's canonical landing, and the fallback one).
+#
+# No `roles` here any more. A tab is shown when the module actually offers the
+# role a link (`visible_modules_for` below), which is one fact instead of two
+# that could disagree — and they did: the switcher let the shareholder into
+# 'hr' while nav's HR section rendered nothing for her, so the tab opened a
+# blank sidebar.
 _MODULE_DEFS = [
     {
         'key': 'overview',
         'name': 'ภาพรวม',
         'icon': 'bi-speedometer2',
         'first_endpoint': 'dashboard',
-        'roles': None,  # all roles
     },
     {
         'key': 'operation',
         'name': 'คลังสินค้า',
         'icon': 'bi-box-seam',
         'first_endpoint': 'products.product_list',
-        'roles': None,
     },
     {
         'key': 'trade',
         'name': 'การค้า',
         'icon': 'bi-bar-chart-line',
-        'first_endpoint': 'sales.trade_dashboard',  # staff-safe landing (sales/purchases/customers)
-        'roles': None,
+        'first_endpoint': 'sales.trade_dashboard',  # sales/purchases/customers
     },
     {
         'key': 'finance',
         'name': 'การเงิน',
         'icon': 'bi-cash-coin',
         'first_endpoint': 'accounting.accounting_summary',
-        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'hr',
         'name': 'บุคลากร (HR)',
         'icon': 'bi-people',
         'first_endpoint': 'hr.dashboard',
-        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'cashbook',
         'name': 'บัญชีรับ-จ่าย',
         'icon': 'bi-journal-text',
         'first_endpoint': 'cashbook.dashboard',
-        'roles': ('admin', 'manager', 'shareholder'),
     },
     {
         'key': 'data',
         'name': 'นำเข้าข้อมูล',
         'icon': 'bi-upload',
         'first_endpoint': 'bsn.unified_import',   # /import-data (the consolidated box)
-        'roles': None,
     },
     {
         'key': 'admin_module',
         'name': 'ระบบ',
         'icon': 'bi-gear',
         'first_endpoint': 'admin.user_list',
-        'roles': ('admin',),
     },
     {
         # Self-service settings — every role manages its OWN account here. A
@@ -269,7 +271,6 @@ _MODULE_DEFS = [
         'name': 'ตั้งค่า',
         'icon': 'bi-sliders',
         'first_endpoint': 'me.account',
-        'roles': None,
     },
 ]
 
@@ -579,12 +580,7 @@ def inject_auth():
     endpoint = request.endpoint or ''
     active_module = _ENDPOINT_MODULE.get(endpoint, 'overview')
     # Build the list of modules visible to the current role
-    visible_modules = []
-    for m in _MODULE_DEFS:
-        if m['roles'] is None or role in m['roles']:
-            visible_modules.append(m)
-    if role == 'general':
-        visible_modules = []   # general is mobile-only; desktop sidebar shows nothing
+    visible_modules = visible_modules_for(role)
     # Desktop sidebar (base.html <nav class="sidebar-nav">) — module-scoped NAV
     # sections + which link (if any) highlights. `active_link` needs the request's
     # actual `active_module`, not the section's own `module` key, because
@@ -594,6 +590,14 @@ def inject_auth():
     # matcher).
     _active_hit = active_link(endpoint, active_module)
     return {
+        # The declaration, asked directly. Before these existed every template
+        # that needed "may this role use X" either re-typed a role tuple or had
+        # the route compute a flag, and those flags drifted: `is_ar_manager`
+        # answered THREE different questions on one page (may I export, may I
+        # open the drill-down, may I log a call) and got two of them wrong for
+        # `staff`. Gate on the endpoint the control actually targets.
+        'may_see':       lambda endpoint: permissions.may_see(role, endpoint),
+        'can_post':      lambda endpoint: role_can_post(role, endpoint),
         'is_admin':      role == 'admin',
         'is_manager':    role in ('admin', 'manager'),
         # Cashbook manual-entry write access (Phase 2 design decision — manager
@@ -626,6 +630,30 @@ def inject_auth():
         'roles': ROLES,
         'role_order': ROLE_ORDER,
     }
+
+
+def visible_modules_for(role):
+    """The module switcher: every module that offers `role` at least one link,
+    each carrying the `landing` its tab should point at.
+
+    The landing is the FIRST link the role may open, not the module's canonical
+    `first_endpoint`, because those differ exactly where it matters: `finance`
+    lands on /accounting, which `staff` may not open, so a hardcoded target
+    would give them a tab that bounces. `first_endpoint` stays as the fallback
+    and as the module's canonical answer for everyone who can open it.
+
+    `general` is mobile-only and its desktop sidebar shows nothing, which is a
+    product decision rather than a permission one — the kiosk has no desktop
+    chrome to put a switcher in.
+    """
+    if role == 'general':
+        return []
+    out = []
+    for m in _MODULE_DEFS:
+        links = module_links(role, m['key'])
+        if links:
+            out.append({**m, 'landing': links[0]['ep']})
+    return out
 
 
 def _role_home(role):

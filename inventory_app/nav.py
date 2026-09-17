@@ -11,19 +11,16 @@ real links independently.
 
 Role model
 ----------
-A section's `roles=None` means "every role except 'general'". `general` is the
-mobile-only kiosk role (access_control.py::_GENERAL_ALLOWED / `require_login`'s
-redirect-everything-else gate) and can only ever reach a handful of endpoints,
-so a section must opt it in EXPLICITLY — 'ของฉัน' and 'แอป' do. This is what
-keeps `nav_sections('general')` down to just ของฉัน + แอป's help_install
-(the plan's explicit requirement — the OLD drawer showed the whole nav to
-general, all of it dead-linking back to stock search) without a role check
-bolted onto every other section.
+Permission is not written here. Every link is filtered through
+`permissions.may_see` — the same call the access gate makes — so the sidebar
+can never offer a door that bounces, and `nav_sections('general')` comes back
+as the kiosk's handful without a role check bolted onto every section.
 
-A LINK's own `roles` (if given) narrows the section's filter further. `roles_exclude`
-subtracts specific roles from an otherwise-open link — used once, for
-mobile.sales_trip, which bounces for general even though the แอป section it
-lives in is open to general (for help_install).
+What a `roles` / `roles_exclude` entry means now is the OTHER question: should
+this be offered to a role that may open it. `admin` may open `me.leave` and has
+no leave to take. That is a product judgement the declaration has no opinion
+on, it is the only kind left in this file, and each surviving entry carries its
+reason where it sits. A section left with no links after filtering is dropped.
 
 `badge` is a dict `{'key': <context var name>, 'roles': <optional set>, 'css':
 <optional CSS class>}`, never a bare string — one badge (bsn.mapping's
@@ -53,7 +50,7 @@ existing heterogeneous matchers 1:1:
     (admin.download_db — base.html gives it no active-state clause whatsoever)
 """
 
-ALL_ROLES = frozenset({'admin', 'manager', 'staff', 'shareholder', 'general'})
+import permissions
 
 NAV = [
     {
@@ -75,9 +72,8 @@ NAV = [
             {'ep': 'inventory.conversion_list', 'label': 'แปลงสินค้า', 'icon': 'bi-scissors',
              'match_prefix': ['inventory.conversion_']},
             {'ep': 'labels.manage', 'label': 'จัดการป้ายสินค้า', 'icon': 'bi-tags',
-             'roles': {'admin'}, 'match_prefix': ['labels.'], 'match_exclude': ['labels.print_page']},
-            {'ep': 'labels.print_page', 'label': 'พิมพ์ป้ายสินค้า', 'icon': 'bi-printer',
-             'roles': {'admin', 'manager', 'staff'}},
+             'match_prefix': ['labels.'], 'match_exclude': ['labels.print_page']},
+            {'ep': 'labels.print_page', 'label': 'พิมพ์ป้ายสินค้า', 'icon': 'bi-printer'},
         ],
     },
     {
@@ -94,7 +90,7 @@ NAV = [
             {'ep': 'call.call_list', 'label': 'โทรหาลูกค้า', 'icon': 'bi-telephone-outbound',
              'match_prefix': ['call.']},
             {'ep': 'vat_sub.index', 'label': 'สินค้าทดแทน (สมุด VAT)', 'icon': 'bi-arrow-left-right',
-             'roles': {'admin', 'manager', 'shareholder'}, 'match_prefix': ['vat_sub.']},
+             'match_prefix': ['vat_sub.']},
         ],
     },
     {
@@ -107,7 +103,7 @@ NAV = [
         ],
     },
     {
-        'module': 'finance', 'section': 'การเงิน', 'roles': {'admin', 'manager', 'shareholder'},
+        'module': 'finance', 'section': 'การเงิน', 'roles': None,
         'links': [
             {'ep': 'accounting.accounting_summary', 'label': 'สรุปกำไร-ขาดทุน', 'icon': 'bi-calculator'},
             {'ep': 'accounting.cashflow_dashboard', 'label': 'กระแสเงินสด', 'icon': 'bi-cash-stack'},
@@ -129,13 +125,11 @@ NAV = [
         ],
     },
     {
-        # ⚠ roles={'admin','manager'} — NOT the _MODULE_DEFS ('admin','manager',
-        # 'shareholder') set. base.html's HR section gates on session.role, not
-        # active_module, and EXCLUDES shareholder (the `is_manager` landmine,
-        # access_control.py :391 vs :420 — the module switcher lets her INTO 'hr',
-        # base.html's section then renders nothing). Reproduced faithfully, not
-        # fixed here (Put's call, out of scope — see plan.md).
-        'module': 'hr', 'section': 'บุคลากร (HR)', 'roles': {'admin', 'manager'},
+        # The shareholder reads HR. The module switcher has always let her INTO
+        # 'hr' while this section's own role list rendered nothing for her, so
+        # the tab led to a blank sidebar (the `is_manager` landmine). Permission
+        # is settled per link now, and `permissions.AREAS['hr']` includes her.
+        'module': 'hr', 'section': 'บุคลากร (HR)', 'roles': None,
         'links': [
             {'ep': 'hr.dashboard', 'label': 'HR Dashboard', 'icon': 'bi-person-badge'},
             {'ep': 'hr.employee_list', 'label': 'พนักงาน', 'icon': 'bi-people',
@@ -148,7 +142,7 @@ NAV = [
         ],
     },
     {
-        'module': 'cashbook', 'section': 'บัญชีรับ-จ่าย', 'roles': {'admin', 'manager', 'shareholder'},
+        'module': 'cashbook', 'section': 'บัญชีรับ-จ่าย', 'roles': None,
         'links': [
             {'ep': 'cashbook.dashboard', 'label': 'Dashboard', 'icon': 'bi-speedometer2',
              'url_kwargs': {'vat': 'novat'}},
@@ -165,15 +159,15 @@ NAV = [
               'css': 'badge bg-danger ms-auto'}},
             {'ep': 'bsn.unit_conversions', 'label': 'แปลงหน่วย', 'icon': 'bi-arrow-left-right'},
             {'ep': 'reconcile.index', 'label': 'ตรวจสอบบิลหายจาก Express', 'icon': 'bi-file-earmark-excel',
-             'roles': {'admin', 'manager', 'shareholder'}, 'match_prefix': ['reconcile.']},
+             'match_prefix': ['reconcile.']},
             {'ep': 'customer_review.normalize_list', 'label': 'ตรวจข้อมูลลูกค้า', 'icon': 'bi-person-check',
              'match_prefix': ['customer_review.']},
             {'ep': 'naming.index', 'label': 'ตั้งชื่อสินค้า', 'icon': 'bi-pencil-square',
-             'roles': {'admin', 'manager'}, 'match_prefix': ['naming.']},
+             'match_prefix': ['naming.']},
         ],
     },
     {
-        'module': 'admin_module', 'section': 'ระบบ', 'roles': {'admin'},
+        'module': 'admin_module', 'section': 'ระบบ', 'roles': None,
         'links': [
             {'ep': 'admin.user_list', 'label': 'จัดการผู้ใช้', 'icon': 'bi-people',
              'match': ['admin.user_list', 'admin.user_new', 'admin.user_edit']},
@@ -196,7 +190,7 @@ NAV = [
         # gets it in the "เพิ่มเติม" drawer too). Its own module 'settings' (all
         # roles) — separate from admin_module, so the admin-only ระบบ tools above
         # stay hidden AND route-locked for non-admins.
-        'module': 'settings', 'section': 'ตั้งค่า', 'roles': ALL_ROLES,
+        'module': 'settings', 'section': 'ตั้งค่า', 'roles': None,
         'links': [
             {'ep': 'me.account', 'label': 'บัญชีของฉัน', 'icon': 'bi-person-gear',
              'match': ['me.account', 'me.change_password']},
@@ -208,10 +202,9 @@ NAV = [
         # mobile.sales_trip is excluded per-LINK because it bounces for general
         # (not in access_control._GENERAL_ALLOWED); help_install is exempt from
         # require_login, so general genuinely can open it.
-        'module': None, 'section': 'แอป', 'roles': ALL_ROLES, 'desktop': False,
+        'module': None, 'section': 'แอป', 'roles': None, 'desktop': False,
         'links': [
-            {'ep': 'mobile.sales_trip', 'label': 'แผนทริปขาย (ภาค)', 'icon': 'bi-pin-map',
-             'roles_exclude': {'general'}},
+            {'ep': 'mobile.sales_trip', 'label': 'แผนทริปขาย (ภาค)', 'icon': 'bi-pin-map'},
             {'ep': 'help_install', 'label': 'ติดตั้งแอปบนมือถือ', 'icon': 'bi-phone-fill'},
         ],
     },
@@ -219,38 +212,37 @@ NAV = [
 
 
 def _link_visible(link, role):
+    """Two questions, and only the second one is nav's to answer.
+
+    MAY the role open it — `permissions.may_see`, the same call the access gate
+    makes, so the sidebar cannot offer a door that bounces. Then: SHOULD it be
+    offered, which is a product judgement the declaration has no opinion on
+    (`admin` may open `me.leave`; he has no leave). A link's own `roles` /
+    `roles_exclude` now carry ONLY that second kind, each with its reason at
+    the entry.
+    """
+    if not permissions.may_see(role, link['ep']):
+        return False
     roles = link.get('roles')
     if roles is not None and role not in roles:
         return False
-    if role in link.get('roles_exclude', ()):
-        return False
-    return True
+    return role not in link.get('roles_exclude', ())
 
 
-def _section_visible(section, role, flat):
-    """`flat=True` (the drawer, module=None): a section's `roles=None` means
-    "every role EXCEPT 'general'" — the mobile kiosk role opts in explicitly
-    (see module docstring). A section that really is for every role including
-    general (แอป) lists ALL_ROLES explicitly instead of None.
+def _section_visible(section, role):
+    """A section's `roles`, when it has one, is a product judgement like a
+    link's. Permission is settled per LINK by `_link_visible`, and a section
+    left with no links is dropped by `nav_sections`.
 
-    `flat=False` (the desktop, module='x'): `roles=None` means literally every
-    role, general included. base.html's module-gated sections (ภาพรวม/
-    คลังสินค้า/การค้า/ขายออนไลน์/นำเข้าข้อมูล) have NEVER had a role gate — only
-    `active_module` gates them. 'general' only ever avoids seeing them in
-    practice because `require_login` redirects it away before the page can
-    render, not because the sidebar itself hides the section. Verified against
-    tests/nav_snapshot.json's `general|operation`/`general|trade`/`general|data`/
-    `general|overview` entries, captured pre-refactor: general renders the FULL
-    module content there (labels.manage/naming.index etc. still excluded, via
-    their own per-LINK `roles`). Reproduced faithfully, not fixed — same
-    "pre-existing quirk, out of scope" treatment as the shareholder/HR gap.
-    This is a genuine, deliberate asymmetry: the drawer is a NEW, tighter fix
-    for general (this project's whole point); the desktop sidebar is a frozen
-    port of code that never had this restriction to begin with."""
+    This used to carry a flat-versus-scoped asymmetry: `roles=None` meant
+    "everyone but general" in the drawer and "literally everyone" on the
+    desktop, because the desktop sidebar was a frozen port of a base.html that
+    never had a role gate and only `active_module` kept the kiosk out. The
+    per-link `may_see` filter does that work now, for both surfaces and for
+    every role, so the two readings collapse into one.
+    """
     roles = section.get('roles')
-    if roles is None:
-        return (role != 'general') if flat else True
-    return role in roles
+    return roles is None or role in roles
 
 
 def nav_sections(role, module=None):
@@ -272,7 +264,7 @@ def nav_sections(role, module=None):
     flat = module is None
     out = []
     for section in NAV:
-        if not _section_visible(section, role, flat):
+        if not _section_visible(section, role):
             continue
         if not flat:
             if section.get('desktop') is False:
@@ -284,6 +276,19 @@ def nav_sections(role, module=None):
             continue
         out.append({**section, 'links': links})
     return out
+
+
+def module_links(role, module):
+    """The links `module` offers `role`, in NAV order.
+
+    Sections marked `always` (ของฉัน) are excluded on purpose: they belong to no
+    module and ride along in every module's sidebar, so counting them would
+    make every tab look occupied for every role.
+    """
+    return [link
+            for section in NAV
+            if section.get('module') == module and _section_visible(section, role)
+            for link in section['links'] if _link_visible(link, role)]
 
 
 def _link_matches(link, endpoint):
