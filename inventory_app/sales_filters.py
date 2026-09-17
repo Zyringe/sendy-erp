@@ -92,3 +92,46 @@ def purchase_net_sql(alias=''):
     p = '{}.'.format(alias) if alias else ''
     return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}net ELSE {p}net END"
             .format(p=p))
+
+
+# ── COGS: the bill's unit is not the product's unit ──────────────────────────
+# `sales_transactions.qty` is denominated in the unit written on the BILL
+# (โหล, กล่อง, ซอง); `products.cost_price` is per `products.unit_type`. Every
+# COGS over sales lines must convert first, the way the stock ledger already
+# does — prod IV6901440-1 sold 16 โหล of pid 134 and `transactions` id 358869
+# moved -192 ตัว, while /accounting costed that line at 16 × ฿12. Multiplying
+# raw qty by cost_price understated prod COGS by ฿189,535 over Jan–Aug 2026.
+#
+# One definition, imported — the same reason the revenue filter lives here.
+
+
+def unit_conversion_join(st='st', uc='uc'):
+    """LEFT JOIN pairing each sales line with the ratio for its OWN bill unit."""
+    return ("LEFT JOIN unit_conversions {uc} ON {uc}.product_id = {st}.product_id "
+            "AND {uc}.bsn_unit = {st}.unit".format(st=st, uc=uc))
+
+
+def base_qty_sql(st='st', p='p', uc='uc'):
+    """SQL expression: one line's qty expressed in the product's BASE unit.
+
+    Mirrors price_lookup._bill_ratio, the resolver's own bill-unit lookup,
+    including its short-circuit: a bill unit equal to the base unit is ratio
+    1 whatever a unit_conversions row for that unit says.
+
+    It diverges in one place, deliberately. _bill_ratio returns None for a
+    unit with no row and the price resolver SKIPS that bill; COGS costs it at
+    ratio 1 instead, because dropping the line would understate COGS further.
+    Pair this with unratioed_line_sql() so the page can disclose those lines.
+    """
+    return ("({st}.qty * CASE WHEN COALESCE({st}.unit, '') = '' "
+            "OR COALESCE({st}.unit, '') = COALESCE({p}.unit_type, '') "
+            "THEN 1.0 ELSE COALESCE({uc}.ratio, 1.0) END)".format(st=st, p=p, uc=uc))
+
+
+def unratioed_line_sql(st='st', p='p', uc='uc'):
+    """SQL expression: 1 when a mapped line's bill unit has no ratio, so
+    base_qty_sql() fell back to 1 and that line's cost is understated."""
+    return ("CASE WHEN {p}.id IS NOT NULL AND {uc}.ratio IS NULL "
+            "AND COALESCE({st}.unit, '') <> '' "
+            "AND COALESCE({st}.unit, '') <> COALESCE({p}.unit_type, '') "
+            "THEN 1 ELSE 0 END".format(st=st, p=p, uc=uc))
