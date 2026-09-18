@@ -1181,8 +1181,14 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         if price_promo_applied:
             promo_desc = ('ราคาพิเศษ' if price_promo['promo_type'] == 'fixed'
                           else f"ลด {price_promo['discount_value']:g}%")
+            # date_start is NULL on 515 of prod's 569 active price promos
+            # (measured 2026-09-18), so "ตั้งแต่ …" is the exception here, not
+            # the rule. Appending it unconditionally left a dangling
+            # "ตั้งแต่ )" on nine promos out of ten.
+            if price_promo['date_start']:
+                promo_desc += f" ตั้งแต่ {thaidate(price_promo['date_start'])}"
             head += (f" · โปรฯ เหลือ {list_after_promo:g}/{answer_unit}"
-                     f" ({promo_desc} ตั้งแต่ {thaidate(price_promo['date_start'])})")
+                     f" ({promo_desc})")
             still = 'ยัง'
         flags.append({
             'code': 'list_higher_than_answer',

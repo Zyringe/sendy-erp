@@ -1847,6 +1847,24 @@ def test_579_list_higher_compares_against_the_promo_price_not_the_raw_list(db):
         ' — ยังสูงกว่าที่เสนอ ฿27 (+30%)')
 
 
+def test_579_list_higher_omits_the_since_clause_when_the_promo_has_no_date(db):
+    """The COMMON case, not an edge one: 515 of prod's 569 active price
+    promos carry date_start NULL (2026-09-18). thaidate(None) is '', so an
+    unconditional "ตั้งแต่ {date}" renders a dangling "ตั้งแต่ )"."""
+    _pid, _c, out = _last_paid_setup(
+        db, base=130.0, paid=90.0, tag='G',
+        promo={'promo_type': 'percent', 'discount_value': 10.0,
+               'date_start': None})
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['list']['price_promo_applied'] is True
+    f = _flag(out, 'list_higher_than_answer')
+    assert f is not None
+    assert 'ตั้งแต่' not in f['text']
+    assert f['text'] == (
+        'ราคาตั้งวันนี้ 130/แผง · โปรฯ เหลือ 117/แผง (ลด 10%)'
+        ' — ยังสูงกว่าที่เสนอ ฿27 (+30%)')
+
+
 def test_579_list_higher_never_fires_when_there_is_no_list_price(db):
     """base 0 and no tier means no list price at all. A `fixed` promo still
     produces a positive list_after_promo, so without the list_for_unit
