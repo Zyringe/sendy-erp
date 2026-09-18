@@ -45,6 +45,7 @@ the review-round fixes and their reasoning — two rounds so far):
 Python 3.9+ compatible (no `X | None` syntax) — same constraint as
 sales_filters.py, this runs on prod's older interpreter too.
 """
+import json
 import re
 import statistics
 from collections import defaultdict
@@ -500,31 +501,138 @@ def _add_days(iso_date, n):
     return (date.fromisoformat(iso_date) + timedelta(days=n)).isoformat()
 
 
+def _tier_price_events(conn, product_id, unit):
+    """Every price-relevant product_price_tiers audit_log event that has
+    EVER applied to (product_id, unit) — across every row id that unit has
+    ever lived under, not just the currently-live tier row (#555).
+
+    A tier rebuild (DELETE the row, INSERT a new one) gets a NEW row id, so
+    a query scoped to one row's own id (adequate for the note-vs-price
+    discrimination a row that has never been rebuilt needs) cannot see the
+    cancelling DELETE+INSERT pair. INSERT/DELETE carry `product_id` /
+    `qty_label` / `price` directly in their OWN changed_fields (migration
+    026's triggers), independent of whether the row still exists, so those
+    are read straight off changed_fields, filtered by product_id in SQL
+    and by the stripped qty_label in Python (leading-count stripping isn't
+    expressible as SQL). UPDATE only records the fields that actually
+    changed (no product_id/qty_label), so a price-changing UPDATE is
+    resolved via the CURRENTLY-LIVE row's own id — same limitation the
+    unmodified rule already had; an UPDATE on a row that has SINCE been
+    deleted is not reachable here, and #555 only asks for the first-INSERT
+    and delete+reinsert-same-price cases, not to widen UPDATE visibility.
+
+    Returns [{'at', 'id', 'action', 'price'}] sorted chronologically
+    (created_at, id) — 'price' is the single number INSERT/DELETE carry,
+    or the NEW value of a price-changing UPDATE.
+    """
+    events = []
+    for row in conn.execute(
+        "SELECT id, created_at, changed_fields, action FROM audit_log "
+        "WHERE table_name = 'product_price_tiers' AND action IN ('INSERT', 'DELETE') "
+        "  AND json_extract(changed_fields, '$.product_id') = ? "
+        "ORDER BY created_at, id",
+        (product_id,)
+    ).fetchall():
+        cf = json.loads(row['changed_fields']) if row['changed_fields'] else {}
+        if _strip_tier_qty(cf.get('qty_label')) != unit:
+            continue
+        events.append({'at': row['created_at'], 'id': row['id'],
+                        'action': row['action'], 'price': cf.get('price')})
+
+    tier = _find_matching_tier(conn, product_id, unit)
+    if tier is not None:
+        for row in conn.execute(
+            "SELECT id, created_at, changed_fields FROM audit_log "
+            "WHERE table_name = 'product_price_tiers' AND row_id = ? AND action = 'UPDATE' "
+            "  AND json_extract(changed_fields, '$.price') IS NOT NULL "
+            "ORDER BY created_at, id",
+            (tier['id'],)
+        ).fetchall():
+            cf = json.loads(row['changed_fields'])
+            price_pair = cf['price']
+            price = price_pair[1] if isinstance(price_pair, list) else price_pair
+            events.append({'at': row['created_at'], 'id': row['id'],
+                            'action': 'UPDATE', 'price': price})
+
+    events.sort(key=lambda e: (e['at'], e['id']))
+    return events
+
+
+def _tier_epoch(conn, product_id, unit):
+    """#555 rule A tier epoch: the tier matching `unit`'s most recent
+    GENUINE price event — same gate as before (a CURRENT tier must match
+    `unit`), but the reduction over its price events additionally:
+
+      - drops the EARLIEST event for (product_id, unit) when it is an
+        INSERT — the first time Sendy ever recorded a price for this tier
+        is not a price CHANGE, it's Sendy learning the price;
+      - cancels any DELETE followed by a later INSERT carrying the
+        IDENTICAL price (within half a satang) — a same-price rebuild
+        (re-key/re-import), not a price change either.
+
+    A genuine price-changing UPDATE, a DELETE followed by a re-INSERT at a
+    DIFFERENT price, and a second genuine tier price all survive
+    unchanged. None when no unit / no current tier matches `unit` / nothing
+    survives the reduction.
+    """
+    if not unit or _find_matching_tier(conn, product_id, unit) is None:
+        return None
+    events = _tier_price_events(conn, product_id, unit)
+    if not events:
+        return None
+
+    for i, ev in enumerate(events):
+        if ev['action'] == 'INSERT':
+            events.pop(i)
+            break
+
+    dropped = set()
+    for i, ev in enumerate(events):
+        if ev['action'] != 'DELETE' or i in dropped:
+            continue
+        for j in range(i + 1, len(events)):
+            if j in dropped or events[j]['action'] != 'INSERT':
+                continue
+            if (ev['price'] is not None and events[j]['price'] is not None
+                    and abs(float(events[j]['price']) - float(ev['price'])) < 0.005):
+                dropped.add(i)
+                dropped.add(j)
+                break
+
+    survivors = [ev for i, ev in enumerate(events) if i not in dropped]
+    return max(ev['at'][:10] for ev in survivors) if survivors else None
+
+
 def _epoch_candidates(conn, product_id, unit, today):
-    """The 4 epoch sources (R4), each None if not applicable:
-      base_changed  — latest product_price_history base_sell_price change
-      promo_start   — the CURRENT price-slot promo's date_start
+    """The 4 epoch sources (R4), each None if not applicable. #555 (rule
+    A, Put's ruling 2026-09-16): a source only fires on a GENUINE price
+    change — Sendy first learning/recording a price (May-June 2026 is when
+    Sendy started holding list prices at all) is not itself a price
+    CHANGE, so it no longer moves the epoch:
+
+      base_changed  — the latest product_price_history base_sell_price
+                       change whose `old_value` is a real prior price (NOT
+                       NULL and not 0) — a row recording NULL/0 -> X is
+                       Sendy learning the price for the first time, and is
+                       skipped in favour of an older GENUINE change, if any.
+      promo_start   — the CURRENT price-slot promo's date_start. Untouched
+                       by #555 — a promo start/end is an explicit business
+                       event, never a first-time recording.
       promo_end     — last price-slot promo that ended with no replacement,
-                       date_end + 1 day
-      tier_changed  — latest audit_log row for product_price_tiers, for
-                       the tier matching `unit`, that actually carries a
-                       PRICE change: an INSERT or DELETE action (the whole
-                       row is new/gone, so 'price' is always part of it),
-                       or an UPDATE whose changed_fields JSON names
-                       'price' specifically. A note/sort_order-only UPDATE
-                       must NOT move the epoch (review round 1 ruling) —
-                       audit_product_price_tiers_update's changed_fields
-                       only includes fields that actually changed, so
-                       `json_extract(changed_fields, '$.price')` is NULL
-                       for a note-only edit and non-NULL when price moved.
-                       Only possible source for dozen-only products; None
-                       when no tier matches `unit`.
+                       date_end + 1 day. Untouched by #555, same reason.
+      tier_changed  — see `_tier_epoch`: the tier matching `unit`'s most
+                       recent GENUINE price event, with the tier's own
+                       first-ever INSERT and any same-price DELETE+INSERT
+                       rebuild excluded. Only possible source for
+                       dozen-only products; None when no tier matches
+                       `unit`.
     """
     out = {'base_changed': None, 'promo_start': None, 'promo_end': None, 'tier_changed': None}
 
     row = conn.execute(
         "SELECT changed_at FROM product_price_history "
         "WHERE product_id = ? AND field_name = 'base_sell_price' "
+        "  AND old_value IS NOT NULL AND old_value <> 0 "
         "ORDER BY changed_at DESC, id DESC LIMIT 1",
         (product_id,)
     ).fetchone()
@@ -553,20 +661,7 @@ def _epoch_candidates(conn, product_id, unit, today):
         if closed is not None and closed['d']:
             out['promo_end'] = _add_days(closed['d'], 1)
 
-    if unit:
-        tier = _find_matching_tier(conn, product_id, unit)
-        if tier is not None:
-            arow = conn.execute(
-                "SELECT created_at FROM audit_log "
-                "WHERE table_name = 'product_price_tiers' AND row_id = ? "
-                "  AND (action IN ('INSERT','DELETE') "
-                "       OR (action = 'UPDATE' "
-                "           AND json_extract(changed_fields, '$.price') IS NOT NULL)) "
-                "ORDER BY created_at DESC, id DESC LIMIT 1",
-                (tier['id'],)
-            ).fetchone()
-            if arow is not None and arow['created_at']:
-                out['tier_changed'] = arow['created_at'][:10]
+    out['tier_changed'] = _tier_epoch(conn, product_id, unit)
 
     return out
 

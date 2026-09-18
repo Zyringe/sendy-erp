@@ -123,15 +123,42 @@ def _tier(conn, pid, qty_label, price, sort_order=100):
 def _stamp_tier_audit(conn, tier_id, pid, created_at):
     """Replace whatever audit_log row the INSERT trigger just wrote for this
     tier with one carrying a controlled created_at — 'seed the audit_log row
-    the tier trigger would write', per the R4 4b epoch-source test."""
+    the tier trigger would write', per the R4 4b epoch-source test. Reads
+    the row's OWN current product_id/qty_label/price back out so
+    changed_fields matches the REAL trigger's shape (migration 026) rather
+    than an empty '{}' — #555's cross-row-id tier epoch (_tier_price_events)
+    keys off that JSON directly, not off row_id alone, so a hollow payload
+    would make this fixture's INSERT invisible to it."""
+    row = conn.execute(
+        "SELECT product_id, qty_label, price FROM product_price_tiers WHERE id = ?",
+        (tier_id,)).fetchone()
     conn.execute(
         "DELETE FROM audit_log WHERE table_name = 'product_price_tiers' AND row_id = ?",
         (tier_id,))
     conn.execute(
         "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
-        "VALUES ('product_price_tiers', ?, 'INSERT', '{}', ?)",
-        (tier_id, created_at),
+        "VALUES ('product_price_tiers', ?, 'INSERT', ?, ?)",
+        (tier_id, json.dumps({'product_id': row['product_id'], 'qty_label': row['qty_label'],
+                               'price': row['price']}), created_at),
     )
+    conn.commit()
+
+
+def _stamp_tier_price_update_audit(conn, tier_id, new_price, created_at):
+    """A REAL price UPDATE on the tier row (so the row's live `price` --
+    read by a later `_delete_tier_with_audit`'s OLD.price -- reflects the
+    change), then re-stamp the real trigger's own freshly-written UPDATE
+    audit_log row with a controlled created_at. Mirrors `_stamp_tier_audit`
+    for INSERT. Do NOT also hand-insert a second audit_log row for this
+    same event -- the trigger already wrote one; adding another double-
+    counts it as two price events."""
+    conn.execute("UPDATE product_price_tiers SET price = ? WHERE id = ?", (new_price, tier_id))
+    conn.commit()
+    row = conn.execute(
+        "SELECT id FROM audit_log WHERE table_name = 'product_price_tiers' AND row_id = ? "
+        "AND action = 'UPDATE' AND json_extract(changed_fields, '$.price') IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1", (tier_id,)).fetchone()
+    conn.execute("UPDATE audit_log SET created_at = ? WHERE id = ?", (created_at, row['id']))
     conn.commit()
 
 
@@ -642,11 +669,19 @@ def test_r4b_no_epoch_widens_to_24m(db):
 
 
 def test_r4b_epoch_source_dozen_only_tier_changed(db):
+    """#555 rule A: the tier's own first-ever INSERT is never itself an
+    epoch (see the test_555_* section below) -- a genuine PRICE-changing
+    UPDATE afterward is what this window actually clamps to."""
     pid = _mk_product(db, "R4b tier changed", unit_type='ตัว', base=0.0, cost=10.0)
     _clear_pid(db, pid)
     tier_id = _tier(db, pid, '1 โหล', 230.0)
+    _stamp_tier_audit(db, tier_id, pid, _days_ago(30) + " 09:00:00")  # first-ever INSERT, never an epoch
     change_date = _days_ago(10)
-    _stamp_tier_audit(db, tier_id, pid, change_date + " 09:00:00")
+    db.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
+        "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"price\": [230.0, 260.0]}', ?)",
+        (tier_id, change_date + " 09:00:00"))
+    db.commit()
 
     out = pl.resolve_price(db, product_id=pid, today=TODAY)  # asks ตัว -> dozen-only -> โหล
     assert out['window']['from'] == change_date
@@ -1177,13 +1212,16 @@ def test_i7_cross_unit_conversion_piece_bill_answered_in_dozen(db):
 # ── Ruling: tier epoch keys on PRICE changes only, not note/sort_order ─────
 
 def test_ruling_tier_epoch_price_only(db):
+    """Note-only edits never move the epoch -- and (#555 rule A) neither
+    does the tier's own first-ever INSERT, so with only the INSERT + a
+    note-only edit there is still NO tier epoch at all."""
     pid = _mk_product(db, "Ruling tier epoch price-only", unit_type='ตัว', base=0.0, cost=10.0)
     _clear_pid(db, pid)
     tier_id = _tier(db, pid, '1 โหล', 230.0)
-    price_change_date = _days_ago(10)
-    _stamp_tier_audit(db, tier_id, pid, price_change_date + " 09:00:00")  # INSERT -> always counts
+    insert_date = _days_ago(10)
+    _stamp_tier_audit(db, tier_id, pid, insert_date + " 09:00:00")  # first-ever INSERT -> #555: never an epoch
 
-    # A later note-only edit must NOT move the epoch
+    # A note-only edit must NOT move the epoch either
     note_only_date = _days_ago(3)
     db.execute(
         "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
@@ -1191,8 +1229,7 @@ def test_ruling_tier_epoch_price_only(db):
         (tier_id, note_only_date + " 09:00:00"))
     db.commit()
 
-    out = pl.resolve_price(db, product_id=pid, today=TODAY)
-    assert out['window']['from'] == price_change_date  # note-only edit ignored
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] is None
 
     # control: a price-changing UPDATE DOES move the epoch
     price_update_date = _days_ago(2)
@@ -1201,8 +1238,217 @@ def test_ruling_tier_epoch_price_only(db):
         "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"price\": [230.0, 250.0]}', ?)",
         (tier_id, price_update_date + " 09:00:00"))
     db.commit()
-    out2 = pl.resolve_price(db, product_id=pid, today=TODAY)
-    assert out2['window']['from'] == price_update_date
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] == price_update_date
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# #555 (rule A, Put's ruling 2026-09-16): a price-regime epoch stops
+# counting FIRST-TIME recordings -- a product_price_history row whose
+# old_value is NULL/0, or a tier's own first-ever INSERT, is Sendy LEARNING
+# a price for the first time, not the price CHANGING. Promo sources are
+# untouched (#500 already fixed date_start; out of #555's scope).
+# ══════════════════════════════════════════════════════════════════════════
+
+def _first_time_base_row(conn, pid, changed_at, old, new=100.0):
+    """A product_price_history row shaped like Sendy's May-June 2026
+    onboarding: old_value NULL or 0, recording a price for the first
+    time -- #555's exact target, distinct from `_base_price_history`
+    (whose default old=100.0/new=100.0 is a GENUINE non-zero prior price)."""
+    conn.execute(
+        "INSERT INTO product_price_history (product_id, field_name, old_value, new_value, changed_at) "
+        "VALUES (?, 'base_sell_price', ?, ?, ?)",
+        (pid, old, new, changed_at),
+    )
+    conn.commit()
+
+
+def test_555_base_null_old_value_skipped_exposes_genuine_change(db):
+    """old_value IS NULL -- the LATEST history row -- must be skipped in
+    favour of the older GENUINE (non-null, non-zero old_value) change."""
+    pid = _mk_product(db, "555 base null skip", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    genuine_date = _days_ago(60)
+    _base_price_history(db, pid, changed_at=genuine_date + " 09:00:00", old=80.0, new=90.0)
+    _first_time_base_row(db, pid, _days_ago(5) + " 09:00:00", old=None, new=100.0)
+
+    assert pl._epoch_candidates(db, pid, None, TODAY)['base_changed'] == genuine_date
+
+
+def test_555_base_zero_old_value_skipped_exposes_genuine_change(db):
+    """old_value = 0 (not NULL) is the SAME first-time shape and must also
+    be skipped -- a fixture row on the far side of the `<> 0` half of the
+    clause, distinct from the NULL half above."""
+    pid = _mk_product(db, "555 base zero skip", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    genuine_date = _days_ago(60)
+    _base_price_history(db, pid, changed_at=genuine_date + " 09:00:00", old=80.0, new=90.0)
+    _first_time_base_row(db, pid, _days_ago(5) + " 09:00:00", old=0.0, new=100.0)
+
+    assert pl._epoch_candidates(db, pid, None, TODAY)['base_changed'] == genuine_date
+
+
+def test_555_base_only_first_time_row_yields_no_base_epoch(db):
+    """No genuine change exists at all -- every row is a first-time
+    recording -- base_changed must be None, not fall back to the skipped
+    row's own date."""
+    pid = _mk_product(db, "555 base all first-time", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _first_time_base_row(db, pid, _days_ago(20) + " 09:00:00", old=None, new=100.0)
+
+    assert pl._epoch_candidates(db, pid, None, TODAY)['base_changed'] is None
+
+
+def test_555_base_genuine_change_control_still_moves_epoch(db):
+    """Control: an ordinary genuine base change (old_value non-null,
+    non-zero) is completely unaffected by the #555 filter."""
+    pid = _mk_product(db, "555 base genuine control", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    change_date = _days_ago(10)
+    _base_price_history(db, pid, changed_at=change_date + " 09:00:00", old=80.0, new=100.0)
+
+    assert pl._epoch_candidates(db, pid, None, TODAY)['base_changed'] == change_date
+
+
+def test_555_resolve_price_first_time_base_recording_creates_no_epoch(db):
+    """End-to-end: a product whose ONLY product_price_history row is a
+    first-time recording (old_value NULL) must not clamp the window and
+    must not flag price_changed_since_last for a bill that predates it --
+    under the unmodified rule B this fixture would have epoched on the
+    recording date and flagged the bill stale."""
+    pid = _mk_product(db, "555 e2e first-time base", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _first_time_base_row(db, pid, _days_ago(30) + " 09:00:00", old=None, new=100.0)
+    cust = _mk_customer(db, 'TST-555E2E', 'ลูกค้า 555 e2e')
+    _clear_customer_pid(db, cust, pid)
+    _bill(db, pid=pid, customer_code=cust, customer_name='ลูกค้า 555 e2e',
+          date_iso=_days_ago(40), qty=1, unit='ตัว', unit_price=90.0, vat_type=1, net=90.0)
+
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust, today=TODAY)
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['answer']['price_per_unit'] == 90.0
+    assert 'price_changed_since_last' not in [f['code'] for f in out['flags']]
+
+
+def _delete_tier_with_audit(conn, tier_id, created_at):
+    """Delete a tier row and re-stamp the DELETE audit_log row the real
+    `BEFORE DELETE` trigger just wrote (migration 026 -- carries OLD's
+    product_id/qty_label/price, exactly what #555's cross-row-id tier
+    epoch needs) with a controlled created_at."""
+    conn.execute("DELETE FROM product_price_tiers WHERE id = ?", (tier_id,))
+    conn.execute(
+        "UPDATE audit_log SET created_at = ? "
+        "WHERE table_name = 'product_price_tiers' AND row_id = ? AND action = 'DELETE'",
+        (created_at, tier_id))
+    conn.commit()
+
+
+def test_555_tier_first_ever_insert_skipped_no_epoch(db):
+    """A tier with NOTHING but its own first-ever INSERT in its audit
+    history has NO tier epoch at all (the mirror of test_r4b's old
+    'INSERT always counts' assumption, which #555 replaces)."""
+    pid = _mk_product(db, "555 tier first insert only", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    tier_id = _tier(db, pid, '1 โหล', 230.0)
+    _stamp_tier_audit(db, tier_id, pid, _days_ago(10) + " 09:00:00")
+
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] is None
+
+
+def test_555_tier_genuine_update_after_first_insert_survives(db):
+    """Control for the clause above: a GENUINE price-changing UPDATE after
+    the (dropped) first-ever INSERT is a real epoch source."""
+    pid = _mk_product(db, "555 tier update survives", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    tier_id = _tier(db, pid, '1 โหล', 230.0)
+    _stamp_tier_audit(db, tier_id, pid, _days_ago(100) + " 09:00:00")
+    update_date = _days_ago(10)
+    db.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
+        "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"price\": [230.0, 260.0]}', ?)",
+        (tier_id, update_date + " 09:00:00"))
+    db.commit()
+
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] == update_date
+
+
+def test_555_tier_delete_reinsert_same_price_cancels_then_later_genuine_update_survives(db):
+    """A rebuild (DELETE the row, INSERT a NEW row id at the IDENTICAL
+    price) cancels out -- it is a same-price re-key, not a price change --
+    leaving NO tier epoch by itself. A GENUINE price-changing UPDATE on the
+    SURVIVING (post-rebuild) row afterward is still a real epoch source
+    (an UPDATE on the row that gets deleted is a documented blind spot of
+    `_tier_price_events` -- see test_555_tier_rebuild_same_price_cancels_
+    exposing_older_base_change below for the report's actual '394 of 699'
+    exposure mechanism, which does not depend on seeing it)."""
+    pid = _mk_product(db, "555 tier rebuild then genuine update", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    old_tier_id = _tier(db, pid, '1 โหล', 200.0)
+    _stamp_tier_audit(db, old_tier_id, pid, _days_ago(300) + " 09:00:00")  # first-ever INSERT, dropped
+    _delete_tier_with_audit(db, old_tier_id, _days_ago(10) + " 09:00:00")
+    new_tier_id = _tier(db, pid, '1 โหล', 200.0)  # SAME price -> cancels with the DELETE
+    _stamp_tier_audit(db, new_tier_id, pid, _days_ago(10) + " 09:05:00")
+
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] is None
+
+    update_date = _days_ago(3)
+    _stamp_tier_price_update_audit(db, new_tier_id, 230.0, update_date + " 09:00:00")
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] == update_date
+
+
+def test_555_tier_rebuild_same_price_cancels_exposing_older_base_change(db):
+    """The #526 report's ACTUAL 'tier bucket' exposure finding (394 of
+    699): once a same-price tier rebuild stops being an epoch source, the
+    OVERALL epoch (the max across all 4 sources in `_epoch_candidates`) is
+    exposed to an older GENUINE base-price change that was always there,
+    just previously overshadowed by the tier's more-recent (but bogus)
+    date -- not another tier event underneath."""
+    pid = _mk_product(db, "555 tier rebuild exposes base", unit_type='ตัว', base=90.0, cost=10.0)
+    _clear_pid(db, pid)
+    base_change_date = _days_ago(100)
+    _base_price_history(db, pid, changed_at=base_change_date + " 09:00:00", old=80.0, new=90.0)
+
+    tier_id = _tier(db, pid, '1 โหล', 200.0)
+    _stamp_tier_audit(db, tier_id, pid, _days_ago(300) + " 09:00:00")  # first-ever INSERT, dropped
+    _delete_tier_with_audit(db, tier_id, _days_ago(10) + " 09:00:00")
+    new_tier_id = _tier(db, pid, '1 โหล', 200.0)  # SAME price -> cancels with the DELETE
+    _stamp_tier_audit(db, new_tier_id, pid, _days_ago(10) + " 09:05:00")
+
+    cands = pl._epoch_candidates(db, pid, 'โหล', TODAY)
+    assert cands['tier_changed'] is None
+    assert cands['base_changed'] == base_change_date
+
+    out = pl.resolve_price(db, product_id=pid, unit='โหล', today=TODAY)
+    assert out['window']['from'] == base_change_date
+    assert out['window']['reason'] == 'base_changed'
+
+
+def test_555_tier_delete_reinsert_different_price_does_not_cancel(db):
+    """Control for the clause above: a rebuild carrying a DIFFERENT price
+    is a genuine change and must NOT cancel -- the epoch is the later
+    (re-)INSERT's own date."""
+    pid = _mk_product(db, "555 tier rebuild different price", unit_type='ตัว', base=0.0, cost=10.0)
+    _clear_pid(db, pid)
+    old_tier_id = _tier(db, pid, '1 โหล', 200.0)
+    _stamp_tier_audit(db, old_tier_id, pid, _days_ago(300) + " 09:00:00")  # first-ever INSERT, dropped
+    _delete_tier_with_audit(db, old_tier_id, _days_ago(10) + " 09:00:00")
+    reinsert_date = _days_ago(9)
+    new_tier_id = _tier(db, pid, '1 โหล', 250.0)  # different price -> genuine change
+    _stamp_tier_audit(db, new_tier_id, pid, reinsert_date + " 09:00:00")
+
+    assert pl._epoch_candidates(db, pid, 'โหล', TODAY)['tier_changed'] == reinsert_date
+
+
+def test_555_epoch_candidates_reports_none_promo_sources_untouched(db):
+    """Control: #555 only touches base_changed/tier_changed -- a promo
+    source is completely unaffected by either fixture shape above."""
+    pid = _mk_product(db, "555 promo untouched", unit_type='ตัว', base=100.0, cost=60.0)
+    _clear_pid(db, pid)
+    _promo(db, pid, promo_type='percent', discount_value=20.0, date_start=_days_ago(30))
+
+    cands = pl._epoch_candidates(db, pid, 'ตัว', TODAY)
+    assert cands['promo_start'] == _days_ago(30)
+    assert cands['base_changed'] is None
+    assert cands['tier_changed'] is None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1480,15 +1726,25 @@ def test_epochs_for_pairs_two_units_different_epochs(db):
     """The plan's own C2 test: ONE product at TWO units, each with its own
     tier-driven epoch. unit_by_pid (epochs_for) can only hold one unit per
     product and would overwrite one epoch with the other's -- pairs keep
-    them independent."""
+    them independent. Each tier's OWN first-ever INSERT is #555-excluded,
+    so each carries a later genuine price-changing UPDATE too."""
     pid = _mk_product(db, "C2 two units", unit_type='ตัว', base=0.0, cost=10.0)
     _clear_pid(db, pid)
     tier_a = _tier(db, pid, '1 โหล', 230.0, sort_order=100)
     tier_b = _tier(db, pid, '1 กล่อง', 500.0, sort_order=200)
+    _stamp_tier_audit(db, tier_a, pid, _days_ago(300) + " 09:00:00")  # first-ever INSERT, never an epoch
+    _stamp_tier_audit(db, tier_b, pid, _days_ago(300) + " 09:00:00")
     epoch_a = _days_ago(10)
     epoch_b = _days_ago(40)
-    _stamp_tier_audit(db, tier_a, pid, epoch_a + " 09:00:00")
-    _stamp_tier_audit(db, tier_b, pid, epoch_b + " 09:00:00")
+    db.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
+        "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"price\": [230.0, 260.0]}', ?)",
+        (tier_a, epoch_a + " 09:00:00"))
+    db.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields, created_at) "
+        "VALUES ('product_price_tiers', ?, 'UPDATE', '{\"price\": [500.0, 550.0]}', ?)",
+        (tier_b, epoch_b + " 09:00:00"))
+    db.commit()
 
     result = pl.epochs_for_pairs(db, [(pid, 'โหล'), (pid, 'กล่อง')], today=TODAY)
     assert result[(pid, 'โหล')] == epoch_a
