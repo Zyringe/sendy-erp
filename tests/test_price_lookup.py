@@ -1767,3 +1767,133 @@ def test_512_resolve_price_output_keys_pinned(db):
                                     'below_cost_by', 'note', 'cost_mult'}
     assert len(out['flags']) >= 1  # window_widened fires here (1 bill < 3)
     assert all(set(f) == {'code', 'text'} for f in out['flags'])
+
+
+# ── #579: when the answer is the customer's own old price, say how much
+#    higher today's list sits ────────────────────────────────────────────────
+
+def _flag(out, code):
+    """The one flag with `code`, or None. Asserts the resolver never emits
+    a duplicate code, which would make a membership test ambiguous."""
+    hits = [f for f in out['flags'] if f['code'] == code]
+    assert len(hits) <= 1, f"duplicate flag {code}: {hits}"
+    return hits[0] if hits else None
+
+
+def _last_paid_setup(db, *, base, paid, tag, promo=None, tier_price=None):
+    """A product listed at `base` and one in-window bill at `paid`/แผง, so
+    resolve_price answers on `last_paid`. Returns (pid, cust, out)."""
+    pid = _mk_product(db, f"#579 {tag}", unit_type='แผง', base=base, cost=40.0)
+    _clear_pid(db, pid)
+    if tier_price is not None:
+        _tier(db, pid, '1 แผง', tier_price)
+    if promo is not None:
+        _promo(db, pid, **promo)
+    cust = _mk_customer(db, f'TST-579-{tag}', f'ลูกค้าทดสอบ 579 {tag}')
+    _clear_customer_pid(db, cust, pid)
+    _bill(db, pid=pid, customer_code=cust, customer_name=f'ลูกค้าทดสอบ 579 {tag}',
+          date_iso=_days_ago(30), qty=1.0, unit='แผง', unit_price=paid,
+          vat_type=1, net=paid)
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust,
+                           unit='แผง', today=TODAY)
+    return pid, cust, out
+
+
+def test_579_list_higher_fires_when_last_paid_sits_below_list(db):
+    _pid, _c, out = _last_paid_setup(db, base=130.0, paid=90.0, tag='A')
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['answer']['price_per_unit'] == 90.0
+    f = _flag(out, 'list_higher_than_answer')
+    assert f is not None, "expected the warning on a last_paid answer below list"
+    assert f['text'] == 'ราคาตั้งวันนี้ 130/แผง — สูงกว่าที่เสนอ ฿40 (+44%)'
+
+
+def test_579_list_higher_silent_when_the_answer_IS_the_list(db):
+    """Control. No customer history, so the answer is the list itself and
+    there is no gap to report."""
+    pid = _mk_product(db, "#579 no history", unit_type='แผง', base=130.0, cost=40.0)
+    _clear_pid(db, pid)
+    cust = _mk_customer(db, 'TST-579-B', 'ลูกค้าทดสอบ 579 B')
+    _clear_customer_pid(db, cust, pid)
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust,
+                           unit='แผง', today=TODAY)
+    assert out['answer']['basis'] != 'last_paid'
+    assert _flag(out, 'list_higher_than_answer') is None
+
+
+def test_579_list_higher_silent_when_last_paid_is_at_or_above_list(db):
+    """The clause's far side: a last_paid answer the warning must REJECT.
+    Without this row the `> 0` comparison would never once fire, and
+    deleting it would be a no-op."""
+    _pid, _c, out = _last_paid_setup(db, base=130.0, paid=130.0, tag='C')
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['answer']['price_per_unit'] == 130.0
+    assert _flag(out, 'list_higher_than_answer') is None
+
+
+def test_579_list_higher_compares_against_the_promo_price_not_the_raw_list(db):
+    """Put: "don't forget the promotion". A live 10% promo makes today's
+    real price 117, so the gap is 27 and not 40."""
+    _pid, _c, out = _last_paid_setup(
+        db, base=130.0, paid=90.0, tag='D',
+        promo={'promo_type': 'percent', 'discount_value': 10.0,
+               'date_start': '2026-06-01'})
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['list']['list_after_promo'] == 117.0
+    f = _flag(out, 'list_higher_than_answer')
+    assert f is not None
+    assert f['text'] == (
+        'ราคาตั้งวันนี้ 130/แผง · โปรฯ เหลือ 117/แผง (ลด 10% ตั้งแต่ 1 มิ.ย. 2026)'
+        ' — ยังสูงกว่าที่เสนอ ฿27 (+30%)')
+
+
+def test_579_list_higher_omits_the_since_clause_when_the_promo_has_no_date(db):
+    """The COMMON case, not an edge one: 515 of prod's 569 active price
+    promos carry date_start NULL (2026-09-18). thaidate(None) is '', so an
+    unconditional "ตั้งแต่ {date}" renders a dangling "ตั้งแต่ )"."""
+    _pid, _c, out = _last_paid_setup(
+        db, base=130.0, paid=90.0, tag='G',
+        promo={'promo_type': 'percent', 'discount_value': 10.0,
+               'date_start': None})
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['list']['price_promo_applied'] is True
+    f = _flag(out, 'list_higher_than_answer')
+    assert f is not None
+    assert 'ตั้งแต่' not in f['text']
+    assert f['text'] == (
+        'ราคาตั้งวันนี้ 130/แผง · โปรฯ เหลือ 117/แผง (ลด 10%)'
+        ' — ยังสูงกว่าที่เสนอ ฿27 (+30%)')
+
+
+def test_579_list_higher_never_fires_when_there_is_no_list_price(db):
+    """base 0 and no tier means no list price at all. A `fixed` promo still
+    produces a positive list_after_promo, so without the list_for_unit
+    guard the warning would print "ราคาตั้งวันนี้ 0/แผง"."""
+    _pid, _c, out = _last_paid_setup(
+        db, base=0.0, paid=90.0, tag='E',
+        promo={'promo_type': 'fixed', 'discount_value': 120.0,
+               'date_start': '2026-06-01'})
+    assert out['answer']['basis'] == 'last_paid', \
+        "fixture must reach the guard, not fall back to list"
+    assert out['list']['list_for_unit'] == 0.0
+    assert out['list']['list_after_promo'] > out['answer']['price_per_unit']
+    assert _flag(out, 'list_higher_than_answer') is None
+
+
+def test_579_list_higher_silent_on_an_extra_disc_quote(db):
+    """The far side of the `basis == 'last_paid'` clause, and the reason it
+    exists. An extra_disc answer is BELOW list by construction, so without
+    that clause every discounted line would carry the warning — pure noise,
+    since Put chose the discount himself. Deleting the clause must go red
+    here; test_579_..._the_answer_IS_the_list cannot see it, because there
+    the gap is zero and the gap clause blocks the flag on its own."""
+    pid = _mk_product(db, "#579 extra disc", unit_type='แผง', base=130.0, cost=40.0)
+    _clear_pid(db, pid)
+    cust = _mk_customer(db, 'TST-579-F', 'ลูกค้าทดสอบ 579 F')
+    _clear_customer_pid(db, cust, pid)
+    out = pl.resolve_price(db, product_id=pid, customer_code=cust,
+                           unit='แผง', extra_disc=0.20, today=TODAY)
+    assert out['answer']['basis'] == 'list_after_promo_extra'
+    assert out['answer']['price_per_unit'] == 104.0
+    assert out['list']['list_after_promo'] == 130.0   # a real gap exists
+    assert _flag(out, 'list_higher_than_answer') is None

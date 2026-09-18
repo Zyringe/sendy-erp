@@ -51,6 +51,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 import sales_filters
+from filters import thaidate
 from models import promotions as promo_models
 import vat_math
 
@@ -1164,6 +1165,35 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     if price_changed_since_last:
         flags.append({'code': 'price_changed_since_last',
                       'text': 'ราคาเปลี่ยนไปตั้งแต่ลูกค้ารายนี้ซื้อครั้งล่าสุด'})
+    if (basis == 'last_paid' and list_info['list_for_unit'] > 0
+            and round(list_after_promo - price, 2) > 0):
+        # #579 (Put, 2026-09-17). Answering on the customer's own old bill is
+        # the point of #555/#573, but it is silent about a list that has since
+        # climbed -- and once rule A lands, price_changed_since_last stops
+        # firing on exactly these pairs. Compare against list_after_promo, never
+        # the raw list: quoting a gap the current promo has already closed would
+        # overstate it. `price` cannot be 0 here -- _real_sale_lines enforces
+        # `qty > 0 AND net > 0` in SQL for every evidence query -- so the
+        # percentage below cannot divide by zero and needs no guard.
+        gap = round(list_after_promo - price, 2)
+        head = f"ราคาตั้งวันนี้ {list_info['list_for_unit']:g}/{answer_unit}"
+        still = ''
+        if price_promo_applied:
+            promo_desc = ('ราคาพิเศษ' if price_promo['promo_type'] == 'fixed'
+                          else f"ลด {price_promo['discount_value']:g}%")
+            # date_start is NULL on 515 of prod's 569 active price promos
+            # (measured 2026-09-18), so "ตั้งแต่ …" is the exception here, not
+            # the rule. Appending it unconditionally left a dangling
+            # "ตั้งแต่ )" on nine promos out of ten.
+            if price_promo['date_start']:
+                promo_desc += f" ตั้งแต่ {thaidate(price_promo['date_start'])}"
+            head += (f" · โปรฯ เหลือ {list_after_promo:g}/{answer_unit}"
+                     f" ({promo_desc})")
+            still = 'ยัง'
+        flags.append({
+            'code': 'list_higher_than_answer',
+            'text': f"{head} — {still}สูงกว่าที่เสนอ ฿{gap:g} ({gap / price * 100:+.0f}%)",
+        })
     if own_brand and basis != 'last_paid' and price > list_info['list_for_unit'] * 0.90:
         flags.append({'code': 'own_brand_hint', 'text': 'own-brand ปกติลดได้ถึง −10%'})
     if widened:
