@@ -180,14 +180,132 @@ mig-173 tables onto the function to drop their token protocol. Neither is in sco
    - The migration and the VAT build come out signed.
    - A real UI cost edit through `verify-sendy` is asserted on the audit row.
 
-## Decisions for root / Put
+## Migration plan for callers outside this repo's tests
 
-- **D1.** Should an unsigned products INSERT with non-zero cost be *refused* too?
-  Recommendation: no, record only. Refusing costs about 50 raw test INSERTs and a master
-  upload rework, and a script that creates a product always recalculates next, which is
-  refused anyway.
-- **D2.** Keep the lazy write-on-read (U3, and U10's `get_current_wacc`) and sign it as the
-  viewer? Recommendation: yes for #590. Removing the write-on-read is its own issue.
-- **D3.** Should `script_connection` also set `TZ=ICT-7` like `app.py`, so that ssh-run rows
-  stop stamping UTC? Recommendation: yes. It is one line and it is a forensics fix.
-- **D4.** The #577 regression (census §5): open it as a separate issue, not part of #590.
+Checked 2026-09-19 16:18Z against `origin/main` 21a58e4, every branch on origin, the local
+worktrees, and the brain repo.
+
+### What starts failing, and how
+
+| caller | after the merge |
+|---|---|
+| Raw `sqlite3.connect` (or the sqlite3 CLI) running a statement that SETs `products.cost_price` / `opening_cost` | Refused before it runs: `no such function: sendy_actor`. This happens even when the new value equals the old one |
+| Any connection, signed or not, that writes a ledger or conversion-log row with no actor declared | Refused by the guard with a Thai message |
+| A signed connection with no `acting_as` and no request (a script or heredoc that forgot to declare) | Refused by the guard with a Thai message |
+| Reads, non-cost UPDATEs of `products`, product INSERTs (D1: recorded, not refused), `.backup`, VACUUM, `dump_schema.py` | Unchanged |
+
+**One amendment to A, found while doing this plan.** The WACC engine (L5) and `run_conversion`
+(L7) should **bind `database.current_actor()` as a parameter**. The note above has them call
+`sendy_actor()` inside their SQL. The function then appears only in the two
+`products`-cost triggers, and the ledger and conversion-log guards read a column. Two things
+follow:
+
+- An unsigned recalculation on a raw connection hits the ledger guard first, on the first
+  INSERT of the rebuild, and gets the readable Thai refusal instead of `no such function`.
+- The mig-173 precedent (below) becomes possible for the dated scripts' tests.
+
+The value comes from the same resolver either way.
+
+### `scripts/`: what each one needs
+
+Mig 173 already had to handle scripts written before its guard. It recorded the decision
+**live tools are fixed; dated one-offs are left byte-identical and accepted to abort if
+re-run**. The mechanism is `tests/_pre_mig173.py` and `test_pre_mig173_usage.py`. #590
+reuses that decision and that shape.
+
+| script | kind | fails how after merge | needs |
+|---|---|---|---|
+| `merge_product.py` (S6) | **live tool** | its raw connection reaches recalc → `no such function` | **fix in the PR**: `script_connection(__file__, operator=--operator, reason=--reason)`, both CLI arguments required. Tests: `test_merge_product*.py` pass `--operator` |
+| `remap_bsn_code.py` (S14) | **live tool** | same, via `repoint_bsn_code` | **fix in the PR**, same shape. Tests: `test_remap_bsn_code.py`, `test_repoint_bsn_code.py` |
+| `2026_09_19_gross_to_piece.py` (S2) | dated, but `rebase()` is an engine that S3 loads, and a future unit rebase (#599/#600) could load it | `UPDATE products SET cost_price` on a raw connection | **fix in the PR**: `main()` opens `script_connection`. `rebase(conn, …)` requires a signed connection, and a raw one fails at the guard, which is fine |
+| `2026_08_17_bolt_dozen_to_piece.py` (S1), `2026_09_19_rebase_689_767.py` (S3), `2026_09_19_fix_pack_ratios_592.py` (S4), `2026_09_19_split_belco_582.py` (S5), `hammer_bundle_datafix.py` (S8), `force_stock_targets.py` (S9), `rebuild_opening_balance_v2.py` (S10), `rebuild_opening_balance_from_csv.py` (S11) | dated one-offs, all already applied (their docstrings say "do not re-run") | abort if re-run. **Accepted**, not overlooked | **no edit**. Their 9 test files (`test_bolt_dozen_to_piece`, `test_gross_to_piece_rebase`, `test_rebase_689_767`, `test_fix_pack_ratios_592`, `test_split_belco_582`, `test_hammer_bundle_datafix`, `test_force_stock_targets`, `test_rebuild_opening_balance_v2`, `test_rebuild_opening_balance`) call a new `tests/_pre_mig590.py::emulate_pre_mig590(db)`. It drops only the two `products`-cost triggers and returns how many it found; the ledger guard stays and is fed by conftest's `acting_as('test')`. `test_pre_mig590_usage.py` lists exactly those 9 files, with a reason each |
+| `backfill_opening_cost_20260617.py` (S7) | dated, uses `get_connection` | guard refusal (no declared actor) | no edit, no test. Accepted |
+| `phase_c_replay_apply_20260530.py` / `phase_c_dedup_replay_20260530.py` (S12/S13), `cleanup_split_mapping_stubs.py` (S18, DEPRECATED) | dated | `no such function` | no edit. They already sit in `SCRIPT_EXEMPTIONS`-style lists as accepted-to-abort |
+| `apply_decision_remaps.py` (S15), `apply_platform_overview_mapping.py` / `import_listing_mapping_csv.py` (S16/S17) | INSERT only | nothing: an INSERT is recorded, not refused (D1). `created_by` stays NULL | no edit |
+
+`scripts/` gains nothing new. `script_connection` lives in `database.py`.
+
+### Callers in the brain repo (`~/Sendai-Boonsawat`, a separate repo)
+
+Found with `grep -r`, which does not skip gitignored trees, so `Design/`, `E-Commerce/` and
+`Operations/` were covered. Control: the same pattern found wacc.py's 11 hits.
+
+| caller | status | needs |
+|---|---|---|
+| `.claude/skills/add-loose-variant/pack_loose_variant.py` | live skill. INSERTs a loose product with `cost_price` through `models.get_connection` | keeps working (D1). Switch it to `script_connection` so the creation is signed. It is a brain-repo edit, made the same day as the merge |
+| `.claude/agents/payments-finance.md` (its "cost_price backfill" job) and `data-quality.md` | agent policy that writes cost | add one line pointing at the new rule |
+| `Operations/06_tools/apply_group_a_2026-07-23.py`, `projects/express-integration/prod_cost_load_*.py` (June), `archives/**` | dated prod one-offs | none. They abort if re-run, which is intended |
+| WACC probes that replay on a `.backup` copy: `Operations/05_analysis-reports/finance/wacc_zero_stock_purchase_2026-09-16/replay.py`, `…/tiktok_legacy_cost_basis_2026-09-15/{q3sim*,q4,robin/*}.py` | dated analysis. They call the engine on a raw connection | none for the old ones. **Any future rehearsal on a copy taken after the merge must sign**. The rule text below says so, because "rehearse on a `.backup`" is mandated by the rules and that step recalculates |
+| `Operations/06_tools/restock_list.py`, `E-Commerce/TikTok/01_product-info/test_prod_read.py` | read-only, or its own throwaway schema | none |
+
+### Announcing the rule
+
+**Where it goes.** The PR body carries a "⚠ Breaking for ops" block: the table above plus the
+rule text below. The rule text lands in the **brain repo** `.claude/rules/erp-engineering-discipline.md`:
+
+- **when:** in a brain commit made **after the merge is prod-verified**, the same day. Earlier
+  would describe behaviour that is not live yet. Later would leave every session running a
+  recipe that errors.
+- **what:** it is an **exception inside the "Applying ad-hoc SQL to the live DB" bullet**,
+  not a replacement. `sqlite3 "$DB" < file.sql` stays correct for every non-cost write.
+- **tracking:** the PR checklist names the brain commit sha.
+
+Draft text:
+
+> **Cost writes must be signed (#590, mig NNN).** Any write to `products.cost_price` /
+> `opening_cost`, `product_cost_ledger` or `conversion_cost_log` needs a declared actor.
+>
+> - **Inside the app** the logged-in session supplies it.
+> - **Everywhere else**, including a script, a `railway ssh` heredoc, or a rehearsal on a
+>   `.backup` copy, open the connection with
+>   `database.script_connection(__file__, operator='<who>', reason='<why>')`.
+>   It also sets `TZ=ICT-7`, so the row timestamps are Bangkok time like the app's.
+>
+> ⛔ **The sqlite3 CLI can no longer change cost.**
+>
+> - `SET cost_price` / `SET opening_cost` fails with `no such function: sendy_actor`.
+> - A ledger or conversion-log INSERT with no actor is refused.
+> - That is the guard working. Never register a stand-in `sendy_actor` to get past it.
+>
+> `sqlite3 "$DB" < file.sql` stays the recipe for every other ad-hoc SQL. Rehearse a
+> migration that touches cost **through the runner** (a `verify-sendy` launch, or `init_db()`
+> on the copy), not with `sqlite3 copy.db < NNN.sql`.
+
+### Open branches that write cost (read 2026-09-19 16:18Z)
+
+- **The branches you named:**
+  - `feat/596-unit-map-db`, `feat/597-unit-code-cleanup` and `fix/592-pack-ratios` are
+    **already merged**: #612, #609 and #614. Their refs are squash leftovers and there is
+    nothing to conflict with.
+  - **No branch exists for #599, #600 or #610**, on origin or in any local worktree. All
+    three are open issues.
+  - Each of those issues has an acceptance criterion "rehearsed on a prod `.backup`: WACC
+    unchanged". So their rehearsal harness recalculates, and it **must sign if #590 merges
+    first**. If they merge first, #590's guarded rehearsal has to include their migrations.
+    Neither order causes a textual conflict.
+- **Open PRs: 0.** Branches on origin that are not merged and touch cost: **none**.
+  - `feat/582-split-belco`, `feat/586-rebase-689-767`, `fix/586-epoch-skip-unit-rebase`
+    and `feat/unit-rebase-1050-1320` are merged: #607, #608, #613, #584.
+  - `feat/598-unit-writer-census` adds one test file only, with no cost writes, and does
+    not overlap.
+- **Local only, not pushed:**
+  - **`fix/615-product-edit-cost-overwrite`** (worktree `615-cost-box-overwrite`) edits
+    `product_edit` and `tests/test_product_edit_cost_basis.py`. That test file already does
+    a raw `UPDATE products SET cost_price=99.0` (about line 247) and calls
+    `models.recalculate_product_wacc` outside a request. **#615 should merge first.** #590
+    then signs that raw UPDATE with `sign(conn)` and relies on conftest for the recalc. The
+    conflict is semantic, not textual.
+  - **`fix/594-unflag-904`** takes migration **188**, so #590 becomes 189 or later. The
+    number is derived from `origin/main` when the file is created and again before the push.
+  - `feat/products-new-clone` and `feat/price-lookup-promo-hygiene` are stale (August,
+    111+ commits behind) and only read cost.
+
+## Decisions (root, 2026-09-19)
+
+- **D1: record only**, agreed. An unsigned products INSERT with non-zero cost is recorded
+  (`created_by`), not refused.
+- **D2: sign the lazy GET recalc as the viewer**, agreed. Removing write-on-read is a
+  separate issue.
+- **D3: yes.** `script_connection` sets `TZ=ICT-7`, with a one-line reason in the code:
+  without it, a row written over ssh is stamped UTC while the app's rows are ICT.
+- **D4: filed as #615.** A separate Codex lane is on it, and it stays out of #590.
