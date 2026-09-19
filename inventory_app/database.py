@@ -642,29 +642,6 @@ def init_db():
             "INSERT INTO users(username, password_hash, display_name, role) VALUES (?,?,?,?)",
             ('admin', generate_password_hash(_cfg.ADMIN_PASSWORD, method='pbkdf2:sha256'), 'Administrator', 'admin')
         )
-    # unit_map (#596) must never be empty on a REAL boot: bsn_units.py reads
-    # it on every unit-bearing write, and an empty table degrades every code
-    # to "unknown", silently importing raw Express codes. A brand-new DB
-    # built from data/schema.sql above gets the TABLE (schema.sql is DDL
-    # only) but none of migration 185's ROWS — run_pending_migrations()
-    # below takes the bootstrap-backfill path for a fresh DB (every shipped
-    # migration recorded as already-applied, none of them re-executed).
-    # Same shape as the admin-user seed just above: re-run migration 185's
-    # own SQL directly (idempotent, drops-first) rather than duplicating its
-    # 44-row list a second time in Python — it is a no-op on a DB that
-    # already got it seeded the normal way (existing DB, mig 185 pending).
-    # EMPTY table only, so a map Put has since changed is never re-seeded.
-    # It replays 185 alone: a later migration that writes unit_map has to be
-    # replayed here too (test_no_later_migration_writes_unit_map fails until
-    # it is). The VAT-book build swaps this seed for the main db's map
-    # (vat_book_builder._use_main_unit_map).
-    if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
-    ).fetchone() and not conn.execute("SELECT 1 FROM unit_map LIMIT 1").fetchone():
-        mig185 = os.path.join(MIGRATIONS_DIR, '185_unit_map_table.sql')
-        if os.path.exists(mig185):
-            with open(mig185, encoding='utf-8') as f:
-                conn.executescript(f.read())
     conn.commit()
     # Apply any pending numbered migrations from data/migrations/.
     run_pending_migrations(conn)

@@ -6,6 +6,10 @@
 -- bsn_units.py (JSON-backed) expect if this migration is reverted). This is
 -- a pure schema/label rollback — 185 changed no ledger data, so there is
 -- nothing to undo beyond the table itself.
+--
+-- ⚠ Dropping unit_map also drops every code named on /unit-conversions since
+-- 185 shipped (they live nowhere else). Export them first if any matter:
+--   SELECT book, spelling, word, created_at FROM unit_map ORDER BY id;
 
 BEGIN;
 

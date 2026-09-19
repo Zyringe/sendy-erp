@@ -26,24 +26,19 @@ before) get one from `database.get_connection()`, imported lazily so this
 module still imports with no hard Flask/DB dependency for callers that
 always pass their own `conn`.
 
-NEVER EMPTY BY CONSTRUCTION, not by a runtime guard. A fresh DB built from
-data/schema.sql gets the `unit_map` TABLE (schema.sql is DDL) but, without
-help, none of migration 185's rows (a fresh-DB boot backfills every
-migration as already-applied without re-running it). `database.py::init_db()`
-closes that gap directly: it re-seeds `unit_map` from migration 185's own
-SQL whenever the table exists but is empty, so every DB this module's
-`_connect()` can ever reach already has the real 44 rows before a request
-is served. See `init_db()`'s docstring for why this is (a), not a per-call
-raise: an early version of this file raised on every call when a table had
-zero rows, which broke ~100 unrelated tests that build a schema-only DB
-clone for other purposes and only incidentally pass through a bsn_units
-call — the guard's blast radius was disproportionate to the deployment-only
-risk it existed to catch, and `init_db()` closes the ACTUAL risk (a fresh
-boot) without touching every test fixture in the suite.
+A MISSING table raises; an EMPTY one reads as "every spelling unknown".
+- Missing (`no such table: unit_map`) means the DB predates migration 185,
+  e.g. a whole pre-185 file pushed through /admin/upload-db. Translating
+  nothing there would silently store raw Express codes, so the error
+  propagates from every call.
+- Empty is the state of a schema-only clone (tests' `empty_db`). A real DB
+  always has rows: an existing one gets them from migration 185, a fresh one
+  from data/schema.sql, which scripts/dump_schema.py writes the live map's
+  rows into (a fresh DB never runs migrations, so a map changed by a later
+  migration reaches it only that way).
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Optional
 
 BOOK_BSN5657 = 'BSN5657'
@@ -55,10 +50,6 @@ DEFAULT_BOOK = BOOK_BSN5657
 def _connect():
     from database import get_connection
     return get_connection()
-
-
-def _no_such_table(exc: sqlite3.OperationalError) -> bool:
-    return 'no such table: unit_map' in str(exc)
 
 
 def translate(spelling, book: str = DEFAULT_BOOK, *, conn=None) -> Optional[str]:
@@ -80,16 +71,6 @@ def translate(spelling, book: str = DEFAULT_BOOK, *, conn=None) -> Optional[str]
                 "SELECT word FROM unit_map WHERE book = ? AND spelling = ?",
                 (BOOK_ANY, spelling)).fetchone()
         return row[0] if row is not None else None
-    except sqlite3.OperationalError as exc:
-        # Only a DB whose migrations never ran (a test importing this module
-        # in isolation, before any fixture has run init_db()) hits this — a
-        # REAL boot always runs init_db() before serving a request, and
-        # init_db() guarantees unit_map is seeded (see module docstring).
-        # Read paths degrade to "unknown" rather than crash; learn() below
-        # does not.
-        if _no_such_table(exc):
-            return None
-        raise
     finally:
         if own:
             conn.close()
@@ -112,10 +93,6 @@ def full_units(*, conn=None) -> set:
     conn = conn or _connect()
     try:
         return {r[0] for r in conn.execute("SELECT DISTINCT word FROM unit_map")}
-    except sqlite3.OperationalError as exc:
-        if _no_such_table(exc):
-            return set()
-        raise
     finally:
         if own:
             conn.close()
@@ -155,10 +132,6 @@ def load_unit_map(book: str = DEFAULT_BOOK, *, conn=None) -> dict:
                     "SELECT spelling, word FROM unit_map WHERE book = ?", (book,)):
                 out[spelling] = word
         return out
-    except sqlite3.OperationalError as exc:
-        if _no_such_table(exc):
-            return {}
-        raise
     finally:
         if own:
             conn.close()

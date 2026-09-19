@@ -273,10 +273,10 @@ def _use_main_unit_map(conn, main_db_path):
     translates a unit (seed_products_from_stmas, and import_weekly deep
     inside commit_express_dbf, which opens its own connection) reads it
     through `database.get_connection()`, and DATA_DIR points that at this
-    fresh build db. init_db() seeded that db's table from migration 185, as
-    it does for every fresh db, and 185 is not the main map once Put has
-    named a code or a later migration has changed one. So it is replaced
-    here, before anything reads it. Read-only on the main db."""
+    fresh build db. init_db() filled that db's table from data/schema.sql,
+    i.e. the map as of the last schema dump, which misses every code Put has
+    named since. So it is replaced here, before anything reads it. Read-only
+    on the main db."""
     if not main_db_path:
         raise RuntimeError(
             "vat_book_builder needs the main db (--result-db): the VAT book "

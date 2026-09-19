@@ -17,24 +17,23 @@
 -- today's translations verbatim (กร still -> ตัว). Tickets #599/#601 correct
 -- the wrong meanings (กร/ถง/บล) and add the xp5-specific rows (หอ -> หลอด).
 --
--- Drop-first so this file is re-runnable (erp-engineering-discipline.md).
+-- Re-runnable WITHOUT losing data: CREATE ... IF NOT EXISTS + INSERT OR IGNORE,
+-- so a second run (e.g. a DB whose applied_migrations lost this row) keeps
+-- every code Put has named on /unit-conversions since. Never drop-first here.
 
 BEGIN;
 
-DROP TABLE IF EXISTS unit_map;
-DROP TABLE IF EXISTS bsn_unit_alias;
-
-CREATE TABLE unit_map (
+CREATE TABLE IF NOT EXISTS unit_map (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    book        TEXT NOT NULL,   -- 'BSN5657' | 'xp5' | '*' (applies to every book)
+    book        TEXT NOT NULL CHECK (book IN ('BSN5657', 'xp5', '*')),  -- '*' = every book
     spelling    TEXT NOT NULL,   -- the Express code or spelling variant, exactly as written
     word        TEXT NOT NULL,   -- the one Sendy spelling for this หน่วย
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
-CREATE UNIQUE INDEX ux_unit_map_book_spelling ON unit_map(book, spelling);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_unit_map_book_spelling ON unit_map(book, spelling);
 
-INSERT INTO unit_map (book, spelling, word) VALUES
+INSERT OR IGNORE INTO unit_map (book, spelling, word) VALUES
   ('BSN5657', 'ดก', 'ดอก'),
   ('BSN5657', 'ปน', 'ปื้น'),
   ('BSN5657', 'กส', 'กระสอบ'),
@@ -79,5 +78,7 @@ INSERT INTO unit_map (book, spelling, word) VALUES
   ('BSN5657', '!ลก', 'ลูก'),
   ('BSN5657', '!หด', 'หลอด'),
   ('BSN5657', '!หล', 'โหล');
+
+DROP TABLE IF EXISTS bsn_unit_alias;
 
 COMMIT;
