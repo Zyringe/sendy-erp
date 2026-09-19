@@ -353,13 +353,17 @@ def _remove_sidecars(db_path):
                 pass
 
 
-def restore_backup(name, *, db_path, backup_dir):
+def restore_backup(name, *, db_path, backup_dir, prepare):
     """Replace the live DB with snapshot ``name``. Snapshots the current state
     first (reason='pre-restore') so a wrong restore is itself reversible, then
     atomically swaps the file in and clears stale -wal/-shm sidecars.
 
     ⚠ Reverts the WHOLE DB to that snapshot — not just one import. Caller must
-    restrict this to admins and should restart workers afterward."""
+    restrict this to admins and should restart workers afterward.
+
+    ``prepare(path)`` runs on the decompressed file BEFORE the swap and raises
+    to refuse it (#590 C2: database.prepare_staged_db). Required on purpose, so
+    no caller can forget it; pass None only for a file that is not a Sendy DB."""
     if not _NAME_RE.match(name or ""):
         raise ValueError(f"invalid backup name: {name!r}")
     src_gz = os.path.join(backup_dir, name)
@@ -389,6 +393,8 @@ def restore_backup(name, *, db_path, backup_dir):
             probe.execute("PRAGMA schema_version")
         finally:
             probe.close()
+        if prepare is not None:
+            prepare(tmp_db)                        # raises → nothing is swapped
         # Clear the OLD db's WAL/SHM sidecars BEFORE the swap. Under gunicorn -w 2
         # a fresh connection arriving between the swap and a later unlink would
         # pair the NEW (restored) main file with the stale OLD -wal still at the

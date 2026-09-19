@@ -56,6 +56,7 @@ import actor
 import book_registry
 import config
 import models
+import database
 from database import init_db, get_connection
 from blueprints.products import bp_products
 from blueprints.mobile import bp_mobile
@@ -252,6 +253,14 @@ def bootstrap_upload_db():
         tmp = target + '.upload-tmp'
         f.save(tmp)
         size = os.path.getsize(tmp)
+        # #590 C2: no session here, so the token holder is the declared actor.
+        try:
+            with actor.acting_as(kind='system', who='bootstrap-token', source='manual',
+                                 detail='bootstrap_upload_db'):
+                database.prepare_staged_db(tmp, 'bootstrap')
+        except database.StagedDbRefused as e:
+            os.remove(tmp)
+            return f'refused — {e}\n', 422
         os.replace(tmp, target)
         return f'ok — wrote {size:,} bytes to {target}\n', 200
     return (

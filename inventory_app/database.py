@@ -33,6 +33,7 @@ import sys
 import time
 import hashlib
 import glob
+import json
 import actor
 from config import DATABASE_PATH
 from werkzeug.security import generate_password_hash
@@ -370,10 +371,13 @@ def _prepare(conn, bound=None):
     return actor.install(conn, bound)
 
 
+def _connect(path):
+    return _prepare(sqlite3.connect(path, check_same_thread=False, timeout=10))
+
+
 def get_connection():
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
-    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=10)
-    return _prepare(conn)
+    return _connect(DATABASE_PATH)
 
 
 def script_connection(name, *, operator, reason, db_path=None):
@@ -515,8 +519,10 @@ def run_pending_migrations(conn, verbose=True):
     return ran
 
 
-def init_db():
-    conn = get_connection()
+def init_db(db_path=None):
+    """`db_path` migrates a file OTHER than the live DB: a staged upload or
+    restore, before it is swapped in (prepare_staged_db)."""
+    conn = _connect(db_path) if db_path else get_connection()
     existing = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     ).fetchall()}
@@ -686,3 +692,81 @@ def init_db():
     # Apply any pending numbered migrations from data/migrations/.
     run_pending_migrations(conn)
     conn.close()
+
+
+class StagedDbRefused(RuntimeError):
+    """A file about to replace the live DB could not be brought to this code's
+    schema with the #590 guards live on it. The caller must NOT swap it in."""
+
+
+# One unsigned write per guarded table (#590 §A3). Each must be REFUSED by the
+# staged file's own triggers; a probe that goes through means the guard is not
+# there, whatever applied_migrations claims.
+_UNSIGNED_PROBES = (
+    ("product_cost_ledger",
+     "INSERT INTO product_cost_ledger (product_id, event_type, event_date, qty_change,"
+     " unit_cost, stock_after, wacc_after) VALUES (0, 'PROBE-590', '1970-01-01', 0, 0, 0, 0)"),
+    ("conversion_cost_log",
+     "INSERT INTO conversion_cost_log (output_product_id, event_date, output_qty,"
+     " total_input_cost, unit_cost) VALUES (0, '1970-01-01', 0, 0, 0)"),
+    ("products",
+     "UPDATE products SET cost_price = cost_price + 1"
+     " WHERE id = (SELECT min(id) FROM products)"),
+)
+
+
+def prepare_staged_db(path, operation):
+    """Make a file that is about to REPLACE the live DB safe to swap in (#590 C2).
+
+    A full upload, a restore or a bootstrap upload replaces the whole file, and
+    under gunicorn --preload the SIGHUP that follows does not re-run init_db. So
+    an older file would go live unmigrated and UNGUARDED until a real restart.
+    This runs the boot migration path on the staged file, proves by behaviour
+    that an unsigned cost write is refused on it, and stamps one signed audit
+    row describing the swap into it — the row then goes live with the file.
+    Raises StagedDbRefused on any failure; the caller must not swap.
+    """
+    try:
+        init_db(db_path=path)
+    except Exception as e:                    # noqa: BLE001 — any failure refuses the swap
+        raise StagedDbRefused(f'migrating the file failed: {e}') from e
+
+    probe = sqlite3.connect(path)
+    probe.create_function('sendy_actor', 1, lambda field: None)   # deliberately nobody
+    try:
+        applied = {r[0] for r in probe.execute("SELECT filename FROM applied_migrations")}
+        missing = sorted(set(_list_migration_files()) - applied)
+        if missing:
+            raise StagedDbRefused(f'migrations not applied on the file: {missing}')
+        has_product = probe.execute("SELECT 1 FROM products LIMIT 1").fetchone()
+        for table, sql in _UNSIGNED_PROBES:
+            if table == 'products' and not has_product:
+                continue
+            try:
+                probe.execute(sql)
+            except sqlite3.IntegrityError as e:
+                if actor.REFUSAL_MARK not in str(e):
+                    raise StagedDbRefused(f'{table}: refused for another reason: {e}') from e
+            else:
+                raise StagedDbRefused(f'{table}: an unsigned cost write was accepted')
+            finally:
+                probe.rollback()
+    finally:
+        probe.close()
+
+    conn = _connect(path)
+    try:
+        try:
+            actor.require(conn, operation)
+        except actor.ActorMissing as e:
+            raise StagedDbRefused(str(e)) from e
+        conn.execute(
+            "INSERT INTO audit_log (table_name, row_id, row_key, action, changed_fields,"
+            " user, change_source, change_reason)"
+            " VALUES ('database', 0, ?, 'UPDATE', ?,"
+            " sendy_actor('who'), sendy_actor('source'), sendy_actor('reason'))",
+            (operation, json.dumps({'operation': operation})))
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()

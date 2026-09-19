@@ -231,7 +231,8 @@ def test_restore_swaps_db_and_snapshots_current(tmp_path):
     conn.close()
     assert _count(str(db)) == 4
 
-    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir))
+    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir),
+                             prepare=None)   # a toy file, not a Sendy DB
 
     assert _count(str(db)) == 2                        # rolled back to snapshot
     # a pre-restore safety snapshot of the 4-row state was taken
@@ -249,7 +250,8 @@ def test_restore_removes_stale_wal_shm_sidecars(tmp_path):
     (tmp_path / "inventory.db-wal").write_bytes(b"stale")
     (tmp_path / "inventory.db-shm").write_bytes(b"stale")
 
-    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir))
+    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir),
+                             prepare=None)   # a toy file, not a Sendy DB
 
     assert not (tmp_path / "inventory.db-wal").exists()
     assert not (tmp_path / "inventory.db-shm").exists()
@@ -263,10 +265,11 @@ def test_restore_rejects_unknown_or_foreign_name(tmp_path):
     bdir.mkdir()
     with pytest.raises(ValueError):
         db_backup.restore_backup("../../etc/passwd", db_path=str(db),
-                                 backup_dir=str(bdir))
+                                 backup_dir=str(bdir), prepare=None)
     with pytest.raises(ValueError):
         db_backup.restore_backup("auto-unified-20260601_100000.db.gz",
-                                 db_path=str(db), backup_dir=str(bdir))  # missing
+                                 db_path=str(db), backup_dir=str(bdir),
+                                 prepare=None)  # missing
 
 
 # ── regression: restore ordering under gunicorn -w 2 (BUG-1) ──────────────────
@@ -300,7 +303,8 @@ def test_restore_clears_wal_sidecars_before_swap(tmp_path, monkeypatch):
         return real_replace(src, dst)
 
     monkeypatch.setattr(db_backup.os, "replace", spy_replace)
-    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir))
+    db_backup.restore_backup(snap["name"], db_path=str(db), backup_dir=str(bdir),
+                             prepare=None)   # a toy file, not a Sendy DB
 
     assert seen.get("wal") is False, "stale -wal still present when DB file was swapped in"
     assert seen.get("shm") is False, "stale -shm still present when DB file was swapped in"
