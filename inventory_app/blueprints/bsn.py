@@ -21,6 +21,7 @@ import zipfile
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort, current_app)
 
+import actor
 import config
 import db_backup
 import express_registers
@@ -1563,6 +1564,8 @@ def _spawn_vat_rebuild(dataset_dir, run_id, snapshot_date=None):
     builder = os.path.abspath(os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', 'vat_book_builder.py'))
     env = {**os.environ, 'DATA_DIR': data_dir, 'VAT_BOOK_BUILD': '1'}
+    # #590: the build rewrites costs in the VAT book; it runs as the uploader.
+    uploader = getattr(actor.current(), 'who', None)
     proc = subprocess.Popen(
         [sys.executable, builder,
          '--source', src,
@@ -1570,7 +1573,8 @@ def _spawn_vat_rebuild(dataset_dir, run_id, snapshot_date=None):
          '--result-db', config.DATABASE_PATH,
          '--result-row', str(run_id),
          '--cleanup-dir', run_root]
-        + (['--snapshot-date', snapshot_date] if snapshot_date else []),
+        + (['--snapshot-date', snapshot_date] if snapshot_date else [])
+        + (['--uploader', uploader] if uploader else []),
         cwd=os.path.dirname(builder), env=env,
         # INHERIT the container's stdout/stderr (Codex round 5). These were
         # DEVNULL, so a builder killed before it could write its own result row
