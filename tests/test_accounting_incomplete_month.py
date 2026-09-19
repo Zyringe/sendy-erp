@@ -217,6 +217,28 @@ def test_zero_cashbook_rows_is_no_coverage_not_incomplete(empty_db):
     assert s['net_profit'] is None
 
 
+# ── 7b. Zero opex rows in the target month, but an account IS expected --
+#        must read incomplete, never no_coverage (ordering, review round 2) ──
+
+def test_zero_opex_rows_with_expected_accounts_reads_incomplete_not_no_coverage(empty_db):
+    conn = _conn(empty_db)
+    n_acct = _mk_account(conn, 'N', display_name='บัญชี N')
+    for ym in ('2026-03', '2026-05', '2026-07'):  # 3 of the previous 6 (Mar-Aug)
+        _mk_expense(conn, n_acct, f'{ym}-10', 100.0)
+    # ZERO cashbook rows of any kind in 2026-09 -- not even a real coverage
+    # row, unlike case 1. This is the shape that used to read 'no_coverage'.
+
+    _mk_sale(conn, '2026-09-10', 'IV011', net=1000.0)
+    conn.commit()
+    conn.close()
+
+    s = models.get_accounting_summary('2026-09-01', '2026-09-30')
+    assert s['expense_status'] == 'incomplete'
+    assert s['incomplete_months'] == [{'ym': '2026-09', 'missing': ['บัญชี N']}]
+    assert s['expenses'] is None
+    assert s['net_profit'] is None
+
+
 # ── 8. An account whose only row in the target month is 'ซื้อสินค้า' still
 #       reads MISSING (clarification 1: non-opex category doesn't count) ────
 

@@ -232,22 +232,29 @@ def get_accounting_summary(date_from=None, date_to=None):
             for r in exp_rows
         ]
         expenses = float(sum(c['total'] for c in expenses_by_category))
-        incomplete_months = _incomplete_months(conn, date_from, date_to)
-        if incomplete_months:
-            expense_status = 'incomplete'
-            net_profit = None
-        else:
-            expense_status = 'complete'
-            # ── Net profit — NO separate commission subtraction: cashbook
-            # opex above already includes จ่ายค่าคอมมิชชั่น (design.md Q5,
-            # avoids double-counting commission_payouts on top of it).
-            net_profit = gross_profit - expenses
     else:
         expenses_by_category = []
         expenses = None
+
+    # incomplete_months must be computed UNCONDITIONALLY — a month with zero
+    # opex rows of its own (nobody has keyed it yet, e.g. the first days of a
+    # new month) is 'incomplete', not 'no_coverage': that label is reserved
+    # for the genuine pre-cashbook era, and its banner text ("สมุดรับ-จ่าย
+    # เริ่มมีข้อมูลตั้งแต่ มี.ค. 2569") would be false for a month that simply
+    # has not been keyed yet.
+    incomplete_months = _incomplete_months(conn, date_from, date_to)
+    if incomplete_months:
+        expense_status = 'incomplete'
         net_profit = None
+    elif not has_expense_coverage:
         expense_status = 'no_coverage'
-        incomplete_months = []
+        net_profit = None
+    else:
+        expense_status = 'complete'
+        # ── Net profit — NO separate commission subtraction: cashbook opex
+        # above already includes จ่ายค่าคอมมิชชั่น (design.md Q5, avoids
+        # double-counting commission_payouts on top of it).
+        net_profit = gross_profit - expenses
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
