@@ -92,3 +92,56 @@ def test_a_caller_that_omits_book_gets_bsn5657(seeded_conn):
     (BSN5657)" — the literal acceptance-criterion wording."""
     assert bsn_units.translate('กร', conn=seeded_conn) == 'ตัว'      # no book arg
     assert bsn_units.translate('กร', bsn_units.BOOK_BSN5657, conn=seeded_conn) == 'ตัว'
+
+
+# ── fail loud when unseeded, instead of silently importing raw codes ────────
+#
+# A fresh DB built from data/schema.sql (bare git clone, empty Railway
+# volume, or vat_book_builder's DATA_DIR-isolated subprocess) has the
+# unit_map TABLE (schema.sql is DDL) but ZERO rows (only migration 185's own
+# INSERTs seed it, and a fresh-DB boot backfills every migration as already
+# applied without re-running them). Team-lead review on #596: this must
+# raise, not pass every Express code through untranslated.
+
+def test_empty_table_raises_instead_of_treating_everything_as_unknown(empty_db_conn):
+    # empty_db_conn: unit_map exists (schema-only clone) with 0 rows —
+    # exactly the fresh-DB-from-schema.sql shape, without needing a second
+    # throwaway db file.
+    with pytest.raises(bsn_units.UnitMapNotSeeded):
+        bsn_units.translate('กร', conn=empty_db_conn)
+    with pytest.raises(bsn_units.UnitMapNotSeeded):
+        bsn_units.normalize_unit('กร', conn=empty_db_conn)
+    with pytest.raises(bsn_units.UnitMapNotSeeded):
+        bsn_units.is_known('กร', conn=empty_db_conn)
+    with pytest.raises(bsn_units.UnitMapNotSeeded):
+        bsn_units.full_units(conn=empty_db_conn)
+    with pytest.raises(bsn_units.UnitMapNotSeeded):
+        bsn_units.load_unit_map(conn=empty_db_conn)
+
+
+def test_missing_table_also_raises(tmp_path):
+    import sqlite3
+    conn = sqlite3.connect(tmp_path / 'no_unit_map.db')
+    conn.execute("CREATE TABLE products (id INTEGER PRIMARY KEY)")  # unrelated table; no unit_map at all
+    with pytest.raises(bsn_units.UnitMapNotSeeded):
+        bsn_units.translate('กร', conn=conn)
+    conn.close()
+
+
+def test_seeding_one_row_is_enough_to_clear_the_guard(empty_db_conn):
+    """CONTROL for the two tests above: the guard fires on EMPTY, not on
+    every empty_db_conn call for some unrelated reason."""
+    empty_db_conn.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'กร', 'ตัว')")
+    empty_db_conn.commit()
+    assert bsn_units.translate('กร', conn=empty_db_conn) == 'ตัว'
+
+
+def test_break_it_once_removing_the_guard_lets_unknown_codes_through(empty_db_conn, monkeypatch):
+    """Anti-vacuity: prove the guard is load-bearing. With `_assert_seeded`
+    disabled, an empty table stops raising and silently returns None
+    (normalize_unit then passes the raw code through unchanged) — the
+    EXACT outcome this guard exists to prevent."""
+    monkeypatch.setattr(bsn_units, '_assert_seeded', lambda conn: None)
+    assert bsn_units.translate('กร', conn=empty_db_conn) is None
+    assert bsn_units.normalize_unit('กร', conn=empty_db_conn) == 'กร'  # raw code, untranslated

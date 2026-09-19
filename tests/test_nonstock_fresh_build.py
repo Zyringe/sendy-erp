@@ -7,7 +7,25 @@ UPDATEs product_code_mapping rows therefore updates ZERO rows on a fresh
 build, and the codes classify as ordinary stock over the whole history.
 A constant cannot be missed that way — these tests pin that.
 """
+from pathlib import Path
+
+import pytest
+
 import models
+
+_MIG_185 = (Path(__file__).resolve().parents[1] / 'data' / 'migrations'
+            / '185_unit_map_table.sql')
+
+
+@pytest.fixture(autouse=True)
+def _seed_unit_map(empty_db_conn):
+    """`empty_db_conn` clones the live schema (unit_map TABLE present, #596:
+    ZERO rows — it's a data-less clone). Neither test here is ABOUT unit
+    translation, but `_entry()`'s unit='ใบ' still goes through
+    import_weekly's normalize_unit call — seed the real 44-row map
+    (idempotent, drops-first) so that doesn't raise UnitMapNotSeeded."""
+    empty_db_conn.executescript(_MIG_185.read_text(encoding='utf-8'))
+    empty_db_conn.commit()
 
 
 def _seed_mapping_the_way_vat_book_builder_does(conn, code, name, pid):

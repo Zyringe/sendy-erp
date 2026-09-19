@@ -12,6 +12,8 @@ fresh connections for seeding + assertions.
 import os
 import sqlite3
 
+import pytest
+
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
 _MIG_185 = os.path.join(_REPO, "data", "migrations", "185_unit_map_table.sql")
@@ -25,14 +27,25 @@ def _conn(path):
 
 
 def _ensure_unit_map(c):
-    """empty_db clones the live schema, which may not have mig 185 (unit_map)
-    applied on this machine yet if this file runs before anything else has
-    imported `app` — apply it (idempotent, drops-first)."""
-    if not c.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
-    ).fetchone():
-        with open(_MIG_185, encoding="utf-8") as f:
-            c.executescript(f.read())
+    """empty_db clones the live schema (unit_map TABLE present, #596: ZERO
+    rows — it's a data-less clone) — (re-)apply migration 185 unconditionally
+    (idempotent, drops-first) so import_weekly's bsn_units calls see the real
+    44-row seed instead of raising UnitMapNotSeeded on an empty table."""
+    with open(_MIG_185, encoding="utf-8") as f:
+        c.executescript(f.read())
+
+
+@pytest.fixture(autouse=True)
+def _seed_unit_map(empty_db):
+    """Every test in this file uses `empty_db` and none of them is ABOUT
+    unit translation — seed the real map once per test so a normalize_unit()
+    call inside import_weekly doesn't raise UnitMapNotSeeded on the
+    data-less clone (the one test that IS about acronym normalisation still
+    asserts its own specific row below)."""
+    c = _conn(empty_db)
+    _ensure_unit_map(c)
+    c.commit()
+    c.close()
 
 
 def _ensure_bsn_unit(c):
@@ -143,12 +156,8 @@ def test_reimport_raw_stored_unit_is_noop(empty_db):
     raw = 'ลง'
 
     c = _conn(empty_db)
-    _ensure_unit_map(c)
-    # empty_db MAY already carry the real 185 seed (if some earlier test in
-    # this session migrated the live DB first) — upsert, don't assume empty.
-    c.execute(
-        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', ?, 'ลัง') "
-        "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word", (raw,))
+    # the autouse `_seed_unit_map` fixture above already seeded 'ลง'->'ลัง'
+    # (one of the real 44 rows) — just confirm it landed.
     norm = bsn_units.normalize_unit(raw, conn=c)
     assert norm != raw, "fixture needs a unit whose normalize() differs from raw"
 

@@ -19,14 +19,22 @@ _MIG_185 = (Path(__file__).resolve().parents[1] / 'data' / 'migrations'
 
 
 def _ensure_unit_map(conn):
-    """empty_db_conn clones the live schema, which may not have mig 185
-    (unit_map) applied yet if this file runs before anything else has
-    imported `app` — apply it (idempotent, drops-first)."""
-    if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
-    ).fetchone():
-        conn.executescript(_MIG_185.read_text(encoding='utf-8'))
-        conn.commit()
+    """empty_db_conn clones the live schema (unit_map TABLE present, #596:
+    ZERO rows — it's a data-less clone) — (re-)apply migration 185
+    unconditionally (idempotent, drops-first) so a bsn_units call inside
+    cross_unit_hazard/etc. sees the real 44-row seed instead of raising
+    UnitMapNotSeeded on an empty table."""
+    conn.executescript(_MIG_185.read_text(encoding='utf-8'))
+    conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _seed_unit_map(empty_db_conn):
+    """Every test in this file uses `empty_db_conn`, and only ONE
+    (`test_hazard_acronym_normalized`) is actually about unit translation —
+    seed the real map for all of them so cross_unit_hazard's normalize_unit
+    call doesn't raise on the data-less clone."""
+    _ensure_unit_map(empty_db_conn)
 
 PACK = 950001      # unit_type แผง, has active [แพ็ค]/[แกะ] pair with LOOSE
 LOOSE = 950002     # unit_type ตัว, pair partner of PACK
@@ -121,13 +129,8 @@ def test_no_hazard_same_unit_or_bulk(empty_db_conn):
 
 def test_hazard_acronym_normalized(empty_db_conn):
     import bsn_units
-    _ensure_unit_map(empty_db_conn)
-    # empty_db_conn MAY already carry the real 185 seed (if some earlier test
-    # in this session migrated the live DB first) — upsert, don't assume empty.
-    empty_db_conn.execute(
-        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว') "
-        "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word")
-    empty_db_conn.commit()
+    # the autouse `_seed_unit_map` fixture already seeded 'ตว'->'ตัว' (one
+    # of the real 44 rows) — just confirm it landed.
     assert bsn_units.normalize_unit('ตว', conn=empty_db_conn) == 'ตัว'
     _seed(empty_db_conn)
     hz = models.cross_unit_hazard(empty_db_conn, PACK, 'ตว')
