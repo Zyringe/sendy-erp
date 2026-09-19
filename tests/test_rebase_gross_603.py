@@ -552,11 +552,14 @@ def test_reimport_after_the_hasp_rebase_is_a_no_op(db599):
 
 
 def test_why_the_hasps_wait_for_599(db, capsys):
-    """The harm the map gate prevents, reproduced: with the gate deleted the run
-    itself is consistent, and the very next import undoes it."""
+    """The harm the map gate prevents, reproduced: gate deleted AND the relabel
+    word hard-coded to กุรุส (the tempting shortcut). The run itself is
+    consistent, and the very next import undoes it."""
     src = _src()
-    mutant = src.replace("if word != GROSS:", "if False:")
-    assert mutant != src
+    head, sep, tail = src.partition("def _relabel(")
+    tail = tail.replace("    word = bsn_units.translate('กร', BOOK, conn=conn)\n", "    word = GROSS\n", 1)
+    mutant = (head + sep + tail).replace("if word != GROSS:", "if False:")
+    assert mutant.count("if False:") == 1 and mutant.count("    word = GROSS\n") == 1
     assert _run(db, HASP_ARG, mod=_load(mutant)) == 0
     assert _stock(db, 1187) == 0 and _stock(db, 1188) == 0, "control: consistent right after"
     n, stats = _reimport_sales(HASPS)
@@ -702,8 +705,10 @@ GUARDS = [
     ('foreign', SANDPAPER_ARG, "INSERT INTO promotions (product_id, promo_name, promo_type,"
      " discount_value, date_start, is_active) VALUES (1052, 'ทดสอบ', 'percent', 10, '2026-01-01', 1)",
      'promotions', ("if n and table not in HANDLED:", "if False:"), 0, 'COMMITTED'),
-    # the run itself is consistent without it; the harm lands on the NEXT import
-    ('map_599', HASP_ARG, "SELECT 1", '#599', ("if word != GROSS:", "if False:"), 0, 'COMMITTED'),
+    # backstop: the relabel writes the map's own word (ตัว before #599), a no-op
+    # the invariants catch. test_why_the_hasps_wait_for_599 shows the harm itself.
+    ('map_599', HASP_ARG, "SELECT 1", '#599', ("if word != GROSS:", "if False:"),
+     1, 'still say ตัว, which now means ONE piece'),
 ]
 
 

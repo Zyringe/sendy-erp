@@ -22,8 +22,9 @@ and means a gross. Once ตัว is the base unit, `bsn_sync._get_base_qty`,
 `price_lookup._bill_ratio` and `sales_filters.base_qty_sql` all read a bill in
 the base unit at ratio 1 whatever unit_conversions says, so those bills would
 count single hasps: stock, COGS and every last-paid quote off by 144. So:
-  1. the bills that say ตัว are relabelled กุรุส through `declared_update`
-     (mig 173), which is exactly what the importer writes once #599 lands;
+  1. the bills that say ตัว are relabelled through `declared_update` (mig 173)
+     to the unit map's own word for Express กร, i.e. exactly what the importer
+     writes for them (กุรุส once #599 lands);
   2. today's base is first given its true word (unit_type ตัว -> กุรุส, inside the
      transaction), so the UNCHANGED engine re-denominates กุรุส -> ตัว and its own
      "already converted" guard still holds.
@@ -267,15 +268,23 @@ def preconditions(conn, eng, pids):
 # ── the steps around the engine ─────────────────────────────────────────────
 
 def _relabel(conn, pid, operator):
-    """Same-word products only: a bill still in the new base word means a gross."""
+    """Same-word products only: a bill still in the new base word means a gross.
+
+    It is rewritten to the unit map's own word for Express กร, read here rather
+    than typed, so the stored value IS what the importer writes for the same line
+    and the next import finds it unchanged. Before #599 that word is ตัว, the
+    rewrite is a no-op and the invariants roll the run back: a backstop behind
+    the precondition, not instead of it."""
+    import bsn_units
     from models._shared import declared_update
     if PLAN[pid]['new_unit'] != OLD_UNIT:
         return 0
+    word = bsn_units.translate('กร', BOOK, conn=conn)
     n = 0
     for table in ('sales_transactions', 'purchase_transactions'):
         for (rid,) in conn.execute("SELECT id FROM %s WHERE product_id=? AND unit=? ORDER BY id"
                                    % table, (pid, OLD_UNIT)).fetchall():
-            declared_update(conn, table, rid, {'unit': GROSS}, actor=operator,
+            declared_update(conn, table, rid, {'unit': word}, actor=operator,
                             source='manual', reason=RELABEL_REASON)
             n += 1
     return n
