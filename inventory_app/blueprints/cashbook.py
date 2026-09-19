@@ -1057,7 +1057,7 @@ def _policy_blocked_reason(conn, item):
 # Commission wording in a free-text description/note. Deliberately narrow:
 # "คอม" alone is a computer in Thai (prod row 306 'ค่าซ่อมคอม' is a repair), so
 # only คอมมิช…/คอมมิส…, ค่าคอม not followed by พ (ค่าคอมพิวเตอร์), or the
-# English word count. Pinned by tests/test_589_cashbook_commission_bypass.py.
+# English word. Pinned by tests/test_589_cashbook_commission_bypass.py.
 _COMMISSION_WORDING_RE = re.compile(r"คอมมิ[ชส]|ค่าคอม(?!พ)|commission", re.IGNORECASE)
 
 
