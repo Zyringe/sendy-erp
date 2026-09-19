@@ -222,9 +222,11 @@ def test_the_vat_build_is_declared_as_the_uploader(monkeypatch):
     assert (got.who, got.source, got.reason) == ('admin', 'import', 'system:vat-book-build')
 
 
-def test_the_upload_route_passes_its_actor_to_the_builder(tmp_db, monkeypatch):
+def test_the_upload_route_passes_its_actor_to_the_builder(tmp_db, tmp_path, monkeypatch):
     from blueprints import bsn
     argv = {}
+    dataset = tmp_path / 'dataset'
+    dataset.mkdir()
 
     class _Proc:
         def __init__(self, args, **kw):
@@ -234,6 +236,6 @@ def test_the_upload_route_passes_its_actor_to_the_builder(tmp_db, monkeypatch):
             return 0
     monkeypatch.setattr(bsn.subprocess, 'Popen', _Proc)
     with actor.acting_as(kind='ui', who='admin', source='manual', detail='bsn.express_dbf_upload'):
-        bsn._spawn_vat_rebuild('/nonexistent/dataset', 1, '2026-08-17')
+        bsn._spawn_vat_rebuild(str(dataset), 1, '2026-08-17')
     args = argv['args']
     assert args[args.index('--uploader') + 1] == 'admin'
