@@ -88,8 +88,8 @@ def customer_detail(customer_code):
         "SELECT * FROM customers WHERE code = ?", (customer_code,)
     ).fetchone()
 
-    # Match the desktop code page's display-name fallback: master first, then
-    # the name on this code's most recent bill, then the code itself.
+    # Use the desktop code page's bill-name lookup, with this surface's
+    # master-first display rule.
     bill_name_row = conn.execute(
         """
         SELECT customer FROM sales_transactions
@@ -98,8 +98,8 @@ def customer_detail(customer_code):
         """,
         (customer_code,),
     ).fetchone()
-    customer_name = (customer['name'] if customer else
-                     (bill_name_row['customer'] if bill_name_row else customer_code))
+    bill_name = bill_name_row['customer'] if bill_name_row else None
+    customer_name = customer['name'] if customer else (bill_name or customer_code)
 
     # Salesperson from customers MASTER + lookup table; ภาค (#528) derived
     # from the address (customer_geo.region_of), same source the call card
