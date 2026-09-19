@@ -19,6 +19,7 @@ frame adds to the identity below it: the engine says WHAT ran
 No Flask here: app.py owns the request hooks and passes plain values in.
 """
 import contextvars
+import sqlite3
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -100,6 +101,37 @@ def pop_request(token):
     except ValueError:
         # the token belongs to another context; never let a request inherit it
         _frames.set(())
+
+
+class ActorMissing(RuntimeError):
+    """Nobody is declared on the connection about to write cost (#590).
+
+    Raised by `require` BEFORE the seam's first write, so there is nothing to
+    undo. The owner of the connection closes it and records the durable alert
+    (models/system_alerts.py::record_actor_missing_alert), the same ownership
+    rule WaccIdentityError follows.
+    """
+
+    def __init__(self, operation):
+        self.operation = operation
+        super().__init__(
+            f'ต้องระบุตัวผู้แก้ต้นทุน (#590) ก่อน {operation}: เขียนผ่านหน้าเว็บ '
+            f'หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)')
+
+
+def require(conn, operation):
+    """Refuse `operation` unless `conn` resolves an actor. Returns who.
+
+    Asks the connection, not Python state, so the answer is exactly what the
+    triggers will see. A connection without the function (raw sqlite3) names
+    nobody."""
+    try:
+        who = conn.execute("SELECT sendy_actor('who')").fetchone()[0]
+    except sqlite3.OperationalError:
+        who = None
+    if not who:
+        raise ActorMissing(operation)
+    return who
 
 
 def set_fallback(default):

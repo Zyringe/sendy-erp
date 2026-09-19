@@ -17,6 +17,7 @@ import pytest
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 import hammer_bundle_datafix as datafix  # noqa: E402
+from tests._pre_mig590 import sign_raw_connections  # noqa: E402
 
 PID_268, PID_269, PID_270, PID_271, PID_869 = 268, 269, 270, 271, 869
 
@@ -49,6 +50,13 @@ W2_NEW_COST = {869: 5.0, 268: 71.0, 269: 73.0}
 
 
 # ── fixture: force the Phase-1 baseline onto a copy of the live dev DB ─────
+
+
+@pytest.fixture(autouse=True)
+def _pre_mig590_world(monkeypatch):
+    """A dated one-off script's raw connections, in the world it ran in (#590).
+    See tests/_pre_mig590.py."""
+    sign_raw_connections(monkeypatch)
 
 @pytest.fixture
 def hammer_db(tmp_db):

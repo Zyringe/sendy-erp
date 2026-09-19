@@ -44,7 +44,8 @@ def _seed(c):
 def _run(db_path):
     argv = sys.argv
     sys.argv = ['merge_product.py', '--from', str(SRC), '--to', str(DST),
-                '--apply', '--db', db_path]
+                '--apply', '--db', db_path,
+                '--operator', 'pytest', '--reason', 'test merge']
     try:
         return mp.main()
     finally:

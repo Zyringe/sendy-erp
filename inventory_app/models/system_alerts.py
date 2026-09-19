@@ -58,6 +58,7 @@ KIND_ORPHAN_BSN_LEDGER = 'orphan_bsn_ledger'
 KIND_CONVERSION_ROLE_ERROR = 'conversion_role_error'
 KIND_IMPORT_STALE = 'import_stale'
 KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
+KIND_ACTOR_MISSING = 'actor_missing'
 KIND_EXPRESS_DOC_DRIFT = 'express_doc_drift'
 KIND_EXPRESS_DRIFT_SKIPPED = 'express_doc_drift_skipped'
 
@@ -526,6 +527,28 @@ def record_wacc_identity_alert(exc, *, operation=None, extra=None):
         # Never let alerting replace the money-path error it was reporting.
         print(f"[system_alerts] failed to record alert: {alert_exc}",
               file=sys.stderr)
+        return None
+
+
+def record_actor_missing_alert(exc, *, extra=None):
+    """Persist an actor.ActorMissing on a FRESH connection. Best-effort (#590).
+
+    A cost write refused because nobody declared who is making it: most likely
+    a script or `railway ssh` heredoc that skipped database.script_connection.
+    Same contract as record_wacc_identity_alert: call it after the failed
+    connection is closed, and it never raises over the original error.
+    """
+    try:
+        op = getattr(exc, 'operation', None)
+        context = {'operation': op}
+        if extra:
+            context.update(extra)
+        msg = (f"มีการพยายามแก้ต้นทุนโดยไม่ระบุตัวผู้แก้ ({op}) — ระบบปฏิเสธแล้ว "
+               "ถ้าเป็นสคริปต์ ต้องเปิด connection ด้วย database.script_connection")
+        return create_system_alert(KIND_ACTOR_MISSING, msg,
+                                   dedupe_key=_dedupe_key([op]), context=context)
+    except Exception as alert_exc:            # noqa: BLE001
+        print(f"[system_alerts] failed to record alert: {alert_exc}", file=sys.stderr)
         return None
 
 
