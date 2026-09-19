@@ -1,3 +1,13 @@
+"""⛔ RETIRED 2026-09-19 with the script it covers.
+
+scripts/apply_unit_type_change.py is now .py.txt and cannot be imported, so this
+file cannot be collected. Kept as .py.txt rather than deleted: it is the record of
+what that script was believed to do. Keeping the script importable just to keep
+these four green would be backwards — the whole point is that it must never run.
+Replacements: scripts/2026_08_17_bolt_dozen_to_piece.py and
+scripts/2026_09_19_gross_to_piece.py, both with live tests.
+"""
+
 """Tests for scripts/apply_unit_type_change.py (synthetic pids).
 
 D1: unit_type changed; transactions ×N; stock = old×N; per-bsn_unit ratio
