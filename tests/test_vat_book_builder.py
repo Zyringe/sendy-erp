@@ -2,7 +2,7 @@
 overwrite + oracle, isvat dump, finalize, subprocess guard).
 
 Pure dict-fixture + throwaway-sqlite tests: no DBF files, no live DB. The
-minimal 3-table schema below mirrors data/schema.sql's columns these
+minimal schema below mirrors data/schema.sql's columns these
 functions touch; commit_express_dbf itself is covered by its own suite."""
 import os
 import sqlite3
@@ -33,6 +33,10 @@ def conn(tmp_path):
         CREATE TABLE stock_levels (
             product_id INTEGER PRIMARY KEY,
             quantity INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE unit_map (
+            id INTEGER PRIMARY KEY, book TEXT NOT NULL,
+            spelling TEXT NOT NULL, word TEXT NOT NULL);
+        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว');
     """)
     yield c
     c.close()
@@ -48,11 +52,7 @@ def _stmas(code, des='ของทดสอบ', qucod='ตว', totbal=0, unitp
 # ── seed_products_from_stmas ────────────────────────────────────────────────
 
 def test_seed_creates_product_and_catchall_mapping(conn):
-    # #596: seed_products_from_stmas's `conn` is this throwaway 3-table
-    # fixture, never the one db unit_map is seeded in — pass the map in
-    # explicitly (this file's own docstring: "no DBF files, no live DB").
-    pids = vb.seed_products_from_stmas(
-        conn, [_stmas('001ก1', 'ค้อน 2 ปอนด์')], unit_map={'ตว': 'ตัว'})
+    pids = vb.seed_products_from_stmas(conn, [_stmas('001ก1', 'ค้อน 2 ปอนด์')])
     row = conn.execute(
         "SELECT p.product_name, p.unit_type, m.bsn_code, m.bsn_unit "
         "FROM products p JOIN product_code_mapping m ON m.product_id = p.id"
@@ -63,44 +63,25 @@ def test_seed_creates_product_and_catchall_mapping(conn):
     assert pids['001ก1'] == 1
 
 
-# ── #596: seed_products_from_stmas's `conn` is never the db unit_map lives in ──
+# ── #596: the build translates through the MAIN db's unit map ──────────────
 
-def test_load_main_unit_map_reads_a_separate_db_readonly(tmp_path):
-    """`_load_main_unit_map` is the fix for the regression this ticket found:
-    seed_products_from_stmas's own `conn` is the fresh build-target db, never
-    the one main db unit_map is seeded in — build() must read the real map
-    from a SEPARATE connection to `main_db_path` instead."""
-    main_db = tmp_path / 'main.db'
-    c = sqlite3.connect(str(main_db))
-    c.executescript("""
-        CREATE TABLE unit_map (
-            id INTEGER PRIMARY KEY, book TEXT NOT NULL,
-            spelling TEXT NOT NULL, word TEXT NOT NULL);
-        CREATE UNIQUE INDEX ux ON unit_map(book, spelling);
-        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว');
-    """)
-    c.commit()
-    c.close()
-
-    m = vb._load_main_unit_map(str(main_db))
-    assert m == {'ตว': 'ตัว'}
-
-    # read-only: a write attempt through this path must fail, not silently land
-    c2 = sqlite3.connect(f'file:{main_db}?mode=ro', uri=True)
-    with pytest.raises(sqlite3.OperationalError):
-        c2.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('x','y','z')")
-    c2.close()
+def test_use_main_unit_map_refuses_without_a_main_db(conn):
+    with pytest.raises(RuntimeError, match='--result-db'):
+        vb._use_main_unit_map(conn, None)
+    # control: nothing was touched before the refusal
+    assert conn.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 1
 
 
-def test_load_main_unit_map_none_path_returns_none():
-    assert vb._load_main_unit_map(None) is None
-    assert vb._load_main_unit_map('') is None
-
-
-def test_build_threads_the_loaded_map_into_seed_products_from_stmas(tmp_path, monkeypatch):
-    """Break-it-once target: if build() stopped passing unit_map= through,
-    this goes red (seed_products_from_stmas would see None and fall back to
-    its own default connection, silently losing the main-db map)."""
+def test_build_translates_through_the_main_db_map_not_its_own_seed(tmp_path, monkeypatch):
+    """The VAT book is a fresh db, so init_db() seeds its unit_map from
+    migration 185. The main db's map is the only real one: it holds what Put
+    has named since, and what later migrations changed. Every translation in
+    the build (the STMAS seed here, and import_weekly deep inside
+    commit_express_dbf, which opens its own connection) must read the main
+    map. Control: 185 says กร -> ตัว and does not know ZZ; main says
+    กุรุส / ทดสอบ."""
+    import bsn_units
+    import config
     import database
     import express_dbf_source as eds
     import import_router
@@ -112,35 +93,52 @@ def test_build_threads_the_loaded_map_into_seed_products_from_stmas(tmp_path, mo
             id INTEGER PRIMARY KEY, book TEXT NOT NULL,
             spelling TEXT NOT NULL, word TEXT NOT NULL);
         CREATE UNIQUE INDEX ux ON unit_map(book, spelling);
-        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว');
+        INSERT INTO unit_map (book, spelling, word) VALUES
+            ('BSN5657', 'กร', 'กุรุส'), ('BSN5657', 'ZZ', 'ทดสอบ');
     """)
     c.commit()
     c.close()
 
     db_path = str(tmp_path / 'built.db')
+    monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
+    monkeypatch.setattr(database, 'DATABASE_PATH', db_path)
     monkeypatch.setattr(vb, '_guard_subprocess_target', lambda: db_path)
-    monkeypatch.setattr(database, 'init_db', lambda *a, **k: None)
-    monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
-    monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
+    monkeypatch.setattr(eds, 'open_table', lambda src, name: (
+        [_stmas('X1', qucod='ZZ')] if name == 'STMAS' else []))
     monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
-    seen = {}
-    monkeypatch.setattr(vb, 'seed_products_from_stmas',
-                        lambda conn, rows, **k: seen.update(k) or {})
     monkeypatch.setattr(vb, 'overwrite_stock_from_stmas', lambda *a, **k: None)
     monkeypatch.setattr(vb, 'dump_isvat', lambda *a, **k: 0)
     monkeypatch.setattr(vb, 'dump_stmas_meta', lambda *a, **k: 0)
     monkeypatch.setattr(vb, 'write_book_meta', lambda *a, **k: None)
     monkeypatch.setattr(vb, 'finalize', lambda *a, **k: None)
-    monkeypatch.setattr(import_router, 'commit_express_dbf', lambda *a, **k: {
-        'sales': {'imported': 0}, 'purchase': {'imported': 0},
-        'payments_in': {'imported': 0}, 'payments_out': {'imported': 0},
-        'credit_notes_ar': {'upserted': 0}, 'credit_notes_ap': {'imported': 0},
-        'ar_snapshot': {'imported': 0}, 'ap_snapshot': {'imported': 0},
-        'snapshot_date': None})
+    seen = {}
+
+    def _importer(*a, **k):
+        own = database.get_connection()      # what import_weekly does
+        try:
+            seen.update({s: bsn_units.normalize_unit(s, conn=own) for s in ('กร', 'ZZ')})
+        finally:
+            own.close()
+        return {'sales': {'imported': 0}, 'purchase': {'imported': 0},
+                'payments_in': {'imported': 0}, 'payments_out': {'imported': 0},
+                'credit_notes_ar': {'upserted': 0}, 'credit_notes_ap': {'imported': 0},
+                'ar_snapshot': {'imported': 0}, 'ap_snapshot': {'imported': 0},
+                'snapshot_date': None}
+    monkeypatch.setattr(import_router, 'commit_express_dbf', _importer)
 
     vb.build('/nonexistent', main_db_path=str(main_db))
 
-    assert seen.get('unit_map') == {'ตว': 'ตัว'}
+    built = sqlite3.connect(db_path)
+    try:
+        unit_type = built.execute(
+            "SELECT unit_type FROM products WHERE product_name = 'ของทดสอบ'").fetchone()
+        rows = sorted(built.execute("SELECT book, spelling, word FROM unit_map"))
+    finally:
+        built.close()
+    assert seen == {'กร': 'กุรุส', 'ZZ': 'ทดสอบ'}
+    assert unit_type == ('ทดสอบ',)
+    # exactly the main map, nothing of 185's seed left behind
+    assert rows == [('BSN5657', 'ZZ', 'ทดสอบ'), ('BSN5657', 'กร', 'กุรุส')]
 
 
 def test_seed_blank_name_falls_back_to_code_and_dups_keep_first(conn):
@@ -430,7 +428,8 @@ def test_build_refuses_to_return_when_a_snapshot_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
     monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
     monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
-    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows, **k: {})
+    monkeypatch.setattr(vb, '_use_main_unit_map', lambda *a, **k: None)
+    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
     reached = []
     monkeypatch.setattr(vb, 'overwrite_stock_from_stmas',
                         lambda *a, **k: reached.append('stock'))
@@ -459,7 +458,8 @@ def test_build_passes_the_snapshot_date_through_to_the_importer(tmp_path, monkey
     monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
     monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
     monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
-    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows, **k: {})
+    monkeypatch.setattr(vb, '_use_main_unit_map', lambda *a, **k: None)
+    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
     monkeypatch.setattr(vb, 'overwrite_stock_from_stmas', lambda *a, **k: None)
     monkeypatch.setattr(vb, 'dump_isvat', lambda *a, **k: 0)
     monkeypatch.setattr(vb, 'dump_stmas_meta', lambda *a, **k: 0)

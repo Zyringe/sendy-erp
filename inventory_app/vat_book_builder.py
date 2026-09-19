@@ -18,8 +18,9 @@ the live DB: VAT_BOOK_BUILD=1 must be set, and the target DB must not exist yet
 finalized self-contained (journal_mode=DELETE, no -wal/-shm, integrity-checked);
 the caller renames/moves it into place (see blueprints/bsn.py).
 
-Fill order: fresh schema → products+mapping seeded from STMAS (so every STKCOD
-resolves during import) → commit_express_dbf(since_days=None) = full history
+Fill order: fresh schema → unit_map copied from the main db → products+mapping
+seeded from STMAS (so every STKCOD resolves during import) →
+commit_express_dbf(since_days=None) = full history
 through the six REAL importers → stock_levels overwritten from STMAS.TOTBAL
 (the book's own stock, oracle-checked vs Σ STLOC.LOCBAL) → isvat_raw dump →
 book_meta → finalize.
@@ -64,32 +65,19 @@ def _stmas_cost(r):
     return val if val > 0 else 0.0
 
 
-def seed_products_from_stmas(conn, stmas_rows, unit_map=None):
+def seed_products_from_stmas(conn, stmas_rows):
     """Create one product + one catch-all mapping row per STMAS code.
     Returns {stkcod: product_id}. Blank STKDES falls back to the code itself
     (product_name is NOT NULL); duplicate STKCOD keeps the first row.
     cost_price := STMAS.UNITPR (plan §4.2) — the VAT book is a mirror of
-    Express, so Express's own valuation is the truth everywhere it shows.
-
-    `unit_map`: an already-loaded {spelling: word} dict, per #596. `conn`
-    here is always a FRESH/isolated build-target DB (the subprocess's own
-    DATA_DIR-scoped db, or a throwaway test schema) — never the one main db
-    the unit_map TABLE actually lives in and is seeded in, so looking the
-    unit up on `conn` would silently find nothing. `build()` loads the real
-    map once from the main db and passes it in; `None` (a direct call with
-    no better source, e.g. a unit test) falls back to bsn_units' own default
-    connection instead of `conn`."""
+    Express, so Express's own valuation is the truth everywhere it shows."""
     code_to_pid = {}
     for r in stmas_rows:
         code = str(r.get('STKCOD') or '').strip()
         if not code or code in code_to_pid:
             continue
         name = str(r.get('STKDES') or '').strip() or code
-        raw_unit = str(r.get('QUCOD') or '').strip()
-        if unit_map is not None:
-            unit = unit_map.get(raw_unit, raw_unit) or 'ตัว'
-        else:
-            unit = bsn_units.normalize_unit(raw_unit) or 'ตัว'
+        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip(), conn=conn) or 'ตัว'
         cost = _stmas_cost(r)
         cur = conn.execute(
             "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)",
@@ -278,20 +266,30 @@ def _require_snapshots_ok(per_type):
                 f'{label}: สร้างไม่สำเร็จ — ไม่ publish สมุด VAT รอบนี้ ({err})')
 
 
-def _load_main_unit_map(main_db_path):
-    """Read #596's unit_map from the REAL main app db — read-only, and on a
-    connection that has nothing to do with `database.get_connection()`
-    (which this subprocess has just pointed at the fresh build-target db via
-    DATA_DIR). None in, None out: callers with no main_db_path (a direct
-    unit test) get bsn_units' own fallback instead."""
+def _use_main_unit_map(conn, main_db_path):
+    """Make this build db's unit_map an exact copy of the MAIN db's (#596).
+
+    The one unit map lives in the main app db. Everything here that
+    translates a unit (seed_products_from_stmas, and import_weekly deep
+    inside commit_express_dbf, which opens its own connection) reads it
+    through `database.get_connection()`, and DATA_DIR points that at this
+    fresh build db. init_db() seeded that db's table from migration 185, as
+    it does for every fresh db, and 185 is not the main map once Put has
+    named a code or a later migration has changed one. So it is replaced
+    here, before anything reads it. Read-only on the main db."""
     if not main_db_path:
-        return None
-    import sqlite3
-    conn = sqlite3.connect(f'file:{main_db_path}?mode=ro', uri=True)
+        raise RuntimeError(
+            "vat_book_builder needs the main db (--result-db): the VAT book "
+            "translates unit codes through the main db's unit_map")
+    src = sqlite3.connect(f'file:{main_db_path}?mode=ro', uri=True)
     try:
-        return bsn_units.load_unit_map(conn=conn)
+        rows = src.execute("SELECT book, spelling, word FROM unit_map").fetchall()
     finally:
-        conn.close()
+        src.close()
+    conn.execute("DELETE FROM unit_map")
+    conn.executemany(
+        "INSERT INTO unit_map (book, spelling, word) VALUES (?, ?, ?)", rows)
+    conn.commit()
 
 
 def build(source_dir, snapshot_date=None, main_db_path=None):
@@ -302,12 +300,9 @@ def build(source_dir, snapshot_date=None, main_db_path=None):
     Letting it default here would stamp the VAT book from this subprocess's own
     clock — it starts minutes after the request and can cross midnight.
 
-    main_db_path: the REAL main app db (the CLI's own `--result-db`, captured
-    by the route before this subprocess's DATA_DIR override took effect) —
-    the one place #596's unit_map table actually has its seeded rows. This
-    subprocess's own `database.get_connection()` points at a fresh
-    DATA_DIR-scoped build db instead, whose unit_map (if it has the table at
-    all) is empty (see seed_products_from_stmas's docstring).
+    main_db_path: the MAIN app db (the CLI's `--result-db`, captured by the
+    route before this subprocess's DATA_DIR override took effect). Its
+    unit_map is the one map; see _use_main_unit_map.
     """
     db_path = _guard_subprocess_target()
 
@@ -322,12 +317,11 @@ def build(source_dir, snapshot_date=None, main_db_path=None):
     isvat = eds.open_table(source_dir, 'ISVAT')
     isinfo = eds.open_table(source_dir, 'ISINFO')
 
-    unit_map = _load_main_unit_map(main_db_path)
-
     conn = database.get_connection()
     try:
+        _use_main_unit_map(conn, main_db_path)
         seed_companies(conn)
-        code_to_pid = seed_products_from_stmas(conn, stmas, unit_map=unit_map)
+        code_to_pid = seed_products_from_stmas(conn, stmas)
         per_type = import_router.commit_express_dbf(
             source_dir, db_path=db_path, since_days=None,
             snapshot_date=snapshot_date)
@@ -451,7 +445,8 @@ if __name__ == '__main__':
     p.add_argument('--publish-to',
                    help='live vat_book.db path to atomically replace on success')
     p.add_argument('--result-db',
-                   help='MAIN db path holding the import_log last-run row to update')
+                   help='MAIN db path: holds the import_log last-run row to update, '
+                        'and the unit_map the build translates units through (required to build)')
     p.add_argument('--result-row', type=int,
                    help='import_log row id to update with the outcome')
     p.add_argument('--cleanup-dir',
