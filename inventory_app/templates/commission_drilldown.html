@@ -184,8 +184,6 @@
                     <span class="badge bg-warning text-dark">บางส่วน</span>
                   {% elif inv.paid_status == 'no_rate' %}
                     <span class="badge bg-secondary">no rate</span>
-                  {% elif inv.paid_status == 'settled' %}
-                    <span class="badge bg-light text-subtle border" title="ปิดยอดตามกฎ: เก็บเงินได้ถึง 30 เม.ย. 2026 หรือขายก่อน ก.พ. 2026">ปิดยอดแล้ว</span>
                   {% else %}
                     <span class="badge bg-light text-dark">รอจ่าย</span>
                   {% endif %}
