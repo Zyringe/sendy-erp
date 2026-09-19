@@ -73,6 +73,16 @@ def test_a_root_scope_replaces_the_default_and_a_partial_scope_composes(tmp_db):
         conn.close()
 
 
+def test_a_root_scope_inherits_nothing_from_below(tmp_db):
+    """A root is a new identity: it must not borrow the default's source."""
+    conn = database.get_connection()
+    try:
+        with actor.acting_as(kind='migration', who='deploy', detail='189_x.sql'):
+            assert _resolved(conn) == ('deploy', None, 'migration:189_x.sql')
+    finally:
+        conn.close()
+
+
 def test_a_scope_is_reset_even_when_its_body_raises(tmp_db):
     conn = database.get_connection()
     try:

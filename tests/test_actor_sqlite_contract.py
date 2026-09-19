@@ -80,6 +80,7 @@ def test_an_unsigned_connection_is_refused_by_the_guard(db):
     actor.set_fallback(None)
     with pytest.raises(sqlite3.IntegrityError, match='cost change needs an actor'):
         anon.execute('UPDATE p SET cost = 13 WHERE id = 1')
+    anon.rollback()        # the aborted statement leaves the transaction open
     _signed(db).execute('UPDATE p SET cost = 13 WHERE id = 1')      # control
 
 
