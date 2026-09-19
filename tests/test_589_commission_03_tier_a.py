@@ -77,6 +77,11 @@ def test_mig189_is_rerunnable_and_audits_the_change_once(pre189):
     conn.executescript(_read(MIG))
     first = _tier_of(conn, '03')
     n1 = _assignment_update_audits(conn)
+    # Both runs land in the same second, so a bumped updated_at would look
+    # unchanged: plant a sentinel the re-run can only preserve or overwrite.
+    conn.execute("UPDATE commission_assignments SET updated_at = '2000-01-01 00:00:00' "
+                 "WHERE salesperson_code = '03'")
+    conn.commit()
     conn.executescript(_read(MIG))
     second = _tier_of(conn, '03')
     n2 = _assignment_update_audits(conn)
@@ -84,7 +89,7 @@ def test_mig189_is_rerunnable_and_audits_the_change_once(pre189):
     assert first['code'] == second['code'] == 'A'
     assert n1 - n0 == 1, 'the real change is audited'
     assert n2 == n1, 'a re-run changes nothing, so it logs nothing'
-    assert second['updated_at'] == first['updated_at'], 'a re-run does not bump updated_at'
+    assert second['updated_at'] == '2000-01-01 00:00:00', 'a re-run does not touch the row'
 
 
 def test_mig189_precondition_aborts_when_03_row_is_missing(pre189):
