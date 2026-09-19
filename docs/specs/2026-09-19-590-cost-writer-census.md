@@ -77,7 +77,7 @@ then read by hand.
 | L6 | `models/wacc.py:441` same function | UPDATE products `cost_price` (stamps `wac-sync`) | literal |
 | L7 | `models/conversions.py:626` `run_conversion` | INSERT `conversion_cost_log` | literal |
 | L8 | `blueprints/admin.py:482-483` `_replace_master_tables` | `DELETE FROM main.{table}` + `INSERT … SELECT * FROM upl.{table}`, and `products` is in `_MASTER_TABLES` | f-string. **Raw `sqlite3.connect`** |
-| L9 | `blueprints/admin.py:615` (full upload) and `db_backup.restore_backup` (`admin.py:750`) | replace the whole DB file | no SQL, so no trigger can see it |
+| L9 | `blueprints/admin.py:615` (full upload), `admin.py:661` (upload confirm), `db_backup.restore_backup` (`db_backup.py:398`, reached from `admin.py:750`), and `app.py:231` (`/bootstrap/upload-db`) | replace the whole DB file | no SQL, so no trigger can see it |
 | L10 | `vat_book_builder.py:83` `seed_products_from_stmas` | INSERT products `cost_price` into **vat_book.db** | literal, raw connection |
 | L11 | `database.py:443` `run_pending_migrations` | `executescript` on each pending migration. Past cost writers: 111 (opening_cost backfill), 156 (ledger delete), and the table rebuilds 069/097/141 | file |
 
@@ -89,7 +89,7 @@ The script-local SQL sites are listed with their scripts in §3.
 "Reaches audit_log today" is ✗ for every row, so that column is replaced by the
 **only trace that exists today**.
 
-### UI routes: a Flask session user always exists
+### HTTP routes (U1 to U13 have a Flask session user; U14 has none)
 
 With impersonation (ADR 0003) the session holds the target user, and the real admin is in
 `session['_real_username']`.
@@ -109,6 +109,7 @@ With impersonation (ADR 0003) the session holds the target user, and the real ad
 | U11 | POST `/admin/upload-db` with `mode=master_only` → `_replace_master_tables` | L8 | admin | 1,999 DELETE + 1,999 INSERT audit rows, all NULL (2026-06-13 06:48) |
 | U12 | POST `/admin/upload-db` full mode (+ `/confirm`) | L9 | admin | nothing (file swap) |
 | U13 | POST `/admin/backups/restore` | L9 | admin | nothing (file swap) |
+| U14 | POST `/bootstrap/upload-db` (`app.py:212`, `@csrf.exempt`, live only while `BOOTSTRAP_TOKEN` is set, **no session**) | L9 (`os.replace` at `app.py:231`) | the token holder, who cannot be identified | nothing (file swap). Added in revision 2, because the interrogate panel found it missing (Opus 12) |
 
 ### Processes with no request
 
@@ -143,8 +144,8 @@ There is one Railway account, so the operator can only ever be **self-declared**
 | S18 | `cleanup_split_mapping_stubs.py` (marked DEPRECATED) | prints recalc commands for an operator to paste | raw | none |
 | S19 | **ad-hoc heredoc over `railway ssh`** (no file in the repo). Example: the #546 option-B replay, 2026-09-18 08:52 | `models.recalculate_product_wacc` in a loop: 147 `cost_price` changes, 4,648 ledger rows | whatever the heredoc opened | `wac-sync` only. **Nobody can tell who ran it** |
 
-**Census total: 34 entry points** (13 UI, 2 process, 19 script) **over 11 app-side SQL sites plus
-7 script-local ones.**
+**Census total: 35 entry points** (14 HTTP routes, 2 processes, 19 scripts) **over 11 app-side SQL sites
+plus 7 script-local ones.** Revision 2 added U14.
 
 ## 4. Hits the scan returned that do NOT write cost (each with its reason)
 
