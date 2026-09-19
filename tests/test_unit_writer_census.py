@@ -86,9 +86,10 @@ test_the_census_survives_its_own_success) — the framework does not secretly
 require an open pending entry to exist.
 """
 import ast
+import io
 import os
 import re
-import textwrap
+import tokenize
 
 import pytest
 
@@ -137,6 +138,32 @@ _DYNAMIC_SET_RE = re.compile(r'\bUPDATE\s+(\w+)\s+SET\s*\{', re.I)
 _BSN_UNITS_CALL_RE = re.compile(
     r'\bbsn_units\.(?:normalize_unit|translate|learn|add_acronym|is_known'
     r'|load_unit_map)\b')
+
+
+def _code_only(src):
+    """`src` with comments and docstrings removed — a guard call named only
+    in a comment (e.g. `pass  # bsn_units.add_acronym(...) removed`) is not
+    a guard. Tokenize-based, like test_revenue_filter_coverage.py's
+    `_code_only` — but joined with NO separator, not `\\n`: that file's
+    GUARD_TOKENS are single identifiers, so `\\n`.join (one token per line)
+    still leaves each one findable as a substring. This file's checks are
+    DOTTED calls (`bsn_units.add_acronym`, `acr_full.get(`) spanning THREE
+    tokens (NAME, OP '.', NAME) — `\\n`.join was proven to break adjacency
+    between them (every through_map self-check went red against unmutated
+    code the first time this ran), so plain concatenation is what actually
+    reconstructs a dotted name. Proven correct, not assumed, by
+    test_code_only_strips_comments_but_keeps_real_calls below."""
+    out = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                continue
+            if tok.type == tokenize.STRING and tok.line.lstrip().startswith(('"""', "'''")):
+                continue
+            out.append(tok.string)
+    except (tokenize.TokenError, IndentationError):
+        return src          # unparseable: fall back to the raw text, never skip
+    return ''.join(out)
 
 
 def _render(node):
@@ -774,7 +801,7 @@ def test_through_map_direct_sites_actually_call_bsn_units(site, label):
     qualname = site.split('::', 1)[1]
     src = _function_source(path, qualname)
     assert src is not None, f'{site}: function not found (renamed/moved?)'
-    assert _BSN_UNITS_CALL_RE.search(src), (
+    assert _BSN_UNITS_CALL_RE.search(_code_only(src)), (
         f'{site} [{label}] is declared through_map but no longer calls bsn_units')
 
 
@@ -784,27 +811,50 @@ def test_unit_conversions_save_caller_pretranslates_before_calling():
     CALLER, blueprints/bsn.py::unit_conversions_save — assert its two-pass
     shape (learn first, substitute before building `items`) is still there,
     so the transitive claim cannot silently rot when nobody is looking at
-    save_unit_conversions itself."""
-    with open(os.path.join(APP, 'blueprints', 'bsn.py'), encoding='utf-8') as f:
-        src = f.read()
+    save_unit_conversions itself. Checked against `_code_only`, not the raw
+    source — the first draft of this test named the call in its own prose
+    ("assert 'models.learn_acronyms_normalize(learned)' in caller") and
+    stayed GREEN when the real call was replaced by `pass  # ... removed`,
+    because the commented-out line still contained the literal text."""
     caller = _function_source(os.path.join(APP, 'blueprints', 'bsn.py'),
                               'unit_conversions_save')
     assert caller is not None, 'blueprints/bsn.py::unit_conversions_save not found'
-    assert 'models.learn_acronyms_normalize(learned)' in caller, (
+    code = _code_only(caller)
+    assert 'models.learn_acronyms_normalize(learned)' in code, (
         'unit_conversions_save no longer teaches the map before saving — '
         'the through_map_transitive claim on save_unit_conversions no '
         'longer holds')
-    assert 'acr_full.get(' in caller, (
+    assert 'acr_full.get(' in code, (
         'unit_conversions_save no longer substitutes the learned full word '
         'before building the items list passed to save_unit_conversions')
     # ORDER matters: the substitution must read from a dict populated by
     # the SAME learn step, not a stale one — a crude but real proxy is that
     # the learn call's line number precedes the substitution's.
-    learn_at = caller.index('models.learn_acronyms_normalize(learned)')
-    sub_at = caller.index('acr_full.get(')
+    learn_at = code.index('models.learn_acronyms_normalize(learned)')
+    sub_at = code.index('acr_full.get(')
     assert learn_at < sub_at, (
-        'unit_conversions_save now substitutes BEFORE learning — a code '
-        'path could import_credit_notes.py')
+        'unit_conversions_save now substitutes BEFORE learning — an item '
+        'could reach save_unit_conversions holding the raw acronym instead '
+        'of the word Pass 1 just taught the map')
+
+
+def test_code_only_strips_comments_but_keeps_real_calls():
+    """Control for the two `_code_only`-gated tests above. A stripper that
+    ate everything (or that left a commented-out call looking real) would
+    make both of those tests pass for the wrong reason — proven here by
+    running `_code_only` on a real bsn_sync.py mutation shape directly,
+    without touching the file on disk."""
+    real = (
+        'def f(pairs, conn):\n'
+        '    bsn_units.add_acronym("acr", "full", conn=conn)\n')
+    commented_out = (
+        'def f(pairs, conn):\n'
+        '    pass  # bsn_units.add_acronym("acr", "full", conn=conn) removed\n')
+    assert _BSN_UNITS_CALL_RE.search(_code_only(real))
+    assert not _BSN_UNITS_CALL_RE.search(_code_only(commented_out)), (
+        'a call named only in a comment must not count as calling bsn_units')
+    # the strip must not have eaten the CODE beside the comment either
+    assert 'pass' in _code_only(commented_out)
 
 
 def test_naming_cascade_whitelist_still_excludes_unit_type():
