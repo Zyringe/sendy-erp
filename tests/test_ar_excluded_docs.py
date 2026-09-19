@@ -9,11 +9,10 @@ This file pins the seam that gives them back — the per-document complement of
 `cashflow.BSN_AR_PREDICATE`, scoped to one customer:
 
     cashflow.bsn_ar_excluded_docs_by_code(code)  -> (rows, snapshot_date)
-    cashflow.bsn_ar_excluded_docs(name)          -> (rows, snapshot_date)
 
 Vocabulary (CONTEXT.md): **outstanding** = what the snapshot says is unpaid.
 **chaseable** = outstanding minus ar_writeoffs, minus is_anomalous, minus
-pre-2024. These functions return exactly `outstanding − chaseable`.
+pre-2024. This function returns exactly `outstanding − chaseable`.
 
 ⚠ The load-bearing test here is the PARTITION: chaseable ∪ excluded must equal
 every row the customer has in the latest snapshot, with no overlap. Anything
@@ -22,9 +21,9 @@ the failure this whole ticket exists to prevent, in mirror image.
 
 ⚠ The chaseable side of that partition comes from `ar_followup.get_customer_ar_detail`
 (an existing helper that applies the imported predicate and nothing else), NOT
-from a re-typed query, and NOT from `models.get_customer_unpaid_bills*` — those
-carry an extra `outstanding_amount > 0` clause on purpose (ADR 0012) and so are
-a deliberately smaller set than the predicate alone.
+from a re-typed query, and NOT from `models.get_customer_unpaid_bills_by_code` — it
+carries an extra `outstanding_amount > 0` clause on purpose (ADR 0012) and is a
+deliberately smaller set than the predicate alone.
 
 ⚠ `tmp_db` clones the live dev DB WITH its data, so every row asserted on here is
 FORCED, never inherited: the fixture deletes its own keys first, then inserts
@@ -117,8 +116,8 @@ WRITEOFFS = {
 def _seed(db_path):
     """Force the six rows above for our test customer at the latest snapshot.
 
-    Also seeds an orphan (blank customer_code) copy so the NAME-keyed wrapper
-    has its own population — fixing only the code path would otherwise pass.
+    Also seeds an orphan (blank customer_code) copy for the dunning helper's
+    snapshot-name branch — fixing only its code path would otherwise pass.
     Returns the snapshot date used.
     """
     conn = sqlite3.connect(db_path)
@@ -339,30 +338,6 @@ def test_chaseable_and_excluded_partition_the_customers_snapshot(tmp_db):
     total = round(sum(float(r['outstanding']) for r in excluded)
                   + sum(float(r['outstanding']) for r in chaseable), 2)
     assert total == round(sum(v[2] for v in _SEEDED.values()), 2)
-
-
-# ── the name-keyed wrapper ───────────────────────────────────────────────────
-
-def test_name_keyed_wrapper_covers_the_orphan_population(tmp_db):
-    """The mobile page keys by NAME. A customer with no code is only reachable
-    that way, so fixing the code path alone would leave this surface empty."""
-    _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs(ORPHAN_NAME, db_path=tmp_db)
-
-    docs = sorted(r['doc_no'] for r in rows)
-    assert len(docs) == len(EXPECTED), docs
-    assert docs == sorted(d + '-O' for d in EXPECTED)
-    assert CONTROL_DOC + '-O' not in docs
-
-
-def test_name_and_code_wrappers_agree_for_a_customer_reachable_both_ways(tmp_db):
-    _seed(tmp_db)
-    by_code, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
-    by_name, _ = cashflow.bsn_ar_excluded_docs(NAME, db_path=tmp_db)
-
-    assert len(by_code) == len(EXPECTED)
-    assert ({(r['doc_no'], r['excluded_by']) for r in by_code}
-            == {(r['doc_no'], r['excluded_by']) for r in by_name})
 
 
 # ── the complement is derived from the predicate, not re-typed ───────────────
@@ -645,10 +620,10 @@ def test_the_second_badge_appears_only_where_a_write_off_decision_exists(tmp_db)
 def _seed_master(db_path):
     """Give the fixture customers a `customers` master row.
 
-    `/customer/code/<code>` 404s a code with neither a master row nor sales, and
-    `/m/customer/<name>` looks the customer up by `customers.name` — so without
-    this the render tests below would exercise the 404 path and pass for the
-    wrong reason. Deliberately NOT folded into `_seed`: the seam tests above
+    The desktop and mobile code pages need a master row or sales history to
+    render their normal customer details, so without this the render tests
+    below would exercise an empty-data path and pass for the wrong reason.
+    Deliberately NOT folded into `_seed`: the seam tests above
     assert `row['customer'] == NAME` through the snapshot's own name, and adding
     a master row there would change what they are testing.
     """
@@ -845,12 +820,12 @@ def test_express_ar_page_keys_both_of_its_lists_the_same_way(tmp_db):
     assert '>หนี้ที่ไม่นับว่าตามได้<' in html
 
 
-# ── #472 mobile customer page — /m/customer/<name> ──────────────────────────
+# ── #472 mobile customer page — /m/customer/code/<code> ─────────────────────
 
 def test_mobile_customer_page_notes_what_was_removed_in_one_line(tmp_db):
     _seed(tmp_db)
     _seed_master(tmp_db)
-    html = _manager_client().get(f'/m/customer/{NAME}').get_data(as_text=True)
+    html = _manager_client().get(f'/m/customer/code/{CODE}').get_data(as_text=True)
 
     # Control: the page rendered this customer's bills at all.
     assert CONTROL_DOC in html, 'mobile page did not render its bill list'
@@ -863,7 +838,7 @@ def test_mobile_customer_page_does_not_render_the_desktop_table(tmp_db):
     is explicitly out of scope for this surface."""
     _seed(tmp_db)
     _seed_master(tmp_db)
-    html = _manager_client().get(f'/m/customer/{NAME}').get_data(as_text=True)
+    html = _manager_client().get(f'/m/customer/code/{CODE}').get_data(as_text=True)
 
     # Control: the note IS there, so this cannot pass by the wiring being absent.
     assert '>ตัด 6 ใบ ฿15,000.00<' in html
@@ -875,7 +850,7 @@ def test_mobile_customer_page_does_not_render_the_desktop_table(tmp_db):
 def test_mobile_customer_page_omits_the_note_when_nothing_was_excluded(tmp_db):
     _seed(tmp_db)
     _seed_master(tmp_db)
-    html = _manager_client().get(f'/m/customer/{CLEAN_NAME}').get_data(as_text=True)
+    html = _manager_client().get(f'/m/customer/code/{CLEAN_CODE}').get_data(as_text=True)
 
     assert 'ZZEX-ONLYCLEAN' in html, 'page did not render the clean customer at all'
     assert 'ตัด 1 ใบ' not in html
@@ -883,10 +858,10 @@ def test_mobile_customer_page_omits_the_note_when_nothing_was_excluded(tmp_db):
 
 
 # ── The mobile page must not deny a customer whose data it already loaded ────
-# `/m/customer/<name>` shows "ไม่พบข้อมูลลูกค้า" whenever the name misses the
+# `/m/customer/code/<code>` shows "ไม่พบข้อมูลลูกค้า" whenever the code misses the
 # `customers` master AND has no sales_transactions — regardless of the AR rows the
 # route fetched two lines earlier. That is #470's defect on the mobile surface:
-# "not in the master under this name" is not "no such customer". `_seed_master`
+# "not in the master under this code" is not "no such customer". `_seed_master`
 # above exists precisely to steer the other tests PAST this branch; these two pin
 # the branch itself, so it fires on a real typo and nowhere else.
 
@@ -905,7 +880,7 @@ def _forget_master(db_path, *keys):
 def test_mobile_page_renders_ar_data_for_a_customer_absent_from_the_master(tmp_db):
     _seed(tmp_db)
     _forget_master(tmp_db, CODE, NAME)
-    html = _manager_client().get(f'/m/customer/{NAME}').get_data(as_text=True)
+    html = _manager_client().get(f'/m/customer/code/{CODE}').get_data(as_text=True)
 
     assert 'ไม่พบข้อมูลลูกค้า' not in html, \
         'the page denied a customer whose AR rows the route had already loaded'
@@ -914,11 +889,11 @@ def test_mobile_page_renders_ar_data_for_a_customer_absent_from_the_master(tmp_d
     assert '>ตัด 6 ใบ ฿15,000.00<' in html, 'the excluded-docs note is missing'
 
 
-def test_mobile_page_still_reports_a_name_that_has_nothing_anywhere(tmp_db):
+def test_mobile_page_still_reports_a_code_that_has_nothing_anywhere(tmp_db):
     """The guard survives its own fix: a real typo must still be caught."""
     _seed(tmp_db)
     _forget_master(tmp_db, CODE, NAME)
-    html = _manager_client().get('/m/customer/ไม่มีลูกค้าชื่อนี้จริง').get_data(as_text=True)
+    html = _manager_client().get('/m/customer/code/ไม่มีรหัสลูกค้านี้จริง').get_data(as_text=True)
 
     assert 'ไม่พบข้อมูลลูกค้า' in html
     assert CONTROL_DOC not in html, 'control — a page showing another customer would pass anyway'

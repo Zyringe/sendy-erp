@@ -185,11 +185,11 @@ def test_customer_page_without_a_customers_row_shows_no_figure(tmp_db):
     assert _element(html, 'pay-speed') == []
 
 
-# ── mobile /m/customer/<name> ────────────────────────────────────────────────
+# ── mobile /m/customer/code/<code> ──────────────────────────────────────────
 
 def test_mobile_page_shows_the_figure_beside_the_credit_badge(tmp_db):
     _seed(tmp_db)
-    html = _get(_client(), f'/m/customer/{quote(FAST[1])}')
+    html = _get(_client(), f'/m/customer/code/{quote(FAST[0])}')
     assert 'เครดิต 30 วัน' in html, 'CONTROL: the header badges never rendered'
 
     found = _element(html, 'm-pay-speed')
@@ -199,20 +199,21 @@ def test_mobile_page_shows_the_figure_beside_the_credit_badge(tmp_db):
 
 def test_mobile_page_omits_the_figure_below_three_settled_bills(tmp_db):
     _seed(tmp_db)
-    html = _get(_client(), f'/m/customer/{quote(THIN[1])}')
+    html = _get(_client(), f'/m/customer/code/{quote(THIN[0])}')
     assert 'เครดิต 30 วัน' in html, 'CONTROL: the header badges never rendered'
     assert _element(html, 'm-pay-speed') == []
     assert 'จ่ายจริง' not in html
 
 
 def test_mobile_page_without_a_customers_row_shows_no_figure(tmp_db):
-    """The mobile page is keyed by bill NAME and takes the code from its
-    customers row; with no row it has no code, so no figure — even though the
-    code itself has enough settled bills for one."""
+    """Same rule as the desktop page: the header's detail cells come from the
+    customers row, so a code without one shows no figure, even though the code
+    itself has enough settled bills for one."""
     _seed(tmp_db)
     assert pa.payment_speed(NOROW[0])['invoices'] == 3, 'CONTROL: enough data for a figure'
-    html = _get(_client(), f'/m/customer/{quote(NOROW[1])}')
+    html = _get(_client(), f'/m/customer/code/{quote(NOROW[0])}')
     assert 'ไม่พบข้อมูลลูกค้า' not in html, 'CONTROL: took the not-found branch'
     assert 'ขายล่าสุด' in html, 'CONTROL: the page rendered its bills'
+    assert NOROW[1] in html, 'the no-master page did not fall back to its latest bill name'
     assert _element(html, 'm-pay-speed') == []
     assert 'จ่ายจริง' not in html

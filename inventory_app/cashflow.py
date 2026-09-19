@@ -741,7 +741,7 @@ def bsn_ar_excluded_docs_by_code(customer_code: str,
                                  conn: Optional[sqlite3.Connection] = None,
                                  db_path: Optional[str] = None
                                  ) -> Tuple[List[dict], Optional[str]]:
-    """Code-keyed: `/customer/code/<code>` and `/express/ar/customer/<code>`.
+    """Code-keyed customer AR pages, including desktop, mobile, and Express.
 
     TRIMs the snapshot's code, matching `ar_followup.get_customer_ar_detail`.
     The chaseable and excluded sides of a page must key IDENTICALLY or a code
@@ -752,22 +752,6 @@ def bsn_ar_excluded_docs_by_code(customer_code: str,
                           conn=conn, db_path=db_path)
 
 
-def bsn_ar_excluded_docs(customer_name: str,
-                         conn: Optional[sqlite3.Connection] = None,
-                         db_path: Optional[str] = None
-                         ) -> Tuple[List[dict], Optional[str]]:
-    """Name-keyed, mirroring `models.get_customer_unpaid_bills`: match the
-    customers master first, then fall back to the name on the snapshot row.
-
-    ⚠ Pair this ONLY with a surface whose chaseable list uses that same
-    matcher — `/customer/code/<code>` and the mobile page. The dunning page
-    does NOT: see `bsn_ar_excluded_docs_by_snapshot_name` below for why.
-    """
-    return _excluded_docs("(COALESCE(cust.name, '') = ? OR ao.customer_name = ?)",
-                          [customer_name, customer_name],
-                          conn=conn, db_path=db_path)
-
-
 def bsn_ar_excluded_docs_by_snapshot_name(customer_name: str,
                                           conn: Optional[sqlite3.Connection] = None,
                                           db_path: Optional[str] = None
@@ -775,14 +759,10 @@ def bsn_ar_excluded_docs_by_snapshot_name(customer_name: str,
     """Name-keyed the NARROW way, mirroring `ar_followup.get_customer_ar_detail`'s
     orphan branch: the name stamped on the snapshot row, and nothing else.
 
-    Two name matchers exist because the two chaseable helpers use two different
-    ones, and an excluded list keyed differently from the chaseable list beside
-    it is ADR 0012's defect wearing a new hat. The gap is reachable: a customer
-    renamed in the master, with no sales history under the new name, resolves to
-    no code — so the dunning page falls to its orphan branch and finds nothing,
-    while the COALESCE matcher above would still match through `customers.name`
-    and render an excluded section for a customer the list above it does not
-    recognise.
+    This name matcher exists only because a customer renamed in the master,
+    with no sales history under the new name, resolves to no code on the dunning
+    page. Its excluded list must use the same snapshot-name key as the chaseable
+    orphan branch beside it or the two lists can disagree (ADR 0012).
     """
     return _excluded_docs("ao.customer_name = ?", [customer_name],
                           conn=conn, db_path=db_path)

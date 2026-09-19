@@ -4,7 +4,7 @@
 `cashflow.BSN_AR_PREDICATE`. Four per-customer surfaces did not:
 
     models/payments.py::_unpaid_bills            -> /customer/code/<code>
-                                                 -> /m/customer/<name>
+                                                 -> /m/customer/code/<code>
     ar_followup.py::get_customer_ar_detail       -> /accounting/ar-followup/customer/<key>
     blueprints/accounting.py::express_ar_customer-> /express/ar/customer/<code>
 
@@ -145,18 +145,6 @@ def test_unpaid_bills_by_code_shows_only_chaseable(tmp_db):
     assert docs == [CONTROL_DOC]
     for doc, why in EXPECTED_GONE.items():
         assert doc not in docs, f'{doc} still chaseable — {why}'
-    assert round(sum(float(r['total_net'] or 0) for r in rows), 2) == 1000.00
-
-
-def test_unpaid_bills_by_name_shows_only_chaseable(tmp_db):
-    """The mobile page keys by NAME, the desktop page by CODE — two entry
-    points into the same helper. Both must return the chaseable population."""
-    _seed(tmp_db)
-    rows, snap = models.get_customer_unpaid_bills(NAME)
-
-    docs = _docs(rows)
-    assert len(docs) == 1, f'expected only the control row, got {docs}'
-    assert docs == [CONTROL_DOC]
     assert round(sum(float(r['total_net'] or 0) for r in rows), 2) == 1000.00
 
 

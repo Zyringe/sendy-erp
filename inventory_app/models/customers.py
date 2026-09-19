@@ -72,7 +72,7 @@ def _customer_documents(conn, where, params, limit=None):
 
 def get_customer_documents(key_col, key_value, date_from=None, date_to=None, limit=None):
     """Public wrapper around `_customer_documents` — used directly by the
-    mobile quick page (name-keyed), so its document list can never drift from
+    mobile quick page (code-keyed), so its document list can never drift from
     the desktop customer page's (#493)."""
     conn = get_connection()
     where, params = _customer_sales_scope(key_col, key_value, date_from, date_to)

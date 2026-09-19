@@ -80,15 +80,26 @@ def stock_search_api():
 
 # ── Customer detail (mobile) ──────────────────────────────────────────────────
 
-@bp_mobile.route('/customer/<path:customer_name>')
-def customer_detail(customer_name):
+@bp_mobile.route('/customer/code/<customer_code>')
+def customer_detail(customer_code):
     """Mobile-optimised customer card: header + contact + outstanding + last bills/sales."""
     conn = get_connection()
-    # Customer master row (joined via name; existing schema keys customers by code
-    # but invoices reference name, so we look up via name to match).
     customer = conn.execute(
-        "SELECT * FROM customers WHERE name = ? LIMIT 1", (customer_name,)
+        "SELECT * FROM customers WHERE code = ?", (customer_code,)
     ).fetchone()
+
+    # Use the desktop code page's bill-name lookup, with this surface's
+    # master-first display rule.
+    bill_name_row = conn.execute(
+        """
+        SELECT customer FROM sales_transactions
+         WHERE customer_code = ? AND customer IS NOT NULL
+         ORDER BY date_iso DESC LIMIT 1
+        """,
+        (customer_code,),
+    ).fetchone()
+    bill_name = bill_name_row['customer'] if bill_name_row else None
+    customer_name = customer['name'] if customer else (bill_name or customer_code)
 
     # Salesperson from customers MASTER + lookup table; ภาค (#528) derived
     # from the address (customer_geo.region_of), same source the call card
@@ -109,27 +120,25 @@ def customer_detail(customer_name):
               LEFT JOIN salespersons sp ON sp.code = c.salesperson
              WHERE c.code = ?
             """,
-            (customer['code'],),
+            (customer_code,),
         ).fetchone())
         region_row['region'] = customer_geo.region_of(customer['address'])
 
     conn.close()
-    # How fast this customer pays (#499), keyed by the customers row's CODE —
-    # this page is keyed by bill name, which another code can share. No
-    # customers row → no code → no figure.
-    pay_speed = payments_alloc.payment_speed(customer['code']) if customer else None
+    # How fast this customer pays (#499). It sits among the header cells that come
+    # from the customers row, so a code without one shows none of them, the same
+    # rule as the desktop code page.
+    pay_speed = payments_alloc.payment_speed(customer_code) if customer else None
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
-    unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills(customer_name)
+    unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
     # #493: the shared document grouping — same one the desktop customer page
     # uses — so this page's doc list/count can never drift from it again.
-    last_sales = models.get_customer_documents('customer', customer_name, limit=5)
+    last_sales = models.get_customer_documents('customer_code', customer_code, limit=5)
     unpaid = unpaid_full[:5]
     unpaid_total = sum((b['total_net'] or 0) for b in unpaid_full)
-    # What was REMOVED from that total (ADR 0012, #468). Name-keyed through the
-    # same COALESCE matcher `get_customer_unpaid_bills` uses, so both sides of
-    # this page see the same customer. This surface renders the one-line count
-    # only — the desktop table does not fit a phone on a sales trip.
-    excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs(customer_name)
+    # What was REMOVED from that total (ADR 0012, #468), keyed identically to
+    # the chaseable list. This surface renders only the phone-sized count.
+    excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs_by_code(customer_code)
     # A rep on a sales trip reads the outstanding total off this screen, so it
     # needs the staleness warning most of the four, not least.
     aging = cashflow.ar_aging()
@@ -150,14 +159,15 @@ def customer_detail(customer_name):
                MIN(date_iso) AS first_seen,
                MAX(date_iso) AS last_seen
           FROM sales_transactions
-         WHERE customer = ? AND {sales_filters.not_a_sale_clause()}
+         WHERE customer_code = ? AND {sales_filters.not_a_sale_clause()}
         """,
-        (customer_name,),
+        (customer_code,),
     ).fetchone()
 
     conn.close()
     return render_template(
         'm/customer.html',
+        customer_code=customer_code,
         customer_name=customer_name,
         customer=customer,
         pay_speed=pay_speed,

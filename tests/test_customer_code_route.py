@@ -22,6 +22,71 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 from urllib.parse import quote, unquote
 
 
+TWIN_NAME = 'ทรัพย์ทวี'
+TWIN_CODES = ('43ท013', '01พ14')
+AR_CODE = 'ZZCODEAR'
+AR_NAME = 'ลูกค้าทดสอบบิลค้างตามรหัส'
+AR_DOC = 'ZZCODEAR-IV'
+
+
+def _seed_twins(db_path):
+    """Force the duplicated bill name and each code's document count."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM sales_transactions WHERE customer = ? OR customer_code IN (?, ?)",
+            (TWIN_NAME,) + TWIN_CODES)
+        conn.execute("DELETE FROM customers WHERE code IN (?, ?)", TWIN_CODES)
+        conn.execute("INSERT INTO customers (code, name) VALUES (?, ?)",
+                     (TWIN_CODES[0], 'ร้าน ทรัพย์ทวี'))
+        conn.execute("INSERT INTO customers (code, name) VALUES (?, ?)",
+                     (TWIN_CODES[1], 'บจก. พงศ์ทรัพย์ทวี'))
+        for code, line_counts in ((TWIN_CODES[0], [6] * 12 + [10]),
+                                  (TWIN_CODES[1], [1])):
+            for i, line_count in enumerate(line_counts):
+                doc = 'ZZCODE-{}-{:02d}'.format(code, i)
+                for suffix in range(1, line_count + 1):
+                    conn.execute(
+                        """INSERT INTO sales_transactions
+                             (date_iso, doc_no, doc_base, customer, customer_code,
+                              qty, unit, unit_price, vat_type, total, net)
+                           VALUES ('2026-01-01', ?, ?, ?, ?, 1, 'ตัว', 100, 1, 100, 100)""",
+                        ('{}-{}'.format(doc, suffix), doc, TWIN_NAME, code))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_unpaid_bill(db_path):
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        snap = conn.execute(
+            "SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity='BSN'"
+        ).fetchone()[0]
+        batch_id = conn.execute(
+            "SELECT id FROM express_import_log ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        assert snap and batch_id
+        conn.execute("DELETE FROM express_ar_outstanding WHERE customer_code = ? OR doc_no = ?",
+                     (AR_CODE, AR_DOC))
+        conn.execute("DELETE FROM ar_writeoffs WHERE doc_no = ?", (AR_DOC,))
+        conn.execute(
+            """INSERT INTO express_ar_outstanding
+                 (batch_id, snapshot_date_iso, customer_code, customer_name,
+                  doc_date_iso, doc_no, is_anomalous, bill_amount, paid_amount,
+                  outstanding_amount, entity)
+               VALUES (?, ?, ?, ?, '2026-01-01', ?, 0, 750, 0, 750, 'BSN')""",
+            (batch_id, snap, AR_CODE, AR_NAME, AR_DOC))
+        conn.commit()
+        return snap
+    finally:
+        conn.close()
+
+
 def _client(tmp_db, role='admin'):
     from app import app as a
     a.config['TESTING'] = True
@@ -42,7 +107,8 @@ def test_resolve_customer_codes_single(tmp_db):
 
 def test_resolve_customer_codes_ambiguous_name(tmp_db):
     import models
-    assert sorted(models.resolve_customer_codes('ทรัพย์ทวี')) == ['01พ14', '43ท013']
+    _seed_twins(tmp_db)
+    assert sorted(models.resolve_customer_codes(TWIN_NAME)) == ['01พ14', '43ท013']
 
 
 def test_resolve_customer_codes_unknown_name(tmp_db):
@@ -71,16 +137,20 @@ def test_bug2_two_companies_render_separate_totals(tmp_db):
     """43ท013 (13 docs, 82 lines — #493 groups by doc_base, not doc_no) and
     01พ14 (1 doc) must never merge."""
     import models
+    _seed_twins(tmp_db)
     big = models.get_customer_summary_by_code('43ท013')
     small = models.get_customer_summary_by_code('01พ14')
     assert big['summary']['doc_count'] == 13
     assert small['summary']['doc_count'] == 1
+    assert len(big['docs']) == 13
+    assert len(small['docs']) == 1
     assert big['customer_info']['name'] == 'ร้าน ทรัพย์ทวี'
     assert small['customer_info']['name'] == 'บจก. พงศ์ทรัพย์ทวี'
 
 
 def test_bug2_two_companies_render_separate_totals_via_route(tmp_db):
     """Same proof, through the real route/template render (not just the model)."""
+    _seed_twins(tmp_db)
     c = _client(tmp_db)
     big = c.get(f'/customer/code/{quote("43ท013")}').data.decode()
     small = c.get(f'/customer/code/{quote("01พ14")}').data.decode()
@@ -110,6 +180,7 @@ def test_name_shim_end_to_end_reaches_code_page(tmp_db):
 
 def test_name_shim_ambiguous_name_redirects_to_customer_list_not_a_code(tmp_db):
     """ทรัพย์ทวี spans 2 codes (BUG 2) — must send Put to pick, never guess."""
+    _seed_twins(tmp_db)
     c = _client(tmp_db)
     r = c.get(f'/customer/{quote("ทรัพย์ทวี")}', follow_redirects=False)
     assert r.status_code == 302
@@ -152,13 +223,16 @@ def test_reassign_redirect_destination_actually_renders(tmp_db):
 
 # ── get_customer_unpaid_bills_by_code ───────────────────────────────────────
 
-def test_unpaid_bills_by_code_matches_by_name_for_unambiguous_customer(tmp_db):
+def test_unpaid_bills_by_code_returns_the_owned_customer(tmp_db):
     import models
-    by_name, snap_name = models.get_customer_unpaid_bills('เจริญกิจ บางโพ')
-    by_code, snap_code = models.get_customer_unpaid_bills_by_code('01จ06')
-    assert snap_name == snap_code
-    assert len(by_code) == 1
-    assert [dict(r) for r in by_code] == [dict(r) for r in by_name]
+
+    expected_snapshot = _seed_unpaid_bill(tmp_db)
+    rows, snapshot = models.get_customer_unpaid_bills_by_code(AR_CODE)
+
+    assert snapshot == expected_snapshot
+    assert len(rows) == 1
+    assert rows[0]['doc_base'] == AR_DOC
+    assert rows[0]['customer_code'] == AR_CODE
 
 
 def test_unpaid_bills_by_code_returns_list_for_customer_with_no_ar(tmp_db):
@@ -225,6 +299,7 @@ def _clear_filter_href(html):
 def test_clear_filter_link_stays_on_the_code_page_ambiguous_name(tmp_db):
     """43ท013 and 01พ14 share the bill name ทรัพย์ทวี. A name-built link here
     resolves to 2 codes → the shim refuses to guess → user is ejected."""
+    _seed_twins(tmp_db)
     c = _client(tmp_db)
     for code in ('43ท013', '01พ14'):
         html = c.get(f'/customer/code/{quote(code)}').data.decode()

@@ -204,8 +204,8 @@ def test_every_surface_shows_the_same_purchase_total(tmp_db):
     assert m, 'ยอดรวม cell missing from the row'
     seen['customers_list'] = _num(m.group(1))
 
-    # Mobile customer page (name-keyed)
-    html = c.get(f'/m/customer/{quote(NAME)}').data.decode()
+    # Mobile customer page (code-keyed)
+    html = c.get(f'/m/customer/code/{quote(CODE)}').data.decode()
     assert '/sales/doc/IV49401' in _link_paths(html)   # CONTROL: this customer's documents
     m = re.search(r'ยอดสะสม \(ก่อน VAT\)</div>\s*<div[^>]*>([^<]+)</div>', html)
     assert m, 'ยอดสะสม card did not render'

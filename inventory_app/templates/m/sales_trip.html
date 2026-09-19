@@ -76,7 +76,7 @@
   <span class="text-subtle ms-2">({{ customers|length }} ราย)</span>
 </div>
 {% for c in customers %}
-<a href="{{ url_for('mobile.customer_detail', customer_name=c.name) }}"
+<a href="{{ url_for('mobile.customer_detail', customer_code=c.code) }}"
    class="trip-cust {% if c.outstanding and c.outstanding > 0 %}has-due{% endif %}">
   <div class="trip-cust-name">{{ c.name }}</div>
   <div class="trip-cust-meta">
