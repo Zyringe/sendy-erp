@@ -388,9 +388,14 @@
   _Avoid_: calling this a "user" — it has nothing to do with a login.
 
 - **Transfer account / transfer category** — capital / inter-account movements
-  (`cashbook_accounts.is_transfer=1`, e.g. `904`, and the `เงินทุน/เงินโอน` category). Real
-  cash (so they count toward an account **balance**) but excluded from the headline **P&L**
-  (รายรับ/รายจ่าย), the category summary and the monthly chart.
+  (`cashbook_accounts.is_transfer=1` and the `เงินทุน/เงินโอน` category). Real
+  cash (so they count toward an account **balance**) but excluded from **สุทธิเดือนนี้**
+  (รายรับ/รายจ่าย), the category summary and the monthly chart — and from the internal P&L.
+  ⚠ **`is_transfer` means exactly one thing: this account is a conduit.** It is not a way to hide
+  an era, a closed account, or an awkward period — a period that should not be read is
+  **เดือนที่ข้อมูลยังไม่ครบ** instead. `904` used to be flagged for the second reason and was
+  un-flagged on 2026-09-19, which recovered ฿205,278.91 of real operating expense that had never
+  reached the statement; its transfers are still excluded, by the category. See ADR 0017.
 
 - **รายรับบันทึกที่อื่น (income recorded elsewhere)** — `cashbook_accounts
   .income_recorded_elsewhere=1` (mig 183), a DIFFERENT axis from `is_transfer`: the
@@ -406,9 +411,17 @@
 
 - **บันทึกถึง (keyed up to)** — a per-account column on the `/cashbook` dashboard's
   per-account table: that account's single latest `cashbook_transactions.txn_date`,
-  **unscoped by the dashboard's month filter** — the point is surfacing entry lag (e.g.
-  `ชฎามาศ` is typically keyed ~18 days late, in monthly batches) even while viewing an
-  earlier month, so a scoped read would defeat its purpose. See #534.
+  **unscoped by the dashboard's month filter** — the point is surfacing entry lag even while
+  viewing an earlier month, so a scoped read would defeat its purpose. See #534.
+
+- **Entry lag (ความช้าในการคีย์)** — the gap between a row's `txn_date` (when the money moved)
+  and when someone actually keyed it. It is **not** a nuisance detail; it decides whether a month
+  can be read at all, which is why **เดือนที่ข้อมูลยังไม่ครบ** exists. Measured on prod over the
+  233 `ชฎามาศ` rows of 2026: **median 41 days, p90 124, and 0 rows keyed within 3 days** —
+  Jan–May 2026 were all keyed on one day, 2026-06-09. `904` runs at a 118-day median.
+  ⛔ An earlier version of this file said `ชฎามาศ` is "typically keyed ~18 days late". That was
+  wrong by more than 2×, and because this file loads into every session it was wrong in every
+  session. Re-measure before quoting; do not carry a number forward from here.
 
 - **Salary posting (pay-event)** — salary reaches the cashbook when a transfer is actually
   **marked paid**, per employee, on the payroll detail page — NOT when the run is finalized
@@ -502,6 +515,74 @@
   uses the previous month's **same day-range** (day 1..today, clamped to the prev month's length) so
   a partial month isn't judged against a full one; tagged "เดือนยังไม่จบ". Past months compare
   full-vs-full.
+
+## Internal P&L (the `/accounting` page — งบกำไรขาดทุนภายใน)
+
+> ⛔ **"P&L" alone is not a term here — it named two different numbers.** This section owns one of
+> them; the Cashbook section above owns the other (**สุทธิเดือนนี้**, the whole cashbook's
+> `income − expense` for a month). They are not reconcilable and never were: one measures whether
+> trading made money, the other whether cash moved. Say which one you mean. (Put's rulings,
+> 2026-09-18/19.)
+
+- **งบกำไรขาดทุนภายใน (internal P&L)** — the `/accounting` statement: **รายได้ − ต้นทุนขาย −
+  ค่าใช้จ่าย**. Its one audience is Put, deciding monthly what to do about the business. **Tax and
+  the outside accountant are explicitly out of scope** — those run off the Express books, and a
+  figure here is never an answer to a tax question.
+  ⚠ **It is NOT a "งบการเงิน"** — that is a legally defined term (พ.ร.บ.การบัญชี ม.4) and this is an
+  internal report. Never label it งบการเงิน on screen or in a document.
+  _Avoid_: "P&L", "งบการเงิน", "ผลจริง" (all three were used for it and all three were ambiguous).
+
+- **เกณฑ์คงค้าง (accrual basis)** — the basis the whole statement claims: a cost belongs to the
+  period it was **incurred**, not the period it was paid. Cash questions belong to `/cashbook`
+  instead — two reports, never one statement on a mixed basis. See ADR 0014.
+
+- **ต้นทุนขาย (COGS)** — the **carrying amount of the goods at the date of sale**, in the product's
+  base unit, matched against the same period's revenue. A giveaway's cost stays here even though its
+  revenue is removed: the goods really did leave. See ADR 0015.
+  _Avoid_: "ทุน" bare, and "cost" bare — both collide with the per-product cost terms above.
+
+- **ทุน ณ วันขาย (cost at the date of sale)** vs **ทุนเฉลี่ยวันนี้ (today's average)** — the two
+  bases ต้นทุนขาย could be read on, and they are **not** interchangeable. ทุน ณ วันขาย is what the
+  statement uses from **2026-03-03** on; it is fixed once the sale happened, so a closed month's
+  ต้นทุนขาย **cannot move**. ทุนเฉลี่ยวันนี้ is `products.cost_price` **right now** — a live
+  re-derivation, not a period figure, which is why it is no longer the basis. (Measured 2026-09-18:
+  a closed 9-month ต้นทุนขาย moved ฿289.46 between two reads on one morning, with no sale and no
+  purchase involved.) **2026-01 and 2026-02 sit on ทุนเฉลี่ยวันนี้ and must say so on screen** —
+  the cost ledger only reaches back to the 2026-03-03 opening-cost reset. See ADR 0015.
+
+- **กำไรขั้นต้น (gross profit)** — `รายได้ − ต้นทุนขาย`, before any ค่าใช้จ่าย. The one thing this
+  statement measures that `/cashbook` structurally cannot.
+
+- **ค่าใช้จ่ายของงวดก่อน (prior-period expense)** — a cost paid in this month that belongs to an
+  earlier period (a year-end bonus, back accounting fees, a prior year's tax). It gets its **own
+  line, separate from ค่าใช้จ่ายดำเนินงาน**, so the month's trading result is clean while the money
+  still stays visible. Put's ruling 2026-09-18: neither dropping it (it would vanish from every
+  report — Sendy has no FY2568 statement to hold it) nor burying it in the month it was paid.
+  Live examples: the ฿400,000 "โบนัสปี 68" paid 2026-03-09, and the ฿167,500 of staff bonuses paid
+  2026-01-31 (Put confirmed both are for FY2568 work, 2026-09-19).
+
+- **เดือนที่ข้อมูลยังไม่ครบ (incomplete month)** — a month whose cashbook rows have not all been
+  keyed yet, so its **กำไรสุทธิ is hidden rather than shown wrong**. Derived, never hand-listed: an
+  account counts as "expected" when it is `is_active=1` **and** carried expense rows in ≥3 of the
+  previous 6 months; a month missing any expected account's rows is incomplete. This exists because
+  of **Entry lag** above — the newest month is always the emptiest, so the current month otherwise
+  always looks profitable. (2026-09 is the worked case: `ชฎามาศ`, 76.6% of operating expense, had
+  not been keyed at all.)
+  _Avoid_: "ปิดเดือน" / "ปิดบัญชี" for this — closing the books is an annual statutory act
+  (พ.ร.บ.การบัญชี ม.10); this is only a completeness reading, and nobody signs it off.
+
+- **งบกองรวม (pooled statement)** — what this statement actually is, and must be labelled as: its
+  **revenue is BSN only** while its **expenses are whatever flowed through the shared accounts**,
+  which mixes both companies. Per-company statements would need รายการระหว่างกัน, which does not
+  exist here yet (Put, 2026-09-18: not now). ⚠ A bank movement carries no company intent, so
+  **the months passing un-tagged can never be split apart later** — that is a known, accepted cost,
+  not an oversight. See ADR 0016.
+  _Avoid_: calling it "งบ BSN", and calling a two-company version "งบรวม" — consolidation is a
+  different concept and the wrong one for sibling companies under common ownership.
+
+- **สุทธิ (net) — a fourth sense.** The Cashbook section names three money figures; the internal
+  P&L's **กำไรสุทธิ** is a fourth and is none of them. Four senses of "สุทธิ" now live in this app
+  (plus `sales_transactions.net`, one line after document discount and before VAT). Always qualify it.
 
 ## Product creation & naming
 
