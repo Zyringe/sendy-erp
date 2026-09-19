@@ -38,6 +38,9 @@ def _conn(db):
 def _seed(db, is_transfer, is_active, with_904=True):
     conn = _conn(db)
     conn.execute("INSERT INTO cashbook_accounts (code, is_active, is_transfer) VALUES ('392', 1, 0)")
+    # Another inactive transfer account: the far side of `code = '904'`. It
+    # has 904's exact flag state, so only the code match keeps it out.
+    conn.execute("INSERT INTO cashbook_accounts (code, is_active, is_transfer) VALUES ('OLDTR', 0, 1)")
     if with_904:
         conn.execute(
             """INSERT INTO cashbook_accounts
@@ -98,6 +101,7 @@ def test_flips_is_transfer_and_leaves_everything_else_alone(empty_db):
     i = cols.index('is_transfer')
     assert after['904'][:i] + after['904'][i + 1:] == before['904'][:i] + before['904'][i + 1:]
     assert after['392'] == before['392']
+    assert after['OLDTR'] == before['OLDTR']
 
 
 def test_the_runner_applies_and_stamps_it(empty_db):
