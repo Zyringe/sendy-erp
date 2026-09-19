@@ -18,6 +18,10 @@ same row give two different answers, and the flag no longer tells them apart:
   LABEL      reads the flag off rows it already selected, only to sort, badge
              or split them. Decides no population.
   WRITER     sets the flag (the admin accounts form).
+  ONE_OFF    a dated script under scripts/ that reads the flag in its own
+             precondition before a single run (e.g. #589's commission
+             back-record). Declared so the census stays complete; no probe,
+             because nothing calls it after it has run.
 
 The failure this guards is a site silently moving between OPERATING and
 PAYABLE: an OPERATING read that gains `is_active = 1` drops 904's recovered
@@ -58,8 +62,8 @@ _SQL_COMMENT = re.compile(r'--[^\n]*|/\*.*?\*/', re.DOTALL)
 _JINJA_COMMENT = re.compile(r'\{#.*?#\}', re.DOTALL)
 _JINJA_EXPR = re.compile(r'\{\{.*?\}\}|\{%.*?%\}', re.DOTALL)
 
-OPERATING, PAYABLE, EXPECTED, LABEL, WRITER = (
-    'OPERATING', 'PAYABLE', 'EXPECTED', 'LABEL', 'WRITER')
+OPERATING, PAYABLE, EXPECTED, LABEL, WRITER, ONE_OFF = (
+    'OPERATING', 'PAYABLE', 'EXPECTED', 'LABEL', 'WRITER', 'ONE_OFF')
 
 # site -> (reads of the flag, population, the probe(s) pinning it, why).
 # LABEL / WRITER sites carry no probe: they decide no population.
@@ -157,7 +161,7 @@ ALLOWED = {
         'UPDATE of an account with the parsed flag.'),
 }
 
-POPULATIONS = (OPERATING, PAYABLE, EXPECTED, LABEL, WRITER)
+POPULATIONS = (OPERATING, PAYABLE, EXPECTED, LABEL, WRITER, ONE_OFF)
 PROBED = (OPERATING, PAYABLE, EXPECTED)
 
 
