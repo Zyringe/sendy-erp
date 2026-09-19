@@ -337,7 +337,8 @@ def test_invariant_failure_rolls_back(db, capsys):
     mod.PLAN[689]['expect_opening'] = -2
     before = _state(db)
     assert _run(db, '--apply', mod=mod) == 1
-    assert 'ROLLED BACK' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert 'ROLLED BACK' in out and 'opening recomputed to -1, expected -2' in out, out
     assert _state(db) == before
 
 
@@ -442,6 +443,14 @@ INVARIANT_MUTATIONS = [
     # attribution: without it every cost-ledger note names the 1050/1320 script
     ('source', ("source=SOURCE)", ")"), 'does not name'),
     ('tiers', ("apply_tiers(conn)\n", "None\n"), 'tier set'),
+    # 767's tier must keep its row (and its audit history): delete + insert is refused
+    ('tier_in_place', (
+        '''    conn.execute("UPDATE product_price_tiers SET qty_label='1 แพ็ค' "\n'''
+        '''                 "WHERE product_id=767 AND qty_label='1 แพค'")\n''',
+        '''    conn.execute("DELETE FROM product_price_tiers WHERE product_id=767")\n'''
+        '''    conn.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) "\n'''
+        '''                 "VALUES (767, '1 แพ็ค', 40.0)")\n'''),
+     'relabelled in place'),
 ]
 
 
