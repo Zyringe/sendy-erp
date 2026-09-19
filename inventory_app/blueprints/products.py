@@ -687,7 +687,13 @@ def product_edit(product_id):
             # 'measured'. Returns {} when the form carries no weight box at
             # all, so a caller that doesn't render one cannot blank a real
             # weight; a box submitted EMPTY does clear it, deliberately.
-            data.update(models.weight_edit_fields(f))
+            weight = models.weight_edit_fields(f)
+            # Same rule as the cost box: a box posted back with the stored
+            # value is not an edit. Writing it anyway would re-stamp an
+            # 'estimated' weight as 'measured' on every unrelated save (#619).
+            if weight and weight['weight_kg'] == product['weight_kg']:
+                weight = {}
+            data.update(weight)
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
             # The cost box renders `product.opening_cost`, so the re-render has
