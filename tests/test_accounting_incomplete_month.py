@@ -104,7 +104,12 @@ def test_account_with_only_two_prior_months_is_not_expected(empty_db):
     c = _mk_account(conn, 'C')
     for ym in ('2026-04', '2026-06'):  # 2 of the previous 6 (Mar-Aug) -- below the >=3 clause
         _mk_expense(conn, c, f'{ym}-10', 100.0)
-    _mk_expense(conn, c, '2026-09-05', 50.0)  # its own row in the target month itself
+    # ABSENT from 2026-09 on purpose: if the >=3 clause were weaker (e.g. >=1)
+    # C would count as expected and this absence would flip the month to
+    # incomplete -- that's what makes this fixture able to fail.
+
+    d = _mk_account(conn, 'D')  # supplies real period coverage; 1 month -> never expected
+    _mk_expense(conn, d, '2026-09-05', 50.0)
 
     _mk_sale(conn, '2026-09-10', 'IV002', net=1000.0)
     conn.commit()
