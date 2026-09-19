@@ -1,15 +1,19 @@
-"""Migration 185 — the unit map moves from bsn_unit_alias (mig 064) to
-unit_map, seeded with exactly today's 44 entries under BSN5657 (#596).
+"""Migration 185: the unit map moves from bsn_unit_alias (mig 064) to
+unit_map, seeded with exactly the 44 entries of the retired JSON under
+BSN5657 (#596).
 
-Rehearsed in both directions on a schema-only clone of the live DB
-(`empty_db_conn`), diffing `sqlite_master` + row content before/after —
-not just "the table exists" (erp-engineering-discipline.md: a clean
-rollback means the old table comes back byte-identical, not merely
-present).
+The pre-185 state is built from the frozen fixture and mig 064's own DDL,
+never from 185's rollback, so the rollback is checked against something it
+did not produce. Plain throwaway DB: runs without the live dev DB.
 """
 import json
 import os
+import sqlite3
 from pathlib import Path
+
+import pytest
+
+import bsn_units
 
 _MIG_DIR = Path(__file__).resolve().parents[1] / 'data' / 'migrations'
 FORWARD = _MIG_DIR / '185_unit_map_table.sql'
@@ -17,6 +21,13 @@ ROLLBACK = _MIG_DIR / '185_unit_map_table.rollback.sql'
 
 _FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures',
                         'bsn_unit_full_pre596.json')
+
+# bsn_unit_alias exactly as mig 064 created it (and as prod's sqlite_master
+# holds it, read 2026-09-19).
+_ALIAS_DDL = """CREATE TABLE bsn_unit_alias (
+    acronym TEXT PRIMARY KEY,
+    full    TEXT NOT NULL
+)"""
 
 
 def _pre596_map():
@@ -29,77 +40,76 @@ def _apply(conn, path):
     conn.commit()
 
 
-def _table_exists(conn, name):
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+def _ddl(conn, name):
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (name,)).fetchone()
+    return row[0] if row else None
 
 
-def _pre_state(conn):
-    """Reconstruct pre-185: bsn_unit_alias exists, unit_map does not —
-    forced, never inherited (see erp-engineering-discipline.md's tmp_db
-    trap: this DB may already have 185 applied)."""
-    _apply(conn, ROLLBACK)
-    conn.execute("DELETE FROM applied_migrations WHERE filename = ?",
-                 (FORWARD.name,))
-    conn.commit()
-
-
-def test_forward_creates_unit_map_and_drops_bsn_unit_alias(empty_db_conn):
-    _pre_state(empty_db_conn)
-    assert _table_exists(empty_db_conn, 'bsn_unit_alias')
-    assert not _table_exists(empty_db_conn, 'unit_map')
-
-    _apply(empty_db_conn, FORWARD)
-
-    assert not _table_exists(empty_db_conn, 'bsn_unit_alias')
-    assert _table_exists(empty_db_conn, 'unit_map')
-    rows = {r[0]: r[1] for r in empty_db_conn.execute(
+def _unit_map(conn):
+    return {r[0]: r[1] for r in conn.execute(
         "SELECT spelling, word FROM unit_map WHERE book = 'BSN5657'")}
-    assert rows == _pre596_map()
-    idx = empty_db_conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_unit_map_book_spelling'"
-    ).fetchone()
-    assert idx is not None and 'UNIQUE' in idx[0]
 
 
-def test_forward_is_re_runnable(empty_db_conn):
-    """Drop-first: applying it twice in a row must not error (mirrors the
-    live-migration-runner's filename-keyed, non-idempotent-by-default
-    reality — a re-apply during rehearsal must still succeed)."""
-    _pre_state(empty_db_conn)
-    _apply(empty_db_conn, FORWARD)
-    _apply(empty_db_conn, FORWARD)   # must not raise "table already exists"
-    n = empty_db_conn.execute(
-        "SELECT COUNT(*) FROM unit_map WHERE book = 'BSN5657'").fetchone()[0]
-    assert n == 44, 'a re-run must not duplicate rows'
+@pytest.fixture
+def pre185(tmp_path):
+    c = sqlite3.connect(tmp_path / 'pre185.db')
+    c.executescript("CREATE TABLE applied_migrations (filename TEXT PRIMARY KEY);\n"
+                    + _ALIAS_DDL + ";")
+    c.executemany("INSERT INTO bsn_unit_alias (acronym, full) VALUES (?, ?)",
+                  _pre596_map().items())
+    c.execute("INSERT INTO applied_migrations VALUES (?)", (FORWARD.name,))
+    c.commit()
+    yield c
+    c.close()
 
 
-def test_rollback_restores_bsn_unit_alias_byte_identical(empty_db_conn):
-    _pre_state(empty_db_conn)
-    before = {r[0]: r[1] for r in empty_db_conn.execute(
-        "SELECT acronym, full FROM bsn_unit_alias")}
-    assert before == _pre596_map(), 'CONTROL: the pre-state itself must match the oracle'
+def test_forward_creates_unit_map_and_drops_bsn_unit_alias(pre185):
+    _apply(pre185, FORWARD)
 
-    _apply(empty_db_conn, FORWARD)
-    _apply(empty_db_conn, ROLLBACK)
-
-    assert not _table_exists(empty_db_conn, 'unit_map')
-    assert _table_exists(empty_db_conn, 'bsn_unit_alias')
-    after = {r[0]: r[1] for r in empty_db_conn.execute(
-        "SELECT acronym, full FROM bsn_unit_alias")}
-    assert after == before == _pre596_map()
+    assert _ddl(pre185, 'bsn_unit_alias') is None
+    assert _unit_map(pre185) == _pre596_map()
+    assert pre185.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 44
+    assert 'UNIQUE' in _ddl(pre185, 'ux_unit_map_book_spelling')
 
 
-def test_precondition_control_the_scan_can_find_something(empty_db_conn):
-    """Anti-vacuity: prove the byte-identical comparison above is capable of
-    FAILING, or it is not a comparison. Corrupt one row post-forward-migration
-    and confirm the rollback-restore check would have caught it."""
-    _pre_state(empty_db_conn)
-    _apply(empty_db_conn, FORWARD)
-    empty_db_conn.execute(
-        "UPDATE unit_map SET word = 'ผิด' WHERE book='BSN5657' AND spelling='กร'")
-    empty_db_conn.commit()
-    rows = {r[0]: r[1] for r in empty_db_conn.execute(
-        "SELECT spelling, word FROM unit_map WHERE book = 'BSN5657'")}
-    assert rows != _pre596_map(), 'the mutation must be visible to the comparison'
+def test_a_rerun_keeps_what_put_named(pre185):
+    """A second run (a DB whose applied_migrations lost 185's row) must not
+    touch the map: a code named on /unit-conversions and a changed meaning
+    both survive, and nothing is duplicated."""
+    _apply(pre185, FORWARD)
+    bsn_units.learn('ZZ596', 'BSN5657', 'ทดสอบ', conn=pre185)
+    bsn_units.learn('กร', 'BSN5657', 'กุรุส', conn=pre185)
+    pre185.commit()
+    expected = {**_pre596_map(), 'ZZ596': 'ทดสอบ', 'กร': 'กุรุส'}
+    assert _unit_map(pre185) == expected          # control: the edits landed
+
+    _apply(pre185, FORWARD)
+
+    assert _unit_map(pre185) == expected
+    assert pre185.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 45
+
+
+def test_book_is_constrained(pre185):
+    _apply(pre185, FORWARD)
+    for book in ('xp5', '*'):                      # control: the real books insert
+        pre185.execute("INSERT INTO unit_map (book, spelling, word) VALUES (?, 'ทด', 'ทดสอบ')",
+                       (book,))
+    with pytest.raises(sqlite3.IntegrityError, match='CHECK'):
+        pre185.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('BSN', 'ทด', 'ทดสอบ')")
+
+
+def test_rollback_restores_mig_064s_table_and_ignores_learned_rows(pre185):
+    alias_ddl_before = _ddl(pre185, 'bsn_unit_alias')
+    _apply(pre185, FORWARD)
+    bsn_units.learn('ZZ596', 'BSN5657', 'ทดสอบ', conn=pre185)
+    pre185.commit()
+    assert 'ZZ596' in _unit_map(pre185)            # control: a learned row exists
+
+    _apply(pre185, ROLLBACK)
+
+    assert _ddl(pre185, 'unit_map') is None
+    assert _ddl(pre185, 'bsn_unit_alias') == alias_ddl_before == _ALIAS_DDL
+    restored = dict(pre185.execute("SELECT acronym, full FROM bsn_unit_alias"))
+    assert restored == _pre596_map()
+    assert pre185.execute("SELECT COUNT(*) FROM applied_migrations WHERE filename = ?",
+                          (FORWARD.name,)).fetchone()[0] == 0
