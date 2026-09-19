@@ -2,9 +2,12 @@
 
 The one state it must never produce is 904 ACTIVE with is_transfer = 0: that
 is an ordinary pay-from account, and every guard that keeps 904 out of a
-salary or commission posting would then say yes. So the migration refuses
-(aborts, writes nothing) unless 904 is inactive, and it refuses an absent 904
-rather than silently doing nothing on a DB where the ADR effect was expected.
+salary or commission posting would then say yes. So the flip is CONDITIONAL
+on 904 being inactive, and on any other state the migration is a stamped
+no-op. It never aborts: an abort crashes boot (the runner re-raises out of
+`import app`, and under gunicorn --preload the master exits), which would hit
+every stale local DB where 904 is still active. A 904 re-activated on prod
+before the deploy is caught by the post-deploy check instead (PR #617).
 
 Fixture: `empty_db` (full live schema, zero rows), with 904 inserted in the
 exact state each case needs — never `tmp_db`, whose 904 is whatever the live
@@ -122,41 +125,65 @@ def test_rerun_on_an_already_unflagged_904_is_a_no_op(empty_db):
     assert _rows(empty_db) == before
 
 
-# ── the precondition: refuse, write nothing ──────────────────────────────────
+# ── the condition: an active or absent 904 is a stamped no-op ──────────────
 
-@pytest.mark.parametrize('is_transfer', [0, 1])
-def test_refuses_an_active_904(empty_db, is_transfer):
-    """An active 904 with is_transfer = 0 would be a live pay-from account.
-    Refused whether or not the flag is still set."""
-    _seed(empty_db, is_transfer=is_transfer, is_active=1)
-    before = _rows(empty_db)
-    with pytest.raises(sqlite3.IntegrityError, match='mig 188 precondition'):
-        _apply(empty_db, FORWARD)
-    assert _rows(empty_db) == before
-
-
-def test_refuses_a_db_without_904(empty_db):
-    _seed(empty_db, is_transfer=0, is_active=1, with_904=False)
-    before = _rows(empty_db)
-    assert '904' not in before and '392' in before   # CONTROL: the seed ran
-    with pytest.raises(sqlite3.IntegrityError, match='mig 188 precondition'):
-        _apply(empty_db, FORWARD)
-    assert _rows(empty_db) == before
-
-
-def test_a_refused_run_is_not_stamped(empty_db):
-    """run_pending_migrations re-raises and never records the file, so the
-    next boot tries again once the state is fixed."""
-    _seed(empty_db, is_transfer=1, is_active=1)
-    conn = sqlite3.connect(empty_db)
+def _stamp_others(db):
+    conn = sqlite3.connect(db)
     conn.executemany("INSERT INTO applied_migrations (filename, applied_by) VALUES (?, 'test')",
                      [(f,) for f in database._list_migration_files() if f != MIG])
     conn.commit()
-    with pytest.raises(sqlite3.IntegrityError):
-        database.run_pending_migrations(conn, verbose=False)
     conn.close()
-    assert _stamped(empty_db) == 0
-    assert _flags(empty_db) == (1, 1)
+
+
+def test_an_active_904_is_left_alone_and_boot_goes_on(empty_db):
+    """The shared local dev DB's shape (904 still active, still a transfer
+    account): the runner applies 188, stamps it, and changes nothing."""
+    _seed(empty_db, is_transfer=1, is_active=1)
+    before = _rows(empty_db)
+    _stamp_others(empty_db)
+    conn = sqlite3.connect(empty_db)
+    ran = database.run_pending_migrations(conn, verbose=False)
+    conn.close()
+    assert ran == [MIG]
+    assert _stamped(empty_db) == 1
+    assert _rows(empty_db) == before
+
+
+def test_an_active_904_opens_no_pay_path(empty_db):
+    """After 188 runs on an active 904, 904 is still refused by the pay-from
+    picker and by the commission write path — because it is still a
+    transfer account. CONTROL: 392, active and not a transfer account, is
+    offered and accepted, so the refusal is about 904, not the setup."""
+    import commission
+    import hr_queries as hrq
+    _seed(empty_db, is_transfer=1, is_active=1)
+    conn = sqlite3.connect(empty_db)
+    conn.execute("INSERT INTO salespersons (code, name) VALUES ('T594', 'ทดสอบ')")
+    conn.commit()
+    conn.close()
+    _apply(empty_db, FORWARD)
+    conn = _conn(empty_db)
+    ids = {r['code']: r['id'] for r in conn.execute('SELECT id, code FROM cashbook_accounts')}
+    offered = {r['code'] for r in hrq.get_active_cashbook_accounts(conn, non_transfer_only=True)}
+    assert offered == {'392'}
+    commission.record_payout(year_month='2026-09', salesperson_code='T594', amount_paid=1.0,
+                             paid_date='2026-09-19', account_id=ids['392'], conn=conn)
+    with pytest.raises(ValueError):
+        commission.record_payout(year_month='2026-09', salesperson_code='T594', amount_paid=1.0,
+                                 paid_date='2026-09-19', account_id=ids['904'], conn=conn)
+    conn.close()
+
+
+def test_a_db_without_904_is_a_stamped_no_op(empty_db):
+    _seed(empty_db, is_transfer=0, is_active=1, with_904=False)
+    before = _rows(empty_db)
+    assert '904' not in before and '392' in before   # CONTROL: the seed ran
+    _stamp_others(empty_db)
+    conn = sqlite3.connect(empty_db)
+    assert database.run_pending_migrations(conn, verbose=False) == [MIG]
+    conn.close()
+    assert _rows(empty_db) == before
+    assert _stamped(empty_db) == 1
 
 
 # ── rollback ─────────────────────────────────────────────────────────────────
@@ -182,3 +209,11 @@ def test_forward_after_rollback_lands_the_same_state(empty_db):
     _apply(empty_db, ROLLBACK)
     _apply(empty_db, FORWARD)
     assert _rows(empty_db) == once
+
+
+def test_rollback_after_a_no_op_forward_changes_nothing(empty_db):
+    _seed(empty_db, is_transfer=1, is_active=1)
+    before = _rows(empty_db)
+    _apply(empty_db, FORWARD)
+    _apply(empty_db, ROLLBACK)
+    assert _rows(empty_db) == before
