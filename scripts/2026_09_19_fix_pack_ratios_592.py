@@ -12,9 +12,13 @@ Put ruled 2026-09-19 ("A"): 304 ซอง = 12 · 623 ซอง = 10 · 574 / 57
 the other conversion rows stay as they are.
 
 CONTRACT: keep the 2026-02-23 physical count. The opening plugs were back-solved
-so the ledger up to the BSN cutoff (2026-03-03) equals that count, so a bill
-dated on or before it was already absorbed by the count. Only bills after the
-count really overstate stock, and only those may move it:
+against that count at the BSN cutoff (2026-03-03) on 2026-05-18 and re-pinned on
+2026-05-30, so a bill dated on or before the cutoff was already absorbed by it.
+What the script keeps is the ledger's sum up to the cutoff UNCHANGED, not equal
+to the count: on 576 and 578 it reads 206 / 1,535 against a count of 170 / 275,
+because the 2026-07-03 'ล้าง orphan ledger' ADJUSTs (-36 / -1,260) that removed
+phantom pre-cutoff rows are stamped after the cutoff. Do not "repair" those
+sums. Only bills after the count really overstate stock, and only those move it:
   304 4,199 -> 4,100 · 623 88 -> 52 · 576 69 -> 65 · the other five unchanged.
 The replay re-posts every bill at the new ratio; one compensating ADJUST per
 product, stamped strictly before its head, puts back what the absorbed bills
@@ -365,6 +369,11 @@ def main(argv=None):
                   "compensation %g" % (plan['label'], plan['unit'], plan['ratio'], plan['unit_type'],
                                        before[pid]['stock'], CUTOFF_DATE, before[pid]['pinned'],
                                        want[pid][1], want[pid][0]))
+            later = conn.execute(
+                "SELECT date_iso, doc_no, qty FROM sales_transactions WHERE product_id=? "
+                "AND unit=? AND date_iso > ? ORDER BY date_iso, doc_no",
+                (pid, plan['unit'], CUTOFF_DATE)).fetchall()
+            print("      after the count: %s" % (', '.join('%s %s %g' % tuple(r) for r in later) or '-'))
 
         deltas = {pid: fix(conn, pid, plan, bsn_sync, wacc) for pid, plan in PLAN.items()}
         bad = assert_invariants(conn, before, want, deltas, others_before)
