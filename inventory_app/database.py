@@ -476,7 +476,11 @@ def run_pending_migrations(conn, verbose=True):
             sql = f.read()
         t0 = time.time()
         try:
-            conn.executescript(sql)
+            # A migration that moves cost is signed like any other writer (#590):
+            # nobody is at the controls during a deploy, so the file names itself.
+            with actor.acting_as(kind='migration', who='deploy', source='migration',
+                                 detail=filename):
+                conn.executescript(sql)
         except Exception as e:
             # ⚠ The old comment here claimed SQLite had already rolled back. It has
             # NOT: executescript runs statements until one fails, and a script that
