@@ -175,6 +175,11 @@ def _cashbook_range(db, ids):
     return _decode(sum(got.values()))
 
 
+def _cashbook_headline(db, ids):
+    from blueprints import cashbook as cb
+    return _decode(_cashbook(db, lambda c: cb._get_operating_totals(c, MONTH))['expense'])
+
+
 def _cashbook_detail(db, ids):
     from blueprints import cashbook as cb
     rows, _summary = _cashbook(db, lambda c: cb._get_detail_rows(c, 'month', MONTH))
@@ -279,6 +284,7 @@ PROBES = {
     'cashbook_tag':               ('OPERATING', _cashbook_tag),
     'cashbook_range':             ('OPERATING', _cashbook_range),
     'cashbook_detail':            ('OPERATING', _cashbook_detail),
+    'cashbook_headline':          ('OPERATING', _cashbook_headline),
     'accounting_expected':        ('EXPECTED', _accounting_expected),
     'pay_from_picker':            ('PAYABLE', _pay_from_picker),
     'commission_record_payout':   ('PAYABLE', _commission_record_payout),

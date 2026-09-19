@@ -194,5 +194,6 @@ def test_headline_equals_category_totals_in_every_month_of_the_live_clone(tmp_db
             assert card3 == round(inc - exp, 2), month
     # CONTROL: the months where a closed account moved money were rendered
     # with money on the page, and named in the note.
-    inc, exp, _c, _l, note, _t = _headline(c, contributing[0])
-    assert exp > 0 and note is not None, contributing[0]
+    for month in contributing:
+        inc, exp, _c, _l, note, _t = _headline(c, month)
+        assert inc + exp > 0 and note is not None, month

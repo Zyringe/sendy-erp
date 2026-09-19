@@ -92,6 +92,12 @@ ALLOWED = {
     'blueprints/cashbook.py::_get_detail_rows': (
         1, OPERATING, ('cashbook_detail',),
         '/cashbook drill-down behind every summary figure above.'),
+    'blueprints/cashbook.py::_get_operating_totals': (
+        1, OPERATING, ('cashbook_headline',),
+        '/cashbook headline รายรับรวม / รายจ่ายรวม / สุทธิเดือนนี้ and the '
+        'transfer-category figure beside them (#594). Same population as the '
+        'category summary so the cards and the breakdown cannot disagree; '
+        'the per-account table stays active-only.'),
     # ── EXPECTED: who should have keyed this month. ──
     'models/accounting.py::_incomplete_months': (
         1, EXPECTED, ('accounting_expected',),
@@ -121,10 +127,9 @@ ALLOWED = {
         2, LABEL, (),
         "/cashbook per-account table: SELECTs the flag and sorts by it. Its "
         'population is `a.is_active = 1`, not the flag, so 904 is not listed '
-        'before or after the flip. ⚠ That is why the month headline cards '
-        '(summed from this table) do NOT pick up 904 while the category '
-        'summary below them does — measured on the 2026-09-19 snapshot, see '
-        '#594.'),
+        'before or after the flip. The headline totals used to be summed from '
+        'this table and so missed a closed account; since #594 they come from '
+        '_get_operating_totals instead.'),
     'blueprints/cashbook.py::dashboard': (
         2, LABEL, (),
         '/cashbook op/transfer split of the rows _get_accounts_with_totals '
@@ -248,7 +253,7 @@ def test_the_census_is_not_empty():
     """CONTROL: a sweep that found nothing would satisfy the census above
     only if ALLOWED were emptied with it — pin the size so it cannot."""
     found = _census()
-    assert len(found) == len(ALLOWED) == 20, sorted(found)
+    assert len(found) == len(ALLOWED) == 21, sorted(found)
 
 
 @pytest.mark.parametrize('site', sorted(ALLOWED))
