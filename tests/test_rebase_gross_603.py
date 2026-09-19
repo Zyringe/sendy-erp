@@ -628,6 +628,15 @@ def test_live_needs_its_confirmation(db, capsys):
     assert not backups.exists() or not any(backups.iterdir()), "no backup without confirmation"
 
 
+def test_a_refused_live_run_takes_no_backup(db, capsys):
+    """The backup comes after the preconditions: create_backup prunes to two, so a
+    refused attempt must not rotate a good rollback point out."""
+    assert _run(db, HASP_ARG, '--confirm-live', HASP_ARG, mode='live') == 2
+    assert '#599' in capsys.readouterr().out
+    backups = pathlib.Path(db).parent / 'backups'
+    assert not backups.exists() or not any(backups.iterdir())
+
+
 def test_live_backs_up_then_commits(db):
     assert _run(db, SANDPAPER_ARG, '--confirm-live', SANDPAPER_ARG, mode='live') == 0
     _assert_rebased_sandpapers(db)

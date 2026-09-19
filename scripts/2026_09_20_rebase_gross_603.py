@@ -82,7 +82,8 @@ def _bills(sales, purchases):
     return {'sales_transactions': sorted(sales), 'purchase_transactions': sorted(purchases)}
 
 
-def _sandpaper(label, cost, base, new_base, sales, purchases, **kw):
+def _plan(label, cost, base, new_base, sales, purchases, **kw):
+    """The sandpaper shape; a hasp overrides new_unit, 1052 its extras."""
     plan = {'label': label, 'new_unit': 'แผ่น', 'money': (cost, 0.0, base), 'new_base': new_base,
             'units': {'กร': 1.0, 'ตัว': 1.0}, 'keep': {}, 'tiers': [('1 กุรุส', base)],
             'opening': [0.0], 'extra': [], 'bills': _bills(sales, purchases),
@@ -95,20 +96,20 @@ def _sandpaper(label, cost, base, new_base, sales, purchases, **kw):
 # prod-2026-09-19T1536Z-pre-592.db). `bills` = (doc_no, qty) per table. A prod
 # that has drifted since refuses instead of applying.
 PLAN = {
-    1047: _sandpaper(
+    1047: _plan(
         'กระดาษทรายขัดไม้ จระเข้ #0', 614.02, 800.0, 5.56,
         [('IV6700242-4', 1.0), ('IV6701274-6', 1.0), ('IV6701822-7', 1.0), ('IV6702197-3', 1.0),
          ('IV6703189-5', 1.0), ('IV6800465-1', 1.0), ('IV6802317-1', 1.0), ('IV6802995-5', 1.0)],
         [('RR6700041', 1.0), ('RR6700200', 1.0), ('RR6700289', 1.0), ('RR6700333', 1.0),
          ('RR6700481', 1.0), ('RR6800085', 1.0), ('RR6800407', 1.0), ('RR6800561', 1.0)]),
-    1048: _sandpaper(
+    1048: _plan(
         'กระดาษทรายขัดไม้ จระเข้ #1', 614.02, 800.0, 5.56,
         [('IV6801500-8', 2.0), ('IV6802317-2', 1.0)],
         [('RR6800265', 2.0), ('RR6800407', 1.0)]),
-    1049: _sandpaper(
+    1049: _plan(
         'กระดาษทรายขัดไม้ จระเข้ #2', 664.48, 880.0, 6.12,
         [('IV6802995-6', 1.0)], [('RR6800561', 1.0)]),
-    1052: _sandpaper(
+    1052: _plan(
         'กระดาษทรายขัดไม้ จระเข้ #4', 788.0142307692307, 980.0, 6.81,
         [('IV6700242-5', 1.0), ('IV6701274-8', 1.0), ('IV6702896-3', 1.0), ('IV6703189-6', 1.0),
          ('IV6800068-10', 1.0), ('IV6800126-1', 1.0), ('IV6801500-10', 2.0)],
@@ -117,12 +118,12 @@ PLAN = {
         units={'กร': 1.0, 'ตัว': 1.0, 'โหล': 12.0}, keep={'โหล': 12.0}, opening=[24.0],
         extra=[('ADJUST', -24.0, ORPHAN_NOTE, '2026-07-03 00:00:00')],
         expect_opening=3456),
-    1187: _sandpaper(
+    1187: _plan(
         'ขอสับ 6 สีโครเมียม (CR)', 684.0, 960.0, 6.67,
         [('IV6701146-6', 1.0), ('IV6702591-3', 4.0), ('IV6702875-4', 1.0), ('IV6801764-11', 1.0)],
         [('RR6700174', 1.0), ('RR6700379', 4.0), ('RR6700415', 1.0), ('RR6800316', 1.0)],
         new_unit='ตัว'),
-    1188: _sandpaper(
+    1188: _plan(
         'ขอสับ 6 สีรมดำ (AC)', 684.0, 960.0, 6.67,
         [('IV6700203-5', 1.0), ('IV6702875-3', 1.0), ('IV6802085-1', 1.0), ('IV6802850-5', 1.0)],
         [('RR6700038', 1.0), ('RR6700415', 1.0), ('RR6800360', 1.0), ('RR6800515', 1.0)],
@@ -611,12 +612,6 @@ def main(argv=None):
     if app_dir not in sys.path:
         sys.path.insert(0, app_dir)
 
-    if a.mode == 'live':
-        import db_backup
-        info = db_backup.guarded_backup(BACKUP_REASON, policy='refuse', db_path=a.db,
-                                        backup_dir=db_backup.default_backup_dir(a.db))
-        print("BACKUP", info)
-
     today = date.today().isoformat()
     conn = sqlite3.connect(a.db, timeout=15)
     # as models.database.get_connection: the replay and the resolver index rows by NAME
@@ -632,6 +627,15 @@ def main(argv=None):
             for p in problems:
                 print("  ✗", p)
             return 2
+
+        if a.mode == 'live':
+            # After the preconditions, so a refused run leaves the backup rotation
+            # alone (create_backup prunes to 2). A reader, so WAL lets it run
+            # beside this connection's write lock and it sees the committed state.
+            import db_backup
+            info = db_backup.guarded_backup(BACKUP_REASON, policy='refuse', db_path=a.db,
+                                            backup_dir=db_backup.default_backup_dir(a.db))
+            print("BACKUP", info)
 
         before = snapshot(conn, eng, pids, today)
         others_before = fingerprint_others(conn, pids)
