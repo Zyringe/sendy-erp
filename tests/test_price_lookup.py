@@ -189,11 +189,12 @@ def _promo(conn, pid, *, promo_type, discount_value=None, date_start=None, date_
     return cur.lastrowid
 
 
-def _base_price_history(conn, pid, changed_at, old=100.0, new=100.0):
+def _base_price_history(conn, pid, changed_at, old=100.0, new=100.0, source=None):
     conn.execute(
-        "INSERT INTO product_price_history (product_id, field_name, old_value, new_value, changed_at) "
-        "VALUES (?, 'base_sell_price', ?, ?, ?)",
-        (pid, old, new, changed_at),
+        "INSERT INTO product_price_history "
+        "(product_id, field_name, old_value, new_value, changed_at, source) "
+        "VALUES (?, 'base_sell_price', ?, ?, ?, ?)",
+        (pid, old, new, changed_at, source),
     )
     conn.commit()
 
@@ -1327,6 +1328,65 @@ def test_555_resolve_price_first_time_base_recording_creates_no_epoch(db):
     assert out['answer']['basis'] == 'last_paid'
     assert out['answer']['price_per_unit'] == 90.0
     assert 'price_changed_since_last' not in [f['code'] for f in out['flags']]
+
+
+# ── #586: a base-unit rebase is not a price-regime change ────────────────────────
+
+def _unit_rebase_epoch_fixture(conn, rebase_source):
+    pid = _mk_product(conn, "586 unit rebase epoch", unit_type='คู่', base=24.17, cost=15.0)
+    _clear_pid(conn, pid)
+    _uc(conn, pid, 'โหล', 12.0)
+    customer_code = _mk_customer(conn, 'TST-586', 'ลูกค้า 586')
+    _clear_customer_pid(conn, customer_code, pid)
+
+    genuine_date = '2026-01-10'
+    _base_price_history(conn, pid, genuine_date + " 09:00:00", old=250.0, new=290.0)
+    _bill(conn, pid=pid, customer_code=customer_code, customer_name='ลูกค้า 586',
+          date_iso='2026-03-15', qty=1, unit='โหล', unit_price=285.01,
+          vat_type=1, net=285.01)
+    _base_price_history(
+        conn, pid, '2026-09-19 06:37:33', old=290.0, new=24.17,
+        source=rebase_source,
+    )
+    return pid, customer_code, genuine_date
+
+
+def test_586_unit_rebase_source_skipped_exposes_genuine_change_and_last_paid(db):
+    pid, customer_code, genuine_date = _unit_rebase_epoch_fixture(
+        db, 'script:2026_09_19_gross_to_piece')
+
+    assert pl._epoch_candidates(db, pid, 'โหล', '2026-09-19')['base_changed'] == genuine_date
+
+    out = pl.resolve_price(
+        db, product_id=pid, customer_code=customer_code, unit='โหล',
+        today='2026-09-19')
+    assert out['answer']['basis'] == 'last_paid'
+    assert out['answer']['price_per_unit'] == 285.01
+    assert 'price_changed_since_last' not in [f['code'] for f in out['flags']]
+
+
+def test_586_unattributed_nonzero_change_still_moves_epoch_and_uses_list(db):
+    pid, customer_code, _genuine_date = _unit_rebase_epoch_fixture(db, None)
+
+    assert pl._epoch_candidates(db, pid, 'โหล', '2026-09-19')['base_changed'] == '2026-09-19'
+
+    out = pl.resolve_price(
+        db, product_id=pid, customer_code=customer_code, unit='โหล',
+        today='2026-09-19')
+    assert out['answer']['basis'] == 'list_after_promo'
+    assert out['answer']['price_per_unit'] == 290.04
+    assert 'price_changed_since_last' in [f['code'] for f in out['flags']]
+
+
+def test_586_only_unit_rebase_row_yields_no_base_epoch(db):
+    pid = _mk_product(db, "586 only unit rebase", unit_type='คู่', base=24.17, cost=15.0)
+    _clear_pid(db, pid)
+    _base_price_history(
+        db, pid, '2026-09-19 06:37:33', old=290.0, new=24.17,
+        source='script:2026_09_19_rebase_689_767',
+    )
+
+    assert pl._epoch_candidates(db, pid, None, '2026-09-19')['base_changed'] is None
 
 
 def _delete_tier_with_audit(conn, tier_id, created_at):
