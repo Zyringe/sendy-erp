@@ -18,10 +18,11 @@
      lose the first confirmation the moment the second gate's own screen
      renders, or the batch can never be saved through the normal UI). Each
      gate's OWN checkbox below (name-matched) still controls whether THIS
-     render's gate is confirmed; this only preserves the OTHER two. #}
+     render's gate is confirmed; this only preserves the OTHER ones. #}
   {% if confirm_new_categories %}<input type="hidden" name="confirm_new_categories" value="1">{% endif %}
   {% if confirm_duplicates %}<input type="hidden" name="confirm_duplicates" value="1">{% endif %}
   {% if confirm_advance_cap %}<input type="hidden" name="confirm_advance_cap" value="1">{% endif %}
+  {% if confirm_commission_elsewhere %}<input type="hidden" name="confirm_commission_elsewhere" value="1">{% endif %}
 
   {# ── Shared header: date + account + bulk toggle ─────────────────────────────── #}
   <div class="card mb-3">
@@ -150,7 +151,7 @@
             </td>
           </tr>
           {% if row.errors %}
-          <tr class="{{ 'table-warning' if show_duplicate_confirm else 'table-danger' }}">
+          <tr class="{{ 'table-warning' if show_duplicate_confirm or show_commission_elsewhere_confirm else 'table-danger' }}">
             <td colspan="8" class="small">{{ row.errors | join(', ') }}</td>
           </tr>
           {% endif %}
@@ -234,6 +235,20 @@
       <input class="form-check-input" type="checkbox" id="confirm-new-categories" name="confirm_new_categories" value="1">
       <label class="form-check-label" for="confirm-new-categories">
         ยืนยันสร้างหมวดหมู่ใหม่นี้และบันทึกรายการ
+      </label>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Commission keyed under another category (#589): the reason and the link
+     to the rep's commission page are on the highlighted row — this box is
+     only the confirm control. A warning, not a block. #}
+  {% if show_commission_elsewhere_confirm %}
+  <div class="alert alert-warning">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" id="confirm-commission-elsewhere" name="confirm_commission_elsewhere" value="1">
+      <label class="form-check-label" for="confirm-commission-elsewhere">
+        ยืนยันว่าแถวที่ไฮไลต์ไม่ใช่ค่าคอมมิชชั่น บันทึกในหมวดที่เลือกไว้
       </label>
     </div>
   </div>
@@ -330,7 +345,7 @@
   var COMMISSION_REPS = [
     {% for rep in commission_reps %}{code:{{ rep.code|tojson }}, name:{{ rep.name|tojson }}, real_name:{{ rep.real_name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}
   ];
-  // Mirrors `_is_in_engine_commission_recipient` server-side (cashbook.py):
+  // Mirrors `_in_engine_commission_rep` server-side (cashbook.py):
   // code, name, OR real_name all count as an in-engine identifier match.
   var IN_ENGINE_IDENTS = (function () {
     var s = {};
