@@ -94,24 +94,29 @@ def test_a_caller_that_omits_book_gets_bsn5657(seeded_conn):
     assert bsn_units.translate('กร', bsn_units.BOOK_BSN5657, conn=seeded_conn) == 'ตัว'
 
 
-# ── never empty by construction, instead of a per-call guard ────────────────
-#
-# A fresh DB built from data/schema.sql (bare git clone, empty Railway
-# volume, or vat_book_builder's DATA_DIR-isolated subprocess) has the
-# unit_map TABLE (schema.sql is DDL) but ZERO rows (only migration 185's own
-# INSERTs seed it, and a fresh-DB boot backfills every migration as already
-# applied without re-running them). Team-lead review on #596: this must not
-# silently pass every Express code through untranslated.
-#
-# Two shapes were tried. A per-call raise in bsn_units.py (option b) was
-# implemented first and reverted: measured against the full suite it broke
-# ~100 unrelated tests that build a schema-only `empty_db`/`empty_db_conn`
-# clone for OTHER features and only incidentally pass through a bsn_units
-# call (cross_unit_hazard, import_weekly, reconcile, ...) — the guard's
-# blast radius was disproportionate to the deployment-only risk it existed
-# to catch. `database.py::init_db()` instead re-seeds `unit_map` from
-# migration 185's own SQL whenever the table exists but is empty (option a)
-# — see tests/test_fresh_db_build.py::test_init_db_from_empty_seeds_unit_map
-# for the break-it-once-verified regression test. This file's tests are
-# unaffected either way (they seed through the migration directly, not
-# through init_db()).
+# ── a MISSING table raises; an EMPTY one reads as unknown ───────────────────
+
+def test_a_missing_unit_map_raises_but_an_empty_one_is_unknown(tmp_path):
+    """No unit_map at all means a pre-185 DB (e.g. a whole old file pushed
+    through /admin/upload-db): reading it as "unknown" would import raw
+    Express codes, so every read raises. An EMPTY table is what a schema-only
+    clone holds and still reads as unknown."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_path / 'x.db')
+    conn.execute("CREATE TABLE unit_map (book TEXT, spelling TEXT, word TEXT)")
+    reads = {
+        'translate': lambda: bsn_units.translate('ตว', conn=conn),
+        'normalize_unit': lambda: bsn_units.normalize_unit('ตว', conn=conn),
+        'is_known': lambda: bsn_units.is_known('ตว', conn=conn),
+        'full_units': lambda: bsn_units.full_units(conn=conn),
+        'load_unit_map': lambda: bsn_units.load_unit_map(conn=conn),
+    }
+    assert {k: f() for k, f in reads.items()} == {
+        'translate': None, 'normalize_unit': 'ตว', 'is_known': False,
+        'full_units': set(), 'load_unit_map': {}}
+
+    conn.execute("DROP TABLE unit_map")
+    for name, read in reads.items():
+        with pytest.raises(sqlite3.OperationalError, match='no such table: unit_map'):
+            read()
+    conn.close()
