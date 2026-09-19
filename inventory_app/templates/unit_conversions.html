@@ -111,7 +111,7 @@
                   {%- if p.is_acronym %} หน่วยเต็ม{% else %} {{ p.bsn_unit }}{% endif %} =</span>
                 <input type="number" step="0.01" min="0.01"
                        name="ratio_{{ p.product_id }}_{{ p.bsn_unit }}"
-                       class="form-control text-center" value="1" required>
+                       class="form-control text-center" placeholder="เช่น 12">
                 <span class="input-group-text">{{ p.unit_type }}</span>
               </div>
               {% endif %}
