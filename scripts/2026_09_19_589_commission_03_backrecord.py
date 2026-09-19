@@ -154,10 +154,13 @@ def preconditions(conn, cm):
                      (SP,)).fetchone()[0]
     if n:
         bad.append('03 already holds %d commission_payouts row(s) — refusing to run twice' % n)
-    acct = conn.execute("SELECT is_active, is_transfer FROM cashbook_accounts WHERE id = ?",
+    # A transfer account is refused by commission.record_payout itself, inside
+    # this transaction, so the whole run rolls back; not re-checked here (#617's
+    # census would otherwise have to track a one-off reader of the flag).
+    acct = conn.execute("SELECT is_active FROM cashbook_accounts WHERE id = ?",
                         (ACCOUNT_ID,)).fetchone()
-    if acct is None or tuple(acct) != (1, 0):
-        bad.append('cashbook account %d is not an active non-transfer account' % ACCOUNT_ID)
+    if acct is None or acct[0] != 1:
+        bad.append('cashbook account %d is missing or inactive' % ACCOUNT_ID)
 
     for cb_id, ym, inv, amount, paid_date, _ in BACKRECORDS:
         row = conn.execute("SELECT * FROM cashbook_transactions WHERE id = ?", (cb_id,)).fetchone()

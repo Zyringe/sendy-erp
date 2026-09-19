@@ -87,6 +87,20 @@ def test_a_failed_invariant_rolls_everything_back(db):
     assert _state(db) == before
 
 
+def test_a_transfer_account_is_refused_by_the_payout_path_and_nothing_is_written(db):
+    """The script no longer reads the transfer flag itself; record_payout's own
+    check refuses the September posting, which lands after the back-records
+    and the delete of #845, so this also proves those roll back with it."""
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE cashbook_accounts SET is_transfer = 1 WHERE id = 1")
+    conn.commit()
+    conn.close()
+    before = _state(db)
+    with pytest.raises(ValueError, match='เงินโอน'):
+        _load().main(['rehearse', '--db', db])
+    assert _state(db) == before
+
+
 def test_rehearse_refuses_the_prod_path(db):
     mod = _load()
     mod.PROD_DB = os.path.realpath(db)
