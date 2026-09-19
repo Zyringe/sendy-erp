@@ -214,7 +214,7 @@ LEFT JOIN ของ products + brands + categories + color_finish_codes + stock_
 - **Receivables/Payables**: `received_payments` (id, re_no, total, ...) linked to `paid_invoices` (id, re_id → received_payments.id, doc_no, doc_kind IN ('IV','SR'), amount) — mig 058 added the money columns (`paid_invoices.amount`, `received_payments.total`); both tables predate it and no `payment_amounts` table exists. `paid_invoices.doc_no = sales_transactions.doc_base`. `credit_note_imports` (mig 059), `credit_note_amounts` (mig 062 — authoritative per-SR from ใบลดหนี้ master, replaces `sales_transactions.SR.net` for credit math), `sr_writeoffs` (mig 060)
 - **HR** (mig 054 — 9 tables): `employees`, `employee_salary_history`, `leave_types`, `employee_leave_entitlements`, `leave_requests`, `payroll_runs`, `payroll_items`, `hr_config`, `company_holidays`; `salary_advances` added mig 057
 - **Cashbook** (mig 055–056): `cashbook_accounts`, `cashbook_categories`, `cashbook_transactions` (`is_transfer` flag added mig 056)
-- **Unit aliases** (mig 064): `bsn_unit_alias` — normalizes Express unit strings before resolver matching
+- **Unit map** (mig 185, replaces mig 064's `bsn_unit_alias`): `unit_map(book, spelling, word)`, `UNIQUE(book, spelling)` — translates every Express unit code + spelling variant into one Sendy word per หน่วย, read via `inventory_app/bsn_units.py`. A code's meaning comes from the Express book it came from (`BSN5657`/`xp5`); `'*'` is a book-independent variant. See docs/adr/0018.
 - **Misc**: `expense_categories`, `expense_log`, `promotions`, `stock_levels`
 
 ## BSN Sync Logic

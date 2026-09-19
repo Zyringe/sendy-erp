@@ -2,7 +2,7 @@
 overwrite + oracle, isvat dump, finalize, subprocess guard).
 
 Pure dict-fixture + throwaway-sqlite tests: no DBF files, no live DB. The
-minimal 3-table schema below mirrors data/schema.sql's columns these
+minimal schema below mirrors data/schema.sql's columns these
 functions touch; commit_express_dbf itself is covered by its own suite."""
 import os
 import sqlite3
@@ -33,6 +33,10 @@ def conn(tmp_path):
         CREATE TABLE stock_levels (
             product_id INTEGER PRIMARY KEY,
             quantity INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE unit_map (
+            id INTEGER PRIMARY KEY, book TEXT NOT NULL,
+            spelling TEXT NOT NULL, word TEXT NOT NULL);
+        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว');
     """)
     yield c
     c.close()
@@ -57,6 +61,110 @@ def test_seed_creates_product_and_catchall_mapping(conn):
     assert row['unit_type'] == 'ตัว'          # 'ตว' acronym normalized
     assert (row['bsn_code'], row['bsn_unit']) == ('001ก1', '')
     assert pids['001ก1'] == 1
+
+
+# ── #596: the build translates through the MAIN db's unit map ──────────────
+
+def test_use_main_unit_map_refuses_without_a_main_db(conn):
+    with pytest.raises(RuntimeError, match='--result-db'):
+        vb._use_main_unit_map(conn, None)
+    # control: nothing was touched before the refusal
+    assert conn.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 1
+
+
+def test_use_main_unit_map_refuses_an_empty_main_map(conn, tmp_path):
+    """An empty main map would leave the build reading every code as
+    unknown, so the whole book would import untranslated. Refuse instead,
+    before the build db's own map is touched."""
+    main_db = tmp_path / 'main.db'
+    c = sqlite3.connect(str(main_db))
+    c.execute("CREATE TABLE unit_map (book TEXT, spelling TEXT, word TEXT)")
+    c.commit()
+    c.close()
+    with pytest.raises(RuntimeError, match='unit_map is empty'):
+        vb._use_main_unit_map(conn, str(main_db))
+    assert conn.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 1
+
+
+def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
+    """The VAT book is a fresh db: init_db() fills its unit_map from
+    data/schema.sql, the map as of the last schema dump. The main db's map is
+    the only live one (it holds every code Put has named since). A real build
+    must translate through it on BOTH paths: the STMAS product seed and the
+    importers commit_express_dbf runs, which open their own connection.
+
+    Real init_db, seed, commit_express_dbf and import_weekly; only reading the
+    DBF files is faked. `ขว` is in no dumped map; the main db names it."""
+    import sys
+    scripts = os.path.join(os.path.dirname(__file__), '..', 'scripts')
+    if scripts not in sys.path:
+        sys.path.append(scripts)          # commit_express_dbf imports import_express
+    import datetime
+    import config
+    import database
+    import express_dbf_source as eds
+    # The build imports these lazily. First imported under the patched
+    # DATABASE_PATH, they would keep the deleted tmp path for every later
+    # test (`from config import DATABASE_PATH` binds once); import them now.
+    import cashflow  # noqa: F401
+    import import_credit_notes  # noqa: F401
+    import payments_alloc  # noqa: F401
+    before = set(sys.modules)
+
+    main_db = tmp_path / 'main.db'
+    c = sqlite3.connect(str(main_db))
+    c.executescript("""
+        CREATE TABLE unit_map (
+            id INTEGER PRIMARY KEY, book TEXT NOT NULL,
+            spelling TEXT NOT NULL, word TEXT NOT NULL);
+        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ขว', 'ขวด');
+    """)
+    c.commit()
+    c.close()
+
+    db_path = str(tmp_path / 'build' / 'inventory.db')
+    monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
+    monkeypatch.setattr(database, 'DATABASE_PATH', db_path)
+    monkeypatch.setenv('VAT_BOOK_BUILD', '1')
+    d = datetime.date(2026, 4, 1)
+    tables = {
+        'STMAS': [_stmas('X1', 'น้ำยาทดสอบ', qucod='ขว', unitpr=10.0)],
+        'STLOC': [], 'ISVAT': [], 'ISINFO': [],
+        'ARTRN': [], 'ARMAS': [], 'APMAS': [], 'ARTRNRM': [],
+        'ARRCPIT': [], 'APRCPIT': [],
+        'APTRN': [{'DOCNUM': 'RR2600001', 'RECTYP': '3', 'SUPCOD': 'S001',
+                   'FLGVAT': 0, 'DOCDAT': d}],
+        'STCRD': [{'DOCNUM': 'RR2600001', 'SEQNUM': 1, 'STKCOD': 'X1',
+                   'STKDES': 'น้ำยาทดสอบ', 'TRNQTY': 6.0, 'TQUCOD': 'ขว',
+                   'UNITPR': 10.0, 'DISC': '', 'TRNVAL': 60.0, 'NETVAL': 60.0,
+                   'RDOCNUM': ''}],
+    }
+
+    def fake_open(dataset_dir, name):
+        if name not in tables:
+            raise FileNotFoundError(name)    # an optional table this zip lacks
+        return tables[name]
+    monkeypatch.setattr(eds, 'open_table', fake_open)
+
+    vb.build(str(tmp_path / 'dbf'), snapshot_date='2026-09-19',
+             main_db_path=str(main_db))
+
+    built = sqlite3.connect(db_path)
+    try:
+        product_unit = built.execute(
+            "SELECT unit_type FROM products WHERE product_name = 'น้ำยาทดสอบ'").fetchall()
+        line_unit = built.execute(
+            "SELECT unit FROM purchase_transactions WHERE doc_no = 'RR2600001'").fetchall()
+        rows = built.execute("SELECT book, spelling, word FROM unit_map").fetchall()
+    finally:
+        built.close()
+    assert line_unit == [('ขวด',)]           # the importer path
+    assert product_unit == [('ขวด',)]        # the STMAS seed path
+    # exactly the main map: schema.sql's dumped rows were replaced, not topped up
+    assert rows == [('BSN5657', 'ขว', 'ขวด')]
+    leaked = sorted(m for m in set(sys.modules) - before
+                    if getattr(sys.modules[m], 'DATABASE_PATH', None) == db_path)
+    assert leaked == [], f'first imported inside the build, bound to the tmp db: {leaked}'
 
 
 def test_seed_blank_name_falls_back_to_code_and_dups_keep_first(conn):
@@ -346,6 +454,7 @@ def test_build_refuses_to_return_when_a_snapshot_failed(tmp_path, monkeypatch):
     monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
     monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
     monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
+    monkeypatch.setattr(vb, '_use_main_unit_map', lambda *a, **k: None)
     monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
     reached = []
     monkeypatch.setattr(vb, 'overwrite_stock_from_stmas',
@@ -375,6 +484,7 @@ def test_build_passes_the_snapshot_date_through_to_the_importer(tmp_path, monkey
     monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(db_path))
     monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
     monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
+    monkeypatch.setattr(vb, '_use_main_unit_map', lambda *a, **k: None)
     monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
     monkeypatch.setattr(vb, 'overwrite_stock_from_stmas', lambda *a, **k: None)
     monkeypatch.setattr(vb, 'dump_isvat', lambda *a, **k: 0)

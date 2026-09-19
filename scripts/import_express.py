@@ -561,7 +561,7 @@ def _import_sales(conn, path, batch_id, company_id, incremental=True):
             cust_id = row[0] if row else None
         # Normalize unit FIRST — both the mapping resolver and the canonical
         # express_sales.unit value must be on the canonical alias.
-        norm_unit = bsn_units.normalize_unit(r.unit)
+        norm_unit = bsn_units.normalize_unit(r.unit, conn=conn)
         prod_id = _product_id_by_code(conn, r.product_code, norm_unit)
         conn.execute("""
             INSERT INTO express_sales

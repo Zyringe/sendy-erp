@@ -1419,7 +1419,7 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
 
     # One map, read once, instead of per line: normalize_unit() is called on
     # every line of both sides (~150k times on the real dataset).
-    unit_map = bsn_units.load_unit_map()
+    unit_map = bsn_units.load_unit_map(conn=conn)
 
     def _norm(u):
         return unit_map.get(u, u) if u else u

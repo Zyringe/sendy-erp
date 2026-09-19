@@ -18,8 +18,9 @@ the live DB: VAT_BOOK_BUILD=1 must be set, and the target DB must not exist yet
 finalized self-contained (journal_mode=DELETE, no -wal/-shm, integrity-checked);
 the caller renames/moves it into place (see blueprints/bsn.py).
 
-Fill order: fresh schema → products+mapping seeded from STMAS (so every STKCOD
-resolves during import) → commit_express_dbf(since_days=None) = full history
+Fill order: fresh schema → unit_map copied from the main db → products+mapping
+seeded from STMAS (so every STKCOD resolves during import) →
+commit_express_dbf(since_days=None) = full history
 through the six REAL importers → stock_levels overwritten from STMAS.TOTBAL
 (the book's own stock, oracle-checked vs Σ STLOC.LOCBAL) → isvat_raw dump →
 book_meta → finalize.
@@ -76,7 +77,7 @@ def seed_products_from_stmas(conn, stmas_rows):
         if not code or code in code_to_pid:
             continue
         name = str(r.get('STKDES') or '').strip() or code
-        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip()) or 'ตัว'
+        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip(), conn=conn) or 'ตัว'
         cost = _stmas_cost(r)
         cur = conn.execute(
             "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)",
@@ -265,13 +266,49 @@ def _require_snapshots_ok(per_type):
                 f'{label}: สร้างไม่สำเร็จ — ไม่ publish สมุด VAT รอบนี้ ({err})')
 
 
-def build(source_dir, snapshot_date=None):
+def _use_main_unit_map(conn, main_db_path):
+    """Make this build db's unit_map an exact copy of the MAIN db's (#596).
+
+    The one unit map lives in the main app db. Everything here that
+    translates a unit (seed_products_from_stmas, and import_weekly deep
+    inside commit_express_dbf, which opens its own connection) reads it
+    through `database.get_connection()`, and DATA_DIR points that at this
+    fresh build db. init_db() filled that db's table from data/schema.sql,
+    i.e. the map as of the last schema dump, which misses every code Put has
+    named since. So it is replaced here, before anything reads it. Read-only
+    on the main db."""
+    if not main_db_path:
+        raise RuntimeError(
+            "vat_book_builder needs the main db (--result-db): the VAT book "
+            "translates unit codes through the main db's unit_map")
+    src = sqlite3.connect(f'file:{main_db_path}?mode=ro', uri=True)
+    try:
+        rows = src.execute("SELECT book, spelling, word FROM unit_map").fetchall()
+    finally:
+        src.close()
+    if not rows:
+        # An empty map reads as "every code unknown": the whole book would
+        # import its unit codes untranslated, silently.
+        raise RuntimeError(
+            f"the main db's unit_map is empty ({main_db_path}); refusing to build "
+            "a VAT book that would import every unit code untranslated")
+    conn.execute("DELETE FROM unit_map")
+    conn.executemany(
+        "INSERT INTO unit_map (book, spelling, word) VALUES (?, ?, ?)", rows)
+    conn.commit()
+
+
+def build(source_dir, snapshot_date=None, main_db_path=None):
     """Full build at config.DATABASE_PATH (guarded). Returns a summary dict.
 
     snapshot_date: the as-of date for this book's outstanding snapshots, decided
     ONCE by the upload request and passed down, so both books carry the same date.
     Letting it default here would stamp the VAT book from this subprocess's own
     clock — it starts minutes after the request and can cross midnight.
+
+    main_db_path: the MAIN app db (the CLI's `--result-db`, captured by the
+    route before this subprocess's DATA_DIR override took effect). Its
+    unit_map is the one map; see _use_main_unit_map.
     """
     db_path = _guard_subprocess_target()
 
@@ -288,6 +325,7 @@ def build(source_dir, snapshot_date=None):
 
     conn = database.get_connection()
     try:
+        _use_main_unit_map(conn, main_db_path)
         seed_companies(conn)
         code_to_pid = seed_products_from_stmas(conn, stmas)
         per_type = import_router.commit_express_dbf(
@@ -413,7 +451,8 @@ if __name__ == '__main__':
     p.add_argument('--publish-to',
                    help='live vat_book.db path to atomically replace on success')
     p.add_argument('--result-db',
-                   help='MAIN db path holding the import_log last-run row to update')
+                   help='MAIN db path: holds the import_log last-run row to update, '
+                        'and the unit_map the build translates units through (required to build)')
     p.add_argument('--result-row', type=int,
                    help='import_log row id to update with the outcome')
     p.add_argument('--cleanup-dir',
@@ -429,7 +468,8 @@ if __name__ == '__main__':
             # rebuilds must serialize the entire lifecycle, not just the swap).
             if args.publish_to:
                 lock_fd = acquire_publish_lock(args.publish_to)
-            summary = build(args.source, snapshot_date=args.snapshot_date)
+            summary = build(args.source, snapshot_date=args.snapshot_date,
+                            main_db_path=args.result_db)
             if args.publish_to:
                 publish(summary['db_path'], args.publish_to)
             outcome = {'ok': True, 'counts': summary['counts'],

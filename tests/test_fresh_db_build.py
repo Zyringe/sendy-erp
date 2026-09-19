@@ -129,3 +129,108 @@ def test_init_db_from_empty_completes(tmp_path, monkeypatch):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
+
+
+def test_init_db_from_empty_seeds_unit_map(tmp_path, monkeypatch):
+    """#596: a brand-new DB runs no migration (every one is stamped as
+    applied), so unit_map's rows reach it only through data/schema.sql, which
+    scripts/dump_schema.py writes them into. An empty map would import every
+    Express code untranslated on a fresh install (bare git clone, empty
+    Railway volume) — the exact failure #595 exists to prevent. Pinned to
+    today's 44 rows; a PR that changes a meaning updates this line."""
+    db_path = str(tmp_path / "fresh.db")
+
+    import config
+    import database
+    monkeypatch.setattr(config, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+
+    database.init_db()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM unit_map WHERE book = 'BSN5657'"
+        ).fetchone()[0]
+        assert n == 44, f"expected the 44 real seed rows, found {n}"
+        word = conn.execute(
+            "SELECT word FROM unit_map WHERE book = 'BSN5657' AND spelling = 'กร'"
+        ).fetchone()
+        assert word == ('ตัว',), "a fresh build must carry migration 185's REAL data, not a placeholder"
+    finally:
+        conn.close()
+
+
+def _unit_map_rows(db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        return sorted(conn.execute("SELECT id, book, spelling, word FROM unit_map"))
+    finally:
+        conn.close()
+
+
+def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, monkeypatch):
+    """#596: a boot never rewrites a map that exists. A second boot leaves the
+    fresh rows alone, and a map Put has since changed (a code named on
+    /unit-conversions, a meaning corrected) comes through a boot row for row,
+    ids included."""
+    db_path = str(tmp_path / "fresh.db")
+    import bsn_units
+    import config
+    import database
+    monkeypatch.setattr(config, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+
+    database.init_db()
+    first = _unit_map_rows(db_path)
+    assert len(first) == 44                          # control: schema.sql's rows landed
+    database.init_db()
+    assert _unit_map_rows(db_path) == first          # idempotent
+
+    conn = sqlite3.connect(db_path)
+    try:
+        bsn_units.learn('ZZ596', 'BSN5657', 'ทดสอบ', conn=conn)
+        bsn_units.learn('กร', 'BSN5657', 'กุรุส', conn=conn)
+        conn.commit()
+    finally:
+        conn.close()
+    learned = _unit_map_rows(db_path)
+    assert len(learned) == 45 and learned != first   # control: the edits landed
+
+    database.init_db()
+    assert _unit_map_rows(db_path) == learned
+
+
+def test_schema_sql_unit_map_rows_in_sync_with_live(tmp_path, monkeypatch):
+    """A fresh DB must get the CURRENT map, not the one migration 185 seeded:
+    a later migration that changes a meaning (#599/#601) runs on every
+    existing DB but never on a fresh one. data/schema.sql therefore carries
+    unit_map's rows, and they must equal the migrated live DB's.
+
+    Red after a migration changed the map, or after a prod refresh brought in
+    codes Put named on prod: regenerate with scripts/dump_schema.py."""
+    if not os.path.exists(_LIVE_DB):
+        pytest.skip(f"live DB not found at {_LIVE_DB}")
+    db_path = str(tmp_path / "fresh.db")
+    import config
+    import database
+    monkeypatch.setattr(config, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    database.init_db()
+
+    def rows(conn):
+        return sorted(conn.execute("SELECT book, spelling, word FROM unit_map"))
+
+    fresh = sqlite3.connect(db_path)
+    live = sqlite3.connect(f"file:{_LIVE_DB}?mode=ro", uri=True)
+    try:
+        f_rows, l_rows = rows(fresh), rows(live)
+    finally:
+        fresh.close()
+        live.close()
+    assert f_rows                                    # control: the fresh map is not empty
+    assert f_rows == l_rows, (
+        "data/schema.sql's unit_map rows differ from the live DB — regenerate with "
+        "scripts/dump_schema.py.\n"
+        f"  only in schema.sql: {sorted(set(f_rows) - set(l_rows))[:10]}\n"
+        f"  only in live:       {sorted(set(l_rows) - set(f_rows))[:10]}")

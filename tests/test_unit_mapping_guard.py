@@ -6,12 +6,35 @@ direction — the fix for those rows is a per-unit split mapping
 (/mapping/split-save), not a ratio.
 """
 import os
+from pathlib import Path
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import pytest
 
 import models
+
+_MIG_185 = (Path(__file__).resolve().parents[1] / 'data' / 'migrations'
+            / '185_unit_map_table.sql')
+
+
+def _ensure_unit_map(conn):
+    """empty_db_conn clones the live schema (unit_map TABLE present, #596:
+    ZERO rows — it's a data-less clone) — (re-)apply migration 185
+    unconditionally (idempotent) so a bsn_units call inside
+    cross_unit_hazard/etc. sees the real 44-row seed instead of an empty
+    table (which reads every code as unknown)."""
+    conn.executescript(_MIG_185.read_text(encoding='utf-8'))
+    conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _seed_unit_map(empty_db_conn):
+    """Every test in this file uses `empty_db_conn`, and only ONE
+    (`test_hazard_acronym_normalized`) is actually about unit translation —
+    seed the real map for all of them so cross_unit_hazard's normalize_unit
+    call doesn't raise on the data-less clone."""
+    _ensure_unit_map(empty_db_conn)
 
 PACK = 950001      # unit_type แผง, has active [แพ็ค]/[แกะ] pair with LOOSE
 LOOSE = 950002     # unit_type ตัว, pair partner of PACK
@@ -106,8 +129,9 @@ def test_no_hazard_same_unit_or_bulk(empty_db_conn):
 
 def test_hazard_acronym_normalized(empty_db_conn):
     import bsn_units
-    if bsn_units.normalize_unit('ตว') != 'ตัว':
-        pytest.skip('ตว is not mapped to ตัว in bsn_unit_full.json on this checkout')
+    # the autouse `_seed_unit_map` fixture already seeded 'ตว'->'ตัว' (one
+    # of the real 44 rows) — just confirm it landed.
+    assert bsn_units.normalize_unit('ตว', conn=empty_db_conn) == 'ตัว'
     _seed(empty_db_conn)
     hz = models.cross_unit_hazard(empty_db_conn, PACK, 'ตว')
     assert hz is not None

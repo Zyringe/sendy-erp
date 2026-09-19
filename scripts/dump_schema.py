@@ -10,11 +10,15 @@ backfills every shipped migration as already-applied.
 
 Dump order is table → index → trigger → view so CREATE TRIGGER/VIEW always
 follow the tables they reference. sqlite_* internal objects are excluded, and
-only DDL (no rows) is emitted.
+only DDL is emitted, except for the reference-data tables in DATA_TABLES,
+whose rows follow the DDL. A fresh DB runs no migration, so rows a migration
+seeds (or a later one changes) reach it only this way.
 
 Run:  ~/.virtualenvs/erp/bin/python scripts/dump_schema.py
 Source of truth = the live DB at inventory_app/instance/inventory.db.
-Re-run + commit whenever a migration changes the schema.
+Re-run + commit whenever a migration changes the schema, or changes the rows
+of a DATA_TABLES table (tests/test_fresh_db_build.py checks both against the
+live DB).
 """
 import os
 import sqlite3
@@ -32,13 +36,39 @@ HEADER = """\
 -- After it applies, run_pending_migrations() backfills all shipped migrations
 -- as already-applied (it keys on the `brands` table existing).
 --
--- Re-run dump_schema.py and commit whenever a migration changes the schema.
+-- Re-run dump_schema.py and commit whenever a migration changes the schema
+-- or the rows of a reference-data table (unit_map), which close this file.
 
 PRAGMA foreign_keys = OFF;
 BEGIN;
 """
 
 FOOTER = "\nCOMMIT;\nPRAGMA foreign_keys = ON;\n"
+
+# Reference data a working DB cannot do without: table -> (columns, ORDER BY).
+# unit_map (#596): an empty map imports every Express unit code untranslated.
+DATA_TABLES = {
+    "unit_map": (("book", "spelling", "word"), "book, spelling"),
+}
+
+
+def _sql_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _data_sql(src):
+    out = []
+    for table, (cols, order_by) in DATA_TABLES.items():
+        rows = src.execute(
+            f"SELECT {', '.join(cols)} FROM {table} ORDER BY {order_by}").fetchall()
+        if not rows:
+            raise SystemExit(f"{table} is empty in the live DB; refusing to dump "
+                             "a fresh-DB baseline without its reference data")
+        values = ",\n".join(
+            "  (" + ", ".join(_sql_literal(v) for v in row) + ")" for row in rows)
+        out.append(f"-- data: {table} ({len(rows)} rows)\n"
+                   f"INSERT INTO {table} ({', '.join(cols)}) VALUES\n{values};\n")
+    return "\n".join(out)
 
 
 def main():
@@ -60,13 +90,14 @@ def main():
                     WHEN 'trigger' THEN 2 WHEN 'view' THEN 3 ELSE 4 END,
                     name"""
         ).fetchall()
+        data = _data_sql(src)
     finally:
         src.close()
 
     body = ";\n\n".join(sql.strip().rstrip(";") for (sql,) in objects) + ";\n"
     with open(OUT, "w", encoding="utf-8") as f:
-        f.write(HEADER + "\n" + body + FOOTER)
-    print(f"wrote {OUT} ({len(objects)} schema objects)")
+        f.write(HEADER + "\n" + body + "\n" + data + FOOTER)
+    print(f"wrote {OUT} ({len(objects)} schema objects, data: {', '.join(DATA_TABLES)})")
 
 
 if __name__ == "__main__":

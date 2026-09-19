@@ -116,7 +116,7 @@ def unit_conversions_save():
                 learned[parts[1]] = full
                 acr_full[(parts[0], parts[1])] = full
     if learned:
-        # persist to bsn_unit_full.json + normalise the whole ledger
+        # persist to the unit_map table (#596) + normalise the whole ledger
         models.learn_acronyms_normalize(learned)
 
     items = []

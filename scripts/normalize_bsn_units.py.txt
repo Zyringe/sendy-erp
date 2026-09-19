@@ -1,3 +1,10 @@
+⛔ RETIRED 2026-09-19 (#596) — DO NOT RUN. Renamed to .py.txt so it is not
+runnable and does not look like an ordinary utility.
+
+It reads data/reference/bsn_unit_full.json, which #596 deleted: the unit map
+is the unit_map table now (inventory_app/bsn_units.py). Kept as the record of
+what the 2026-05 run did; its test (tests/test_normalize_bsn_units.py) went with it.
+
 """DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
 if a similar fix is needed, write a new dated script.
 

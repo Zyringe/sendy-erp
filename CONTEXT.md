@@ -190,6 +190,27 @@
   customer's payment is **collected** (receipt-driven), not when the sale is invoiced.
   _Avoid_: "Commission" (bare English label).
 
+## Units (หน่วย)
+
+- **หน่วย (unit)** — the word naming what one counted quantity is, on a bill line, a
+  product, a conversion or a price (`โหล`, `โหลคู่`, `กุรุส`, `แผง`). Sendy has exactly
+  **one spelling per unit**; every other way of writing it (an Express unit code, `กก.`,
+  `กิโล`) is a variant of that one word, never a unit of its own.
+  _Avoid_: ตัวย่อ, acronym, "BSN unit".
+
+- **รหัสหน่วย Express (Express unit code)** — the short code Express writes for a unit
+  (`หค`, `หล`, `กร`). It belongs to Express: Sendy translates it into its หน่วย when a bill
+  comes in. What a code **means** is decided by the unit list of the Express book it came
+  from; which **spelling** of that unit Sendy uses is Sendy's choice. So Express `กร` is
+  กุรุส (144), never ตัว, and Express `กก` (`กิโล`) is spelled `กิโลกรัม` in Sendy.
+  _Avoid_: acronym, ตัวย่อ.
+
+- **แผนที่หน่วย (unit map)** — the one list saying which หน่วย each Express unit code and
+  each spelling variant stands for. A code in it is always read together with its Express
+  book, because the two books can give one code different meanings: `หอ` is ห่อ in BSN5657
+  and หลอด in the VAT book (xp5). See `docs/adr/0018`.
+  _Avoid_: alias table.
+
 ## Trade documents (เอกสารซื้อ-ขาย — the `/sales` + `/purchases` tables)
 
 - **เอกสาร / เลขที่เอกสาร (document / doc-base)** — one whole invoice, purchase bill, or

@@ -96,9 +96,9 @@ _WRITEOFF_SUBQUERY = "SELECT doc_no FROM ar_writeoffs"
 
 # R1 unit normalization — only these three free-text forms collapse to the
 # canonical 'โหล'. Everything else (unit_type, 'แผง', 'ลัง', ...) passes
-# through unchanged; there is no general alias-table lookup here (YAGNI —
-# bsn_unit_alias exists but nothing in the app reads it yet, and the brief
-# names exactly these three forms).
+# through unchanged; there is no general unit_map lookup here yet (YAGNI —
+# the brief names exactly these three forms; #595's "price lookup's
+# hand-coded alias list is replaced by the map" is a later ticket's work).
 _UNIT_ALIASES = {'โหล': 'โหล', '1 โหล': 'โหล', 'หล': 'โหล'}
 
 # A tier's qty_label carries a leading count ('1 โหล', '1กิโล') that isn't

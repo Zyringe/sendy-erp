@@ -184,7 +184,7 @@ def get_pending_split_mappings():
 
     groups = {}
     for r in rows:
-        norm_unit = bsn_units.normalize_unit(r['unit']) or ''
+        norm_unit = bsn_units.normalize_unit(r['unit'], conn=conn) or ''
         key = (r['bsn_code'], norm_unit, r['product_id'])
         g = groups.setdefault(key, {'row_count': 0, 'example_doc': None, 'bsn_raw_name': None})
         g['row_count'] += r['row_count']
@@ -275,7 +275,7 @@ def _resolve_mapping(conn, code, unit=''):
     preserves the pre-restore pure-bsn_code behavior for callers that don't
     pass a unit.
     """
-    unit = bsn_units.normalize_unit(unit) or ''
+    unit = bsn_units.normalize_unit(unit, conn=conn) or ''
     m = conn.execute(
         "SELECT product_id, is_ignored FROM product_code_mapping "
         "WHERE bsn_code = ? AND bsn_unit IN (?, '') "
@@ -512,7 +512,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         if not conn.execute("SELECT 1 FROM products WHERE id=?", (new_pid,)).fetchone():
             raise ValueError(f"repoint_bsn_code: product {new_pid} not found")
 
-        norm_unit = bsn_units.normalize_unit(bsn_unit) if bsn_unit else None
+        norm_unit = bsn_units.normalize_unit(bsn_unit, conn=conn) if bsn_unit else None
 
         # ── 1. Compute the affected product set (BEFORE any mutation) ──────
         if norm_unit is not None:
@@ -533,7 +533,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
             if norm_unit is None:
                 return rows
             return [r for r in rows
-                    if (bsn_units.normalize_unit(r['unit']) or '') == norm_unit]
+                    if (bsn_units.normalize_unit(r['unit'], conn=conn) or '') == norm_unit]
 
         sales_rows = _unit_scoped_source_rows('sales_transactions')
         purchase_rows = _unit_scoped_source_rows('purchase_transactions')
