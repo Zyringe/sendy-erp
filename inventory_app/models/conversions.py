@@ -10,7 +10,7 @@ from database import get_connection
 
 from .wacc import (get_current_wacc, recalculate_waccs_for_products,
                    WaccIdentityError)
-from .system_alerts import record_wacc_identity_alert
+from .system_alerts import record_wacc_identity_alert, require_actor_or_alert
 from .conversion_roles import (ROLE_COMPONENT, ROLE_PACKAGING, ConversionRoleError,
                                component_product_id, validate_pack_inputs)
 
@@ -499,6 +499,8 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
     """
     from datetime import datetime as _dt
     conn = get_connection()
+    # #590 A2: stock moves before the cost step; refuse an unsigned run first.
+    require_actor_or_alert(conn, 'conversion', extra={'formula_id': formula_id})
     # Take the write lock before reading anything we then act on. Every early
     # return below closes the connection, which rolls the empty transaction back.
     conn.execute("BEGIN IMMEDIATE")

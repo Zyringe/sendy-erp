@@ -10,6 +10,7 @@ import name_builder
 from sku_code_utils import PACKAGING_SHORT, regenerate_for_product
 
 from ._shared import _set_price_change_source
+from .system_alerts import require_actor_or_alert
 from .brands import upsert_brand
 
 
@@ -514,6 +515,8 @@ def update_product(product_id: int, data: dict, source=None):
         return
     _validate_weight_fields(fields)
     conn = get_connection()
+    if {'cost_price', 'opening_cost'} & set(fields):
+        require_actor_or_alert(conn, 'cost_edit', extra={'product_id': product_id})   # #590 A2
     # set source BEFORE the UPDATE so the price-history trigger can stamp it;
     # reset to NULL AFTER so a later write on this connection defaults to NULL.
     _set_price_change_source(conn, source)

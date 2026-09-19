@@ -10,6 +10,7 @@ mapping, wacc}) plus `recalculate_product_wacc` from `.wacc`.
 import datetime
 import sqlite3
 
+import actor
 from database import get_connection
 import bsn_units
 
@@ -17,7 +18,7 @@ from .mapping import _resolve_mapping, get_pending_mappings
 from .bsn_sync import _sync_bsn_to_stock, reverse_platform_deduction
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
-from .system_alerts import (record_wacc_identity_alert,
+from .system_alerts import (record_wacc_identity_alert, require_actor_or_alert,
                             record_ignored_import_lines_alert,
                             record_orphan_bsn_ledger_alerts,
                             record_unmapped_bsn_codes_alert,
@@ -131,6 +132,13 @@ def preview_import(entries: list, file_type: str) -> dict:
 
 def import_weekly(entries: list, file_type: str, filename: str,
                   apply_removals: bool = True) -> dict:
+    """An importer run (#590): every cost row it causes is recorded as
+    `import`, with the file named in the reason. See _import_weekly."""
+    with actor.acting_as(source='import', detail=f'import:{filename}'):
+        return _import_weekly(entries, file_type, filename, apply_removals)
+
+
+def _import_weekly(entries, file_type, filename, apply_removals=True):
     """
     Insert sales or purchase entries; skip duplicates by doc_no.
 
@@ -148,6 +156,10 @@ def import_weekly(entries: list, file_type: str, filename: str,
     party_code_col = 'customer_code' if file_type == 'sales' else 'supplier_code'
 
     conn = get_connection()
+    # #590 A2: documents and stock commit BEFORE the WACC step below, so an
+    # unsigned run must be refused here, before the first write, not there.
+    require_actor_or_alert(conn, f'import:{filename}',
+                           extra={'file_type': file_type})
     conn_open = True
     # Everything from here to the close below runs BEFORE the first commit
     # for ~260 lines, and `entries` is an undeclared shape read with bare
@@ -437,7 +449,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
             try:
                 preflight_batch(conn, sorted(affected_pids), operation='purchase_import')
                 for pid in sorted(affected_pids):
-                    recalculate_product_wacc(pid, conn)
+                    recalculate_product_wacc(pid, conn, operation='import')
                 conn.commit()
             except WaccIdentityError as e:
                 # Roll back and CLOSE first, then alert on a fresh connection: an
