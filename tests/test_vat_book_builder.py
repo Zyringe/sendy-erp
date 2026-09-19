@@ -72,19 +72,23 @@ def test_use_main_unit_map_refuses_without_a_main_db(conn):
     assert conn.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 1
 
 
-def test_build_translates_through_the_main_db_map_not_its_own_seed(tmp_path, monkeypatch):
-    """The VAT book is a fresh db, so init_db() seeds its unit_map from
-    migration 185. The main db's map is the only real one: it holds what Put
-    has named since, and what later migrations changed. Every translation in
-    the build (the STMAS seed here, and import_weekly deep inside
-    commit_express_dbf, which opens its own connection) must read the main
-    map. Control: 185 says กร -> ตัว and does not know ZZ; main says
-    กุรุส / ทดสอบ."""
-    import bsn_units
+def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
+    """The VAT book is a fresh db: init_db() fills its unit_map from
+    data/schema.sql, the map as of the last schema dump. The main db's map is
+    the only live one (it holds every code Put has named since). A real build
+    must translate through it on BOTH paths: the STMAS product seed and the
+    importers commit_express_dbf runs, which open their own connection.
+
+    Real init_db, seed, commit_express_dbf and import_weekly; only reading the
+    DBF files is faked. `ขว` is in no dumped map; the main db names it."""
+    import sys
+    scripts = os.path.join(os.path.dirname(__file__), '..', 'scripts')
+    if scripts not in sys.path:
+        sys.path.append(scripts)          # commit_express_dbf imports import_express
+    import datetime
     import config
     import database
     import express_dbf_source as eds
-    import import_router
 
     main_db = tmp_path / 'main.db'
     c = sqlite3.connect(str(main_db))
@@ -92,53 +96,51 @@ def test_build_translates_through_the_main_db_map_not_its_own_seed(tmp_path, mon
         CREATE TABLE unit_map (
             id INTEGER PRIMARY KEY, book TEXT NOT NULL,
             spelling TEXT NOT NULL, word TEXT NOT NULL);
-        CREATE UNIQUE INDEX ux ON unit_map(book, spelling);
-        INSERT INTO unit_map (book, spelling, word) VALUES
-            ('BSN5657', 'กร', 'กุรุส'), ('BSN5657', 'ZZ', 'ทดสอบ');
+        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ขว', 'ขวด');
     """)
     c.commit()
     c.close()
 
-    db_path = str(tmp_path / 'built.db')
+    db_path = str(tmp_path / 'build' / 'inventory.db')
     monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
     monkeypatch.setattr(database, 'DATABASE_PATH', db_path)
-    monkeypatch.setattr(vb, '_guard_subprocess_target', lambda: db_path)
-    monkeypatch.setattr(eds, 'open_table', lambda src, name: (
-        [_stmas('X1', qucod='ZZ')] if name == 'STMAS' else []))
-    monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
-    monkeypatch.setattr(vb, 'overwrite_stock_from_stmas', lambda *a, **k: None)
-    monkeypatch.setattr(vb, 'dump_isvat', lambda *a, **k: 0)
-    monkeypatch.setattr(vb, 'dump_stmas_meta', lambda *a, **k: 0)
-    monkeypatch.setattr(vb, 'write_book_meta', lambda *a, **k: None)
-    monkeypatch.setattr(vb, 'finalize', lambda *a, **k: None)
-    seen = {}
+    monkeypatch.setenv('VAT_BOOK_BUILD', '1')
+    d = datetime.date(2026, 4, 1)
+    tables = {
+        'STMAS': [_stmas('X1', 'น้ำยาทดสอบ', qucod='ขว', unitpr=10.0)],
+        'STLOC': [], 'ISVAT': [], 'ISINFO': [],
+        'ARTRN': [], 'ARMAS': [], 'APMAS': [], 'ARTRNRM': [],
+        'ARRCPIT': [], 'APRCPIT': [],
+        'APTRN': [{'DOCNUM': 'RR2600001', 'RECTYP': '3', 'SUPCOD': 'S001',
+                   'FLGVAT': 0, 'DOCDAT': d}],
+        'STCRD': [{'DOCNUM': 'RR2600001', 'SEQNUM': 1, 'STKCOD': 'X1',
+                   'STKDES': 'น้ำยาทดสอบ', 'TRNQTY': 6.0, 'TQUCOD': 'ขว',
+                   'UNITPR': 10.0, 'DISC': '', 'TRNVAL': 60.0, 'NETVAL': 60.0,
+                   'RDOCNUM': ''}],
+    }
 
-    def _importer(*a, **k):
-        own = database.get_connection()      # what import_weekly does
-        try:
-            seen.update({s: bsn_units.normalize_unit(s, conn=own) for s in ('กร', 'ZZ')})
-        finally:
-            own.close()
-        return {'sales': {'imported': 0}, 'purchase': {'imported': 0},
-                'payments_in': {'imported': 0}, 'payments_out': {'imported': 0},
-                'credit_notes_ar': {'upserted': 0}, 'credit_notes_ap': {'imported': 0},
-                'ar_snapshot': {'imported': 0}, 'ap_snapshot': {'imported': 0},
-                'snapshot_date': None}
-    monkeypatch.setattr(import_router, 'commit_express_dbf', _importer)
+    def fake_open(dataset_dir, name):
+        if name not in tables:
+            raise FileNotFoundError(name)    # an optional table this zip lacks
+        return tables[name]
+    monkeypatch.setattr(eds, 'open_table', fake_open)
 
-    vb.build('/nonexistent', main_db_path=str(main_db))
+    vb.build(str(tmp_path / 'dbf'), snapshot_date='2026-09-19',
+             main_db_path=str(main_db))
 
     built = sqlite3.connect(db_path)
     try:
-        unit_type = built.execute(
-            "SELECT unit_type FROM products WHERE product_name = 'ของทดสอบ'").fetchone()
-        rows = sorted(built.execute("SELECT book, spelling, word FROM unit_map"))
+        product_unit = built.execute(
+            "SELECT unit_type FROM products WHERE product_name = 'น้ำยาทดสอบ'").fetchall()
+        line_unit = built.execute(
+            "SELECT unit FROM purchase_transactions WHERE doc_no = 'RR2600001'").fetchall()
+        rows = built.execute("SELECT book, spelling, word FROM unit_map").fetchall()
     finally:
         built.close()
-    assert seen == {'กร': 'กุรุส', 'ZZ': 'ทดสอบ'}
-    assert unit_type == ('ทดสอบ',)
-    # exactly the main map, nothing of 185's seed left behind
-    assert rows == [('BSN5657', 'ZZ', 'ทดสอบ'), ('BSN5657', 'กร', 'กุรุส')]
+    assert line_unit == [('ขวด',)]           # the importer path
+    assert product_unit == [('ขวด',)]        # the STMAS seed path
+    # exactly the main map: schema.sql's dumped rows were replaced, not topped up
+    assert rows == [('BSN5657', 'ขว', 'ขวด')]
 
 
 def test_seed_blank_name_falls_back_to_code_and_dups_keep_first(conn):
