@@ -305,51 +305,64 @@ def test_committed_run_reports_ok_on_a_fresh_connection(db, capsys):
 
 # ── guards: each refuses before any write, and each is load-bearing ─────────
 
-def _sql(*stmts):
+def _drift(pid, *, uc=None, sale=None, purchase=None, sync=True):
+    """Put prod-shaped drift into the fixture. A bill is posted to the ledger by
+    the app's own sync, as on prod, unless `sync` is False; a bill with no
+    ledger leg would be a fixture inconsistency that trips an unrelated check."""
     def apply(path):
-        c = sqlite3.connect(path)
-        for s in stmts:
-            c.execute(s)
+        from models import bsn_sync
+        c = _conn(path)
+        if uc:
+            c.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?,?,?)",
+                      (pid, *uc))
+        if sale:
+            _bill(c, 'sales', pid, *sale, PRODUCTS[pid]['code'])
+        if purchase:
+            _bill(c, 'purchase', pid, *purchase, PRODUCTS[pid]['code'])
+        if sync:
+            bsn_sync._sync_bsn_to_stock(c, 'sales_transactions', 'sales', product_ids=(pid,))
+            bsn_sync._sync_bsn_to_stock(c, 'purchase_transactions', 'purchase', product_ids=(pid,))
         c.commit()
         c.close()
     return apply
 
 
+def _set_ratio(pid, unit, ratio):
+    def apply(path):
+        c = sqlite3.connect(path)
+        c.execute("UPDATE unit_conversions SET ratio=? WHERE product_id=? AND bsn_unit=?",
+                  (ratio, pid, unit))
+        c.commit()
+        c.close()
+    return apply
+
+
+# (id, drift, refusal fragment, guard mutation, rc with the guard off, what the
+#  guard-off run must print). The last two are measured, not assumed: they name
+#  what stands behind each guard, so a guard whose backstop disappears goes red.
 GUARDS = [
-    ('twin', _sql("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (578, 'ชด', 1.0)"),
-     'normalises to', ("if twins:", "if False:")),
-    ('absorbed', _sql("INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, qty,"
-                      " unit, unit_price, net, vat_type, synced_to_stock, bsn_code)"
-                      " VALUES ('2025-10-01', 'IV6899001-1', 'IV6899001', 575, 1, 'ชุด', 39, 39, 1, 1,"
-                      " '999ก9013')"),
-     'absorbed bills', ("if absorbed != plan['absorbed']:", "if False:")),
-    ('unsynced', _sql("INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, qty,"
-                      " unit, unit_price, net, vat_type, synced_to_stock, bsn_code)"
-                      " VALUES ('2026-09-18', 'IV6999001-1', 'IV6999001', 574, 3, 'แผ่น', 6, 18, 1, 0,"
-                      " '999ก9012')"),
-     'unsynced', ("if n_unsynced:", "if False:")),
-    ('between_counts', _sql("INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, qty,"
-                            " unit, unit_price, net, vat_type, synced_to_stock, bsn_code)"
-                            " VALUES ('2026-05-01', 'IV6999002-1', 'IV6999002', 623, 1, 'ซอง', 220, 220,"
-                            " 1, 1, '564ด5114')"),
-     'between the cutoff and the later count', ("if between:", "if False:")),
-    ('purchase_in_unit', _sql("INSERT INTO purchase_transactions (date_iso, doc_no, doc_base, product_id,"
-                              " qty, unit, unit_price, net, synced_to_stock, bsn_code, line_seq)"
-                              " VALUES ('2026-09-01', 'HP6999001', 'HP6999001', 304, 1, 'ซอง', 30, 30, 1,"
-                              " '017ด5115', 1)"),
-     'bought in the unit', ("if n_purch:", "if False:")),
-    ('credit_note', _sql("INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, qty,"
-                         " unit, unit_price, net, vat_type, synced_to_stock, bsn_code)"
-                         " VALUES ('2026-09-01', 'SR6999001-1', 'SR6999001', 577, 1, 'แพ็ค', 39, 39, 1, 1,"
-                         " '999ก9015')"),
-     'credit note', ("if n_sr:", "if False:")),
-    ('ratio_not_one', _sql("UPDATE unit_conversions SET ratio=5.0 WHERE product_id=574 AND bsn_unit='ชุด'"),
-     'already', ("if ratios.get(plan['unit']) != 1.0:", "if False:")),
-    ('unmapped_unit', _sql("INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, qty,"
-                           " unit, unit_price, net, vat_type, synced_to_stock, bsn_code)"
-                           " VALUES ('2026-09-01', 'IV6999003-1', 'IV6999003', 576, 1, 'กล่อง', 30, 30, 1, 1,"
-                           " '999ก9014')"),
-     'no unit_conversions row', ("if unmapped:", "if False:")),
+    # the only guard with no backstop: with it off, the ชด bill commits at -3
+    # instead of -15 (test_twin_guard_is_the_only_defence pins the loss)
+    ('twin', _drift(578, uc=('ชด', 1.0), sale=('2026-04-01', 'IV6999010-1', 3.0, 'ชด')),
+     'normalises to', ("if twins:", "if False:"), 0, 'COMMITTED'),
+    # a plan-drift guard: the invariants derive from the bills, so without it an
+    # unreviewed pre-count bill would be compensated and committed
+    ('absorbed', _drift(575, sale=('2025-10-01', 'IV6899001-1', 1.0, 'ชุด')),
+     'absorbed bills', ("if absorbed != plan['absorbed']:", "if False:"), 0, 'COMMITTED'),
+    ('unsynced', _drift(574, sale=('2026-09-18', 'IV6999001-1', 3.0, 'แผ่น'), sync=False),
+     'unsynced', ("if n_unsynced:", "if False:"), 1, 'expected 20 from the bills'),
+    ('between_counts', _drift(623, sale=('2026-05-01', 'IV6999002-1', 1.0, 'ซอง')),
+     'between the cutoff and the later count', ("if between:", "if False:"),
+     1, 'count pin broken at the later count'),
+    ('purchase_in_unit', _drift(304, purchase=('2026-09-01', 'HP6999001', 1.0, 'ซอง')),
+     'bought in the unit', ("if n_purch:", "if False:"), 1, 'price-history row(s) written'),
+    ('credit_note', _drift(577, sale=('2026-09-01', 'SR6999001-1', 1.0, 'แพ็ค')),
+     'credit note', ("if n_sr:", "if False:"), 1, '(BSN ขาย-คืน)'),
+    ('ratio_not_one', _set_ratio(574, 'ชุด', 5.0),
+     'already', ("if ratios.get(plan['unit']) != 1.0:", "if False:"), 2, 'not at 1.0 when written'),
+    # an unmapped unit cannot sync, so the unsynced guard refuses it as well
+    ('unmapped_unit', _drift(576, sale=('2026-09-01', 'IV6999003-1', 1.0, 'กล่อง')),
+     'no unit_conversions row', ("if unmapped:", "if False:"), 2, 'unsynced'),
 ]
 
 
@@ -357,8 +370,17 @@ def _src():
     return _SCRIPT.read_text(encoding='utf-8')
 
 
-@pytest.mark.parametrize('gid,drift,fragment,mutation', GUARDS, ids=[g[0] for g in GUARDS])
-def test_guard_refuses_before_any_write(db, capsys, gid, drift, fragment, mutation):
+def _mutant(old, new):
+    src = _src()
+    assert src.count(old) == 1, "mutation target must exist exactly once: %r" % old
+    mutant = src.replace(old, new)
+    assert mutant != src and mutant.count(old) == 0, "the mutation did not land"
+    return _load(mutant)
+
+
+@pytest.mark.parametrize('gid,drift,fragment,mutation,rc_off,backstop', GUARDS,
+                         ids=[g[0] for g in GUARDS])
+def test_guard_refuses_before_any_write(db, capsys, gid, drift, fragment, mutation, rc_off, backstop):
     drift(db)
     before = _state(db)
     assert _run(db, '--apply') == 2
@@ -367,20 +389,34 @@ def test_guard_refuses_before_any_write(db, capsys, gid, drift, fragment, mutati
     assert _state(db) == before
 
 
-@pytest.mark.parametrize('gid,drift,fragment,mutation', GUARDS, ids=[g[0] for g in GUARDS])
-def test_break_it_once_guard_is_load_bearing(db, capsys, gid, drift, fragment, mutation):
-    old, new = mutation
-    src = _src()
-    assert src.count(old) == 1, "mutation target must exist exactly once: %r" % old
-    mutant = src.replace(old, new)
-    assert mutant != src and mutant.count(old) == 0, "the mutation did not land"
+@pytest.mark.parametrize('gid,drift,fragment,mutation,rc_off,backstop', GUARDS,
+                         ids=[g[0] for g in GUARDS])
+def test_break_it_once_guard_off_behaves_as_measured(db, capsys, gid, drift, fragment, mutation,
+                                                      rc_off, backstop):
+    """The guard-off run must COMPLETE (no exception is swallowed) and end in the
+    measured outcome, so a mutant that dies early, or a backstop that goes
+    missing, turns this red."""
+    mod = _mutant(*mutation)
     drift(db)
-    try:
-        _run(db, '--apply', mod=_load(mutant))
-        err = ''
-    except Exception as exc:        # a later step may trip over the drift instead
-        err = str(exc)
-    assert fragment not in capsys.readouterr().out + err, "guard %s is not load-bearing" % gid
+    before = _state(db)
+    rc = _run(db, '--apply', mod=mod)
+    out = capsys.readouterr().out
+    assert rc == rc_off, (rc, out)
+    assert fragment not in out and backstop in out, out
+    if rc_off:
+        assert _state(db) == before, "a refused or rolled-back run wrote something"
+
+
+def test_twin_guard_is_the_only_defence(db, capsys):
+    """With the guard off, a bill spelled in the twin code keeps ratio 1 and the
+    fix commits with it wrong. That loss is what the guard prevents."""
+    doc = 'IV6999010-1'
+    _drift(578, uc=('ชด', 1.0), sale=('2026-04-01', doc, 3.0, 'ชด'))(db)
+    assert _legs(db, 578)[doc] == -3
+    assert _run(db, '--apply', mod=_mutant("if twins:", "if False:")) == 0
+    assert _legs(db, 578)[doc] == -3, "posted at ratio 1: 3 ชด should be -15"
+    assert dict(_q(db, "SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id=578"))['ชด'] == 1.0
+    capsys.readouterr()
 
 
 # ── invariants: a wrong fix must roll back ──────────────────────────────────
