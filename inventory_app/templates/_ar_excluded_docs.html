@@ -9,7 +9,7 @@
    Removing it silently is its own defect: a person on the phone who remembers
    an invoice needs to see what happened to it. See ADR 0012.
 
-   Expects `excluded_docs` — rows from cashflow.bsn_ar_excluded_docs{,_by_code}().
+   Expects `excluded_docs` — rows from a cashflow excluded-docs helper.
    Renders NOTHING when the list is empty, which is most customers.
 #}
 {% if excluded_docs %}

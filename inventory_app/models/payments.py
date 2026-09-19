@@ -835,18 +835,16 @@ def _unpaid_bills(match_sql, match_params):
 
     Returns the CHASEABLE population (CONTEXT.md): outstanding minus the three
     exclusions in `cashflow.BSN_AR_PREDICATE` — written-off docs, `is_anomalous`
-    ("ลูกหนี้จ่ายแล้ว"), and pre-2024 legacy debt. Both callers are chase-facing
-    (`/customer/code/<code>` and the mobile customer page), so they must agree
-    with `/ar` rather than showing a superset of it.
+    ("ลูกหนี้จ่ายแล้ว"), and pre-2024 legacy debt. Both code-keyed customer
+    pages are chase-facing, so they must agree with `/ar` rather than showing a
+    superset of it.
 
     ⚠ The predicate is IMPORTED, never re-typed. Re-typing it here is exactly
     how this surface drifted from `/ar` and showed forgiven bills as chaseable.
 
-    `match_sql` is the caller's identity predicate (by name or by code) — a
-    literal chosen at the call site, never user input; its placeholders are
-    filled from `match_params`. Everything else (BSN entity, latest snapshot,
-    the chaseable predicate, outstanding > 0, column list, ordering) is shared,
-    so the two entry points below cannot drift apart.
+    `match_sql` is the caller's code identity predicate — a literal chosen at
+    the call site, never user input; its placeholders are filled from
+    `match_params`.
 
     Returns (rows, snapshot_date) — snapshot_date is the latest BSN AR snapshot
     date (same value other AR widgets show as "ณ {snapshot_date}", e.g.
@@ -882,19 +880,8 @@ def _unpaid_bills(match_sql, match_params):
     return rows, snapshot_date
 
 
-def get_customer_unpaid_bills(customer_name):
-    """รายการบิลค้างชำระของลูกค้าคนนี้ — matched by NAME.
-
-    Customer matched first by customers.name → customer_code, then falls
-    back to ao.customer_name for legacy/typo cases.
-    """
-    return _unpaid_bills(
-        "(COALESCE(c.name, '') = ? OR ao.customer_name = ?)",
-        [customer_name, customer_name])
-
-
 def get_customer_unpaid_bills_by_code(customer_code):
-    """Code-keyed counterpart to get_customer_unpaid_bills().
+    """Outstanding BSN bills for one customer code.
 
     Matches express_ar_outstanding.customer_code directly instead of by name,
     so two companies that share a bill name (BUG 2, e.g. ทรัพย์ทวี = 43ท013 +
