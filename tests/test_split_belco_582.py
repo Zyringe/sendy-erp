@@ -258,6 +258,9 @@ PRECONDITION_BREAKS = {
     'meta product renamed': (
         "UPDATE products SET product_name='x' WHERE id=1305",
         "SELECT product_name FROM products WHERE id=1305", 'x', 'wrong DB'),
+    'meta unit_type changed': (
+        "UPDATE products SET unit_type='อัน' WHERE id=1305",
+        "SELECT unit_type FROM products WHERE id=1305", 'อัน', 'pid 1305 unit_type'),
     'meta cost not 7.00': (
         "UPDATE products SET cost_price=24.5 WHERE id=1305",
         "SELECT cost_price FROM products WHERE id=1305", 24.5, 'cost_price'),

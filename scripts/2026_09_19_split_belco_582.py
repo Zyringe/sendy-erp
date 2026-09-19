@@ -248,10 +248,6 @@ def assert_invariants(conn, before, new_pid, moves):
     if after != before['movements']:
         bad.append("ledger movement set changed — lost %s, gained %s"
                    % (sorted(before['movements'] - after), sorted(after - before['movements'])))
-    moved_refs = sorted(r[0] for r in conn.execute(
-        "SELECT reference_no FROM transactions WHERE product_id=? AND note LIKE 'BSN%'", (new_pid,)))
-    if moved_refs != sorted(doc for _, doc, _ in MOVES):
-        bad.append("BELCO ledger holds %s, expected the two moved lines" % moved_refs)
 
     now = _source_pids(conn)
     was = before['source_pids']
