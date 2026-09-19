@@ -124,6 +124,44 @@ def _get_accounts_with_totals(conn, month: Optional[str] = None):
     return result
 
 
+def _get_operating_totals(conn, month: Optional[str] = None):
+    """The headline รายรับ/รายจ่าย and the transfer-category figure disclosed
+    beside them, over EVERY non-transfer account, active or not — the same
+    population as `_get_category_summary`, so the cards and the breakdown under
+    them cannot disagree (#594). A closed account's history still happened
+    (ADR 0017); only the per-account table (`_get_accounts_with_totals`) is
+    active-only, so the closed accounts that moved money in scope are returned
+    by name for the page to disclose.
+
+    `month` (optional, 'YYYY-MM') scopes to that calendar month."""
+    ph, params = _tcat_ph()
+    month_sql = ""
+    month_params = []
+    if month:
+        month_sql = " AND strftime('%Y-%m', t.txn_date) = ?"
+        month_params = [month]
+    rows = conn.execute(f"""
+        SELECT
+            COALESCE(a.display_name, a.code) AS label,
+            a.is_active,
+            COALESCE(SUM(CASE WHEN t.direction='income'  AND COALESCE(t.category,'') NOT IN ({ph}) THEN t.amount END), 0) AS income,
+            COALESCE(SUM(CASE WHEN t.direction='expense' AND COALESCE(t.category,'') NOT IN ({ph}) THEN t.amount END), 0) AS expense,
+            COALESCE(SUM(CASE WHEN COALESCE(t.category,'') IN ({ph}) THEN t.amount END), 0) AS transfer
+        FROM cashbook_transactions t
+        JOIN cashbook_accounts a ON a.id = t.account_id
+        WHERE a.is_transfer = 0{month_sql}
+        GROUP BY a.id
+        ORDER BY a.sort_order, a.id
+    """, params * 3 + month_params).fetchall()
+    return {
+        "income": sum(r["income"] for r in rows),
+        "expense": sum(r["expense"] for r in rows),
+        "transfer_total": sum(r["transfer"] for r in rows),
+        "closed_accounts": [r["label"] for r in rows
+                            if not r["is_active"] and (r["income"] or r["expense"])],
+    }
+
+
 def _get_monthly_summary(conn, exclude_transfer: bool = True):
     """Monthly operating income/expense (transfer categories always excluded;
     transfer accounts excluded when exclude_transfer)."""
@@ -439,6 +477,7 @@ def dashboard():
         )
 
         accounts      = _get_accounts_with_totals(conn, month)
+        totals        = _get_operating_totals(conn, month)
         monthly       = _get_monthly_summary(conn, exclude_transfer=True)  # never scoped (trend chart)
         income_cats, expense_cats = _get_category_summary(conn, month)
         tag_summary   = _get_tag_summary(conn, month)
@@ -457,13 +496,15 @@ def dashboard():
     finally:
         conn.close()
 
-    # Headline P&L excludes transfer accounts AND transfer categories (income/expense
-    # are already operating-only from _get_accounts_with_totals).
+    # Headline P&L excludes transfer accounts AND transfer categories. It reads
+    # every non-transfer account, closed ones included — the same population
+    # as the category summary under it (#594); the per-account table below it
+    # stays active-only.
     op_accounts = [a for a in accounts if not a["is_transfer"]]
     tr_accounts  = [a for a in accounts if a["is_transfer"]]
 
-    total_income  = sum(a["income"]  for a in op_accounts)
-    total_expense = sum(a["expense"] for a in op_accounts)
+    total_income  = totals["income"]
+    total_expense = totals["expense"]
     # #534: an account flagged income_recorded_elsewhere (e.g. ชฎามาศ) never
     # has its income keyed here, so its all-history "balance" is a meaningless
     # negative (−฿1.74M on prod for ชฎามาศ) — excluded from the คงเหลือ
@@ -476,8 +517,9 @@ def dashboard():
     # capital transfers). This reconciles with the per-account balance column. It is
     # deliberately NOT income − expense: transfers fund the gap (see disclosure note).
     total_balance = sum(a["balance"] for a in balance_accounts)
-    # Capital/inter-account movements excluded from the P&L (disclosure figure)
-    transfer_total = sum(a["transfer_in"] + a["transfer_out"] for a in op_accounts)
+    # Capital/inter-account movements excluded from the P&L (disclosure figure),
+    # over the same population as total_income/total_expense.
+    transfer_total = totals["transfer_total"]
 
     # Card 3 (decision 3, plan.md "Card-3 semantics"): meaning changes by mode.
     #   Month mode : สุทธิเดือนนี้ = income − expense (operating P&L net for the
@@ -499,6 +541,7 @@ def dashboard():
         total_expense=total_expense,
         total_balance=total_balance,
         flagged_accounts=flagged_accounts,
+        closed_accounts=totals["closed_accounts"],
         transfer_total=transfer_total,
         monthly=monthly,
         income_cats=income_cats,
