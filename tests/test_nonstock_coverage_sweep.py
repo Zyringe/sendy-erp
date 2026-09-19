@@ -155,7 +155,7 @@ EXPECTED = {
         'line never reads as marketplace units sold '
         '(tests/test_nonstock_readers.py::test_marketplace_sold_ignores_a_discount_line)',
 
-    ('models/imports.py', 'import_weekly'):
+    ('models/imports.py', '_import_weekly'):
         'guarded: is_non_stock_code(product_code_raw) drives the revenue-preserving '
         'import branch, keeping the row even when the mapping still says is_ignored=1 '
         '(tests/test_nonstock_line_sync.py::test_non_stock_line_is_imported_as_revenue, '
@@ -294,7 +294,7 @@ EXPECTED_SEQUENCE = {
     ('models/ecommerce_overview.py', '_sold_since_by_pid'): [
         'AND NOT (st.synced_to_stock = 1 AND st.customer IN (',
     ],
-    ('models/imports.py', 'import_weekly'): [
+    ('models/imports.py', '_import_weekly'): [
         # The `) AND synced_to_stock = 1` SELECT that used to sit here built
         # `replayed_ids` for _sync_bsn_to_stock. That parameter had already
         # stopped being consulted when platform deduction moved to the order
@@ -345,7 +345,7 @@ GUARDED_KEYS = {
     ('models/bsn_sync.py', 'dismiss_pending_unit_conversion'),
     ('models/bsn_sync.py', 'get_pending_unit_conversions'),
     ('models/ecommerce_overview.py', '_sold_since_by_pid'),
-    ('models/imports.py', 'import_weekly'),
+    ('models/imports.py', '_import_weekly'),
     ('models/mapping.py', 'get_pending_split_mappings'),
 }
 GUARD_TOKENS = ('is_non_stock_code(', 'non_stock_clause(')
