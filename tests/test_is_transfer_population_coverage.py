@@ -262,6 +262,20 @@ def test_every_entry_names_a_population_and_a_reason(site):
         assert not probes, f'{site}: a {population} site decides no population'
 
 
+def test_every_probed_site_has_its_probe():
+    """The census and the behavioural half cannot drift: every probe named
+    here exists there under the SAME population, and every probe there is
+    named here."""
+    from tests import test_594_account_populations as behaviour
+    named = {p: pop for (_n, pop, probes, _w) in ALLOWED.values() for p in probes}
+    assert set(named) == set(behaviour.PROBES), (
+        f'named here only: {set(named) - set(behaviour.PROBES)}; '
+        f'probed there only: {set(behaviour.PROBES) - set(named)}')
+    mismatched = {p: (pop, behaviour.PROBES[p][0]) for p, pop in named.items()
+                  if behaviour.PROBES[p][0] != pop}
+    assert not mismatched, f'probe population differs from the site it pins: {mismatched}'
+
+
 # ── the sweep's own coverage: one rogue source per shape ─────────────────────
 
 READ_SHAPES = {
