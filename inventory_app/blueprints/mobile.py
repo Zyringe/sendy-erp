@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
 import customer_geo
+import marketplace_match
 import models
 import payments_alloc
 import price_lookup
@@ -213,15 +214,21 @@ def sales_trip():
                -- ล่าสุด on the trip row is the customer's last PURCHASE (#513):
                -- the purchase population, imported from price_lookup, same as
                -- the customer page's ซื้อล่าสุด and the /call worklist. A raw
-               -- MAX(date_iso) showed a rep a RETURN as a recent sale — 6 of
-               -- the 2,665 customers here, measured on the prod snapshot
-               -- 2026-09-14 (none of them loses a date).
+               -- MAX(date_iso) showed a rep a RETURN or other non-purchase row
+               -- as a recent sale — 8 of the 2,661 customers here, measured on
+               -- the prod snapshot 2026-09-16 (none of them loses a date).
+               -- Both subqueries join on the CODE (#569). The bill name drifts
+               -- from the master name, and the name join blanked 195 of 272
+               -- buyers on prod 2026-09-18. A bare `=` rather than the COALESCE(code,
+               -- customer) key other surfaces use: this query starts FROM
+               -- customers, so a blank-code bill would fall back to a bill name,
+               -- which can never equal c.code.
                (SELECT MAX(date_iso) FROM sales_transactions s
-                 WHERE s.customer = c.name
+                 WHERE s.customer_code = c.code
                    AND {price_lookup.purchase_population_filter('s')}) AS last_sale,
                (SELECT ROUND(SUM({vat_math.cash_sql('s')}), 2)
                   FROM sales_transactions s
-                  WHERE s.customer = c.name
+                  WHERE s.customer_code = c.code
                     AND s.doc_base IS NOT NULL
                     AND s.doc_base NOT LIKE 'SR%'
                     AND s.doc_base NOT LIKE 'HS%'
@@ -246,7 +253,8 @@ def sales_trip():
                     -- as models.payments.find_customers_for_transfer. Note the
                     -- ล่าสุด subquery above deliberately does NOT take the
                     -- whole table (Put, 2026-09-17: a written-off bill is
-                    -- still a purchase). Measured on prod 2026-09-17: both
+                    -- still a purchase). Measured on prod 2026-09-17, and again
+                    -- through the code join on the prod snapshot 2026-09-16: both
                     -- write-offs reaching this population are flagged 0, so
                     -- the flag reading removes nothing — นางด้วง (เมืองพีน)
                     -- showed ฿10,200.00 owed on IV6701775, written off
@@ -259,8 +267,12 @@ def sales_trip():
                ) AS outstanding
           FROM customers c
      LEFT JOIN salespersons sp ON sp.code = c.salesperson
+         WHERE c.code NOT IN ({', '.join('?' * len(marketplace_match.MARKETPLACE_CODES))})
     """
-    rows = [dict(r) for r in conn.execute(sql).fetchall()]
+    # A marketplace pseudo-customer is not a shop a rep can visit, and its
+    # outstanding is platform settlement, not a debt to chase.
+    rows = [dict(r) for r in conn.execute(
+        sql, tuple(marketplace_match.MARKETPLACE_CODES)).fetchall()]
     conn.close()
 
     for r in rows:
