@@ -2,6 +2,7 @@
 split, Phase 11) — see models/__init__.py's module docstring for the
 overall file-split rationale. No behavior changes.
 """
+import sales_filters
 from database import get_connection
 
 
@@ -22,7 +23,7 @@ def get_suppliers(search=None, page=1, per_page=50):
     rows = conn.execute(f"""
         SELECT supplier, supplier_code,
                COUNT(DISTINCT doc_no) AS doc_count,
-               COALESCE(SUM(net), 0)  AS total_net,
+               COALESCE(SUM({sales_filters.supplier_net_sql()}), 0) AS total_net,
                MAX(date_iso)          AS last_date
         FROM purchase_transactions
         {where}
@@ -47,8 +48,8 @@ def get_supplier_summary(supplier, date_from=None, date_to=None):
 
     summary = conn.execute(f"""
         SELECT COUNT(DISTINCT doc_no) AS doc_count,
-               COALESCE(SUM(net), 0)  AS total_net,
-               COALESCE(SUM(qty), 0)  AS total_qty,
+               COALESCE(SUM({sales_filters.supplier_net_sql()}), 0) AS total_net,
+               COALESCE(SUM({sales_filters.supplier_qty_sql()}), 0) AS total_qty,
                MIN(date_iso)          AS first_date,
                MAX(date_iso)          AS last_date
         FROM purchase_transactions
@@ -59,8 +60,8 @@ def get_supplier_summary(supplier, date_from=None, date_to=None):
         SELECT COALESCE(p.product_name, pt.product_name_raw) AS name,
                p.id AS product_id,
                pt.unit,
-               SUM(pt.qty)  AS total_qty,
-               SUM(pt.net)  AS total_net,
+               SUM({sales_filters.supplier_qty_sql('pt')}) AS total_qty,
+               SUM({sales_filters.supplier_net_sql('pt')}) AS total_net,
                COUNT(DISTINCT pt.doc_no) AS doc_count
         FROM purchase_transactions pt
         LEFT JOIN products p ON p.id = pt.product_id
@@ -73,7 +74,7 @@ def get_supplier_summary(supplier, date_from=None, date_to=None):
     monthly = conn.execute(f"""
         SELECT strftime('%Y-%m', date_iso) AS month,
                COUNT(DISTINCT doc_no) AS doc_count,
-               SUM(net) AS total_net
+               SUM({sales_filters.supplier_net_sql()}) AS total_net
         FROM purchase_transactions
         WHERE {where}
         GROUP BY month
@@ -83,8 +84,8 @@ def get_supplier_summary(supplier, date_from=None, date_to=None):
     docs = conn.execute(f"""
         SELECT date_iso, doc_no,
                COUNT(*) AS line_count,
-               SUM(qty) AS total_qty,
-               SUM(net) AS total_net
+               SUM({sales_filters.supplier_qty_sql()}) AS total_qty,
+               SUM({sales_filters.supplier_net_sql()}) AS total_net
         FROM purchase_transactions
         WHERE {where}
         GROUP BY doc_no

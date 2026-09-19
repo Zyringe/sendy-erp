@@ -5,6 +5,7 @@ module docstring for the overall file-split rationale. No behavior changes.
 
 from datetime import date
 
+import sales_filters
 from database import get_connection
 
 
@@ -146,10 +147,10 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
           AND doc_no NOT LIKE 'SR%'
     """, (date_from, date_to)).fetchone()
 
-    p = conn.execute("""
+    p = conn.execute(f"""
         SELECT COUNT(DISTINCT doc_no) AS doc_count,
-               COALESCE(SUM(net), 0)  AS total_net,
-               COALESCE(SUM(qty), 0)  AS total_qty
+               COALESCE(SUM({sales_filters.supplier_net_sql()}), 0) AS total_net,
+               COALESCE(SUM({sales_filters.supplier_qty_sql()}), 0) AS total_qty
         FROM purchase_transactions
         WHERE date_iso >= ? AND date_iso <= ?
     """, (date_from, date_to)).fetchone()
@@ -164,9 +165,9 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
         GROUP BY week ORDER BY week
     """, (date_from, date_to)).fetchall()
 
-    weekly_pur = conn.execute("""
+    weekly_pur = conn.execute(f"""
         SELECT strftime('%Y-W%W', date_iso) AS week,
-               COALESCE(SUM(net), 0) AS net
+               COALESCE(SUM({sales_filters.supplier_net_sql()}), 0) AS net
         FROM purchase_transactions
         WHERE date_iso >= ? AND date_iso <= ?
         GROUP BY week ORDER BY week
@@ -211,10 +212,10 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     """, (date_from, date_to)).fetchall()
 
     # ── Top 10 ซัพพลายเออร์ ──────────────────────────────────────────────────
-    top_suppliers = conn.execute("""
+    top_suppliers = conn.execute(f"""
         SELECT supplier,
                COUNT(DISTINCT doc_no) AS doc_count,
-               SUM(net)               AS total_net
+               SUM({sales_filters.supplier_net_sql()}) AS total_net
         FROM purchase_transactions
         WHERE date_iso >= ? AND date_iso <= ?
           AND supplier IS NOT NULL AND supplier != ''
@@ -443,7 +444,7 @@ def get_purchases_summary(date_from=None, date_to=None, doc_no=None, conn=None):
     where = ' AND '.join(conds)
     row = conn.execute(f"""
         SELECT COUNT(*)        AS txn_count,
-               SUM(net)        AS total_net
+               SUM({sales_filters.supplier_net_sql()}) AS total_net
         FROM purchase_transactions
         WHERE {where}
     """, params).fetchone()
@@ -472,8 +473,8 @@ def get_purchases_summary_by_vat(date_from=None, date_to=None, doc_no=None, conn
     rows = conn.execute(f"""
         SELECT vat_type,
                COUNT(*)       AS txn_count,
-               SUM(qty)       AS total_qty,
-               SUM(net)       AS total_net
+               SUM({sales_filters.supplier_qty_sql()}) AS total_qty,
+               SUM({sales_filters.supplier_net_sql()}) AS total_net
         FROM purchase_transactions
         WHERE {where}
         GROUP BY vat_type

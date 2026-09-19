@@ -27,6 +27,7 @@ import express_registers
 import form_options
 import models
 import review_rules as rr
+import sales_filters
 from database import get_connection
 from paging import paging
 
@@ -225,17 +226,19 @@ def mapping():
     # SQLITE_MAX_VARIABLE_NUMBER (999 on older builds) and 500 the page
     # (round 3). Joining against the table instead has no such ceiling.
     # The window picks the same row bsn_suggest._latest_purchase does:
-    # ORDER BY date_iso DESC, id DESC. Population matches
-    # get_pending_suggestions() exactly -- status = 'pending'.
+    # ORDER BY date_iso DESC, id DESC, excluding GR (purchase return) rows
+    # (#591) -- a return is not a purchase and must not seed a cost basis.
+    # Population matches get_pending_suggestions() exactly -- status = 'pending'.
     suggestion_cost_basis = {
         str(r['sid']): {'net': r['net'] or 0, 'qty': r['qty']}
-        for r in conn.execute("""
+        for r in conn.execute(f"""
             SELECT s.id AS sid, pt.net AS net, pt.qty AS qty
               FROM pending_product_suggestions s
               JOIN (SELECT bsn_code, net, qty,
                            ROW_NUMBER() OVER (PARTITION BY bsn_code
                                               ORDER BY date_iso DESC, id DESC) AS rn
-                      FROM purchase_transactions) pt
+                      FROM purchase_transactions
+                     WHERE {sales_filters.not_a_purchase_return_clause()}) pt
                 ON pt.bsn_code = s.bsn_code AND pt.rn = 1
              WHERE s.status = 'pending'
         """)
