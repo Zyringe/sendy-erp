@@ -346,3 +346,32 @@ Draft text:
   Removing write-on-read is a separate issue.
 - **D3.** `script_connection` sets `TZ=ICT-7` and carries a one-line reason.
 - **D4. Filed as #615.**
+
+## 10. Implementation notes (PR 2, where the code departs from the text above)
+
+Each of these was found while building or break-testing PR 2. The design intent holds in
+every case.
+
+- **Migration number 190.** 188 is claimed by `fix/594-unflag-904` and 189 by
+  `fix/589-commission-03-engine`, both on origin. Re-derive the number at rebase.
+- **The recalc-event row is written after the walk, not before the DELETE.** It is still
+  in the same transaction, just before the ledger INSERTs, which is the first point where
+  old→new is known. Moving the DELETE would have reordered a money path for no gain in
+  atomicity.
+- **A caller-supplied `written_by` is refused, not overwritten.** "Overwrite, then never
+  rewrite" cannot be expressed: the stamp trigger's own UPDATE would hit the immutability
+  guard. Refusing is stricter.
+- **An unsigned conversion-log INSERT is refused twice**, by its own guard and by the
+  update guard that the stamp trigger fires. Break-it-once therefore deletes both (G3b).
+- **Dated scripts' tests** register `sendy_actor()` on every raw connection
+  (`tests/_pre_mig590.py::sign_raw_connections`), rather than dropping the triggers.
+  Dropping them would not be enough: the engine's A2 preflight refuses a raw connection
+  as well. Both the triggers and the preflight stay live in those tests, signed by the
+  test default. `test_pre_mig590_usage.py` pins the three files.
+- **`db_backup.restore_backup` takes a required `prepare=` hook**, so no caller can
+  forget it. The toy-DB unit tests pass `prepare=None`.
+- **The VAT build receives the uploader as `--uploader`** (read from the request's
+  actor) instead of an environment variable. With no uploader nothing is declared, and
+  the importers refuse, as for any unsigned run.
+- **`import_weekly` is a thin wrapper** declaring `source=import` around
+  `_import_weekly`. Two per-function sweeps were re-keyed to follow the body.
