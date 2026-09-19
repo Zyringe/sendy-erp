@@ -74,6 +74,16 @@ def test_apply_counts_conflicting_row_as_skipped_not_applied(conn):
     assert [r['xp5_code'] for r in res['landed']] == ['X5']
 
 
+def _unit_map_conn(tmp_path):
+    """The two codes these layer-2 tests send, on their own throwaway DB."""
+    c = sqlite3.connect(tmp_path / 'units.db')
+    c.executescript("""
+        CREATE TABLE unit_map (book TEXT, spelling TEXT, word TEXT);
+        INSERT INTO unit_map VALUES ('BSN5657', 'ผง', 'แผง'), ('BSN5657', 'ตว', 'ตัว');
+    """)
+    return c
+
+
 def test_layer2_signature_requires_same_unit(monkeypatch, tmp_path):
     """Same qty+price in DIFFERENT units must never produce a product pair."""
     import express_dbf_source as eds
@@ -94,7 +104,7 @@ def test_layer2_signature_requires_same_unit(monkeypatch, tmp_path):
     monkeypatch.setattr(eds, 'open_table', fake_open)
     auto, review, stats = pl.layer2(
         str(tmp_path / 'xp5'), str(tmp_path / 'bsn'),
-        {'BC': (55, 'ชื่อ')}, {55: 'ชื่อ'}, set())
+        {'BC': (55, 'ชื่อ')}, {55: 'ชื่อ'}, set(), conn=_unit_map_conn(tmp_path))
     assert stats['doc_pairs'] == 1            # docs DO pair (date+amount)
     assert auto == [] and review == []        # but the lines never match
 
@@ -177,6 +187,6 @@ def test_layer2_signature_same_unit_pairs(monkeypatch, tmp_path):
     monkeypatch.setattr(eds, 'open_table', fake_open)
     auto, review, stats = pl.layer2(
         str(tmp_path / 'xp5'), str(tmp_path / 'bsn'),
-        {'BC': (55, 'ชื่อ')}, {55: 'ชื่อ'}, set())
+        {'BC': (55, 'ชื่อ')}, {55: 'ชื่อ'}, set(), conn=_unit_map_conn(tmp_path))
     assert [a['xp5_code'] for a in auto] == ['XC']
     assert auto[0]['evidence_count'] == 2

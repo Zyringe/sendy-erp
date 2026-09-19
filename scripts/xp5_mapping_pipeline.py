@@ -116,7 +116,7 @@ def _doc_headers(dbf_dir):
     return docs
 
 
-def _doc_lines(dbf_dir, wanted_docs):
+def _doc_lines(dbf_dir, wanted_docs, conn):
     """Line tuples (qty, price, unit_norm, code). The unit (STCRD.TQUCOD,
     normalized through bsn_units so both books' acronyms compare equal) is
     part of the match signature — equal numbers in DIFFERENT units must
@@ -129,13 +129,13 @@ def _doc_lines(dbf_dir, wanted_docs):
         code = str(r.get('STKCOD') or '').strip()
         qty = round(float(r.get('TRNQTY') or 0), 4)
         price = round(float(r.get('UNITPR') or 0), 4)
-        unit = bsn_units.normalize_unit(str(r.get('TQUCOD') or '').strip()) or ''
+        unit = bsn_units.normalize_unit(str(r.get('TQUCOD') or '').strip(), conn=conn) or ''
         if code:
             lines[doc].append((qty, price, unit, code))
     return lines
 
 
-def layer2(xp5_dir, bsn_dir, code_map, product_names, already):
+def layer2(xp5_dir, bsn_dir, code_map, product_names, already, *, conn):
     """Dual-keyed invoice-line pairing. Returns (auto, review, stats)."""
     xdocs = _doc_headers(xp5_dir)
     bdocs = _doc_headers(bsn_dir)
@@ -152,8 +152,8 @@ def layer2(xp5_dir, bsn_dir, code_map, product_names, already):
         if len(cands) == 1 and xkey_count[key] == 1:
             pairs.append((xdoc, cands[0]))
 
-    xlines = _doc_lines(xp5_dir, {p[0] for p in pairs})
-    blines = _doc_lines(bsn_dir, {p[1] for p in pairs})
+    xlines = _doc_lines(xp5_dir, {p[0] for p in pairs}, conn)
+    blines = _doc_lines(bsn_dir, {p[1] for p in pairs}, conn)
 
     votes = defaultdict(set)          # xp5_code → {(pid, doc_pair)}
     contradictions = defaultdict(set)  # xp5_code → {pid}
@@ -441,7 +441,7 @@ def main():
     auto1, review1 = layer1(xp5_products, code_map, product_names)
     already = {r['xp5_code'] for r in auto1}
     auto2, review2, l2stats = layer2(args.xp5, args.bsn, code_map,
-                                     product_names, already)
+                                     product_names, already, conn=conn)
     taken = already | {r['xp5_code'] for r in auto2} \
         | {r['xp5_code'] for r in review1} | {r['xp5_code'] for r in review2}
     review3 = layer3(xp5_products, product_names, taken | locked)

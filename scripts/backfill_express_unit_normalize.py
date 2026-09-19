@@ -43,7 +43,7 @@ def normalize_units(conn):
     ).fetchall()
     units_changed = 0
     for (raw,) in rows:
-        canon = bsn_units.normalize_unit(raw)
+        canon = bsn_units.normalize_unit(raw, conn=conn)
         if canon != raw:
             cur = conn.execute(
                 "UPDATE express_sales SET unit = ? WHERE unit = ?",

@@ -168,9 +168,7 @@ SCRIPT_EXEMPTIONS = {
     # nobody prunes stops being an inventory.
     'apply_decision_remaps.py': 'one-off remap of decided product mappings',
     'apply_worksheets_20260530.py': 'one-off apply of the 2026-05-30 worksheets',
-    'apply_stock_and_mapping_csv.py': 'one-off apply of a stock and mapping CSV worksheet',
     'cleanup_split_mapping_stubs.py': 'one-off cleanup of stub rows left by a mapping split',
-    'normalize_bsn_units.py': 'one-off unit normalisation; now learn_acronyms_normalize',
     'p0_split_3p5in.py': 'one-off split of the 3.5in pack and piece SKUs',
     'p2p3_split_hinges.py': 'one-off split of the hinge pack and piece SKUs',
     'phase_c_replay_apply_20260530.py': 'one-off apply of the phase-C ledger replay',

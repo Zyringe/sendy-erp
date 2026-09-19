@@ -18,11 +18,6 @@ ALLOWED = {
     'test_apply_decision_remaps.py':
         'drives scripts/apply_decision_remaps.py, a dated one-off already '
         'recorded as accepted-to-abort in SCRIPT_EXEMPTIONS',
-    'test_apply_stock_and_mapping.py':
-        'drives scripts/apply_stock_and_mapping_csv.py, same recorded decision',
-    'test_normalize_bsn_units.py':
-        'drives scripts/normalize_bsn_units.py, whose own docstring says '
-        'DEPRECATED, do not re-run',
 }
 
 _CALL = re.compile(r'\bemulate_pre_mig173\s*\(')
@@ -46,7 +41,7 @@ def _users():
 def test_only_recorded_tests_reconstruct_the_pre_guard_world():
     users = _users()
     # CONTROL: if the scan finds nothing at all it is broken, not clean — the
-    # four files below are known to call it.
+    # files listed above are known to call it.
     assert users, 'the scan found no callers; it cannot be distinguishing anything'
     assert users - set(ALLOWED) == set(), (
         'these tests drop the mig 173 guard without a recorded reason: '
