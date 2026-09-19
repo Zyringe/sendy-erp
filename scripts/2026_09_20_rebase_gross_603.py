@@ -17,21 +17,20 @@ sell price rounds UP to 2 dp, low_stock_threshold is kept, a tier is the pack
 total and is not touched, the opening is recomputed and never rescaled. All six
 are at stock 0, so nothing on the shelf moves.
 
-THE SAME-WORD CASE, 1187/1188 (ตัว -> ตัว). Every hasp sale is stored as `ตัว`
-and means a gross. Once ตัว is the base unit, `bsn_sync._get_base_qty`,
-`price_lookup._bill_ratio` and `sales_filters.base_qty_sql` all read a bill in
-the base unit at ratio 1 whatever unit_conversions says, so those bills would
-count single hasps: stock, COGS and every last-paid quote off by 144. So:
-  1. the bills that say ตัว are relabelled through `declared_update` (mig 173)
-     to the unit map's own word for Express กร, i.e. exactly what the importer
-     writes for them (กุรุส once #599 lands);
-  2. today's base is first given its true word (unit_type ตัว -> กุรุส, inside the
-     transaction), so the UNCHANGED engine re-denominates กุรุส -> ตัว and its own
-     "already converted" guard still holds.
-Until #599 ships the importer writes ตัว for Express กร: the next DBF re-diff
-would put the relabel back (`bsn_line._unit_same`) and any new hasp bill would
-post one hasp per gross. The hasps therefore REFUSE while the unit map still
-reads กร as anything but กุรุส. The sandpapers are safe in either order.
+THE SAME-WORD CASE, 1187/1188 (ตัว -> ตัว) — DEFERRED until #599 AND #600.
+Every hasp sale is stored as `ตัว` and means a gross. Once ตัว is the base unit,
+`bsn_sync._get_base_qty`, `price_lookup._bill_ratio` and
+`sales_filters.base_qty_sql` all read a bill in the base unit at ratio 1 whatever
+unit_conversions says, so those bills would count single hasps: stock, COGS and
+every last-paid quote off by 144. Relabelling them ตัว -> กุรุส from the Express
+stock card is #600's job, not this script's, and it is only safe once the
+importer itself writes กุรุส for Express กร (#599); before that the next import
+puts ตัว back (`bsn_line._unit_same`) and a new hasp bill posts one per gross.
+So the hasps REFUSE unless (a) the unit map reads BSN5657 กร as กุรุส and (b) no
+bill line of theirs is still stored as ตัว. Once both hold, today's base is given
+its true word first (unit_type ตัว -> กุรุส, inside the transaction) so the
+UNCHANGED engine re-denominates กุรุส -> ตัว, and its own "already converted"
+guard still holds. The sandpapers are safe in either order.
 
 1052 has one hand-written ledger row, the 2026-07-03 orphan cleanup (-24). It was
 written in the old base and the engine rescales only bill legs, so it is scaled
@@ -50,9 +49,11 @@ Modes:
             refuse-on-failure backup before the first write.
 
     python3 scripts/2026_09_20_rebase_gross_603.py --db /tmp/rehearse-603.db \\
-        --pids 1047,1048,1049,1052 --mode rehearse --operator NAME
+        --pids 1047,1048,1049,1052 --mode rehearse
     python3 scripts/2026_09_20_rebase_gross_603.py --db /data/inventory.db \\
-        --pids 1047,1048,1049,1052 --mode live --confirm-live 1047,1048,1049,1052 --operator NAME
+        --pids 1047,1048,1049,1052 --mode live --confirm-live 1047,1048,1049,1052
+The hasps, once #599 and #600 are both on prod (the script refuses them before):
+        --pids 1187,1188 ... --confirm-live 1187,1188
 """
 import argparse
 import importlib.util
@@ -74,8 +75,6 @@ BOOK = 'BSN5657'
 GROSS_SPELLINGS = {'ตัว', 'กร', 'กุรุส'}
 APP_DB_NAME = 'inventory.db'
 BACKUP_REASON = 'pre-unit-rebase-603'
-RELABEL_REASON = ('#603: this line is Express กร = 1 กุรุส (STCRD TFACTOR 144); '
-                  'ตัว is now a single piece')
 ORPHAN_NOTE = 'ล้าง orphan ledger 2026-07-03'
 
 
@@ -137,7 +136,7 @@ PLAN = {
 HANDLED = {
     'stock_levels': 'kept at 0; the mig-080 triggers keep it equal to the ledger',
     'transactions': 'replayed by the engine; the one hand-written row is scaled',
-    'sales_transactions': 'the bills the replay re-derives from; hasp units relabelled',
+    'sales_transactions': 'the bills the replay re-derives from (only synced_to_stock moves)',
     'purchase_transactions': 'as sales_transactions',
     'unit_conversions': 'rescaled by the engine',
     'product_cost_ledger': 're-denominated by the engine',
@@ -200,12 +199,19 @@ def preconditions(conn, eng, pids):
             bad.append("%s: planned base %.2f is not %g/%d rounded UP (%.2f)"
                        % (label, plan['new_base'], money[2], RATIO, _ceil2(money[2] / RATIO)))
         # THE SAME-WORD CASE: see the docstring. Only safe once the importer
-        # writes กุรุส for Express กร.
+        # writes กุรุส for Express กร (#599) AND no bill still says ตัว (#600).
         if plan['new_unit'] == OLD_UNIT:
             if word != GROSS:
                 bad.append("%s: needs #599 first — the unit map still reads Express กร as %r, so "
-                           "a relabelled bill would be put back to ตัว by the next import and a "
-                           "new one would post one piece per gross" % (label, word))
+                           "the next import would store a gross as ตัว, which after this rebase "
+                           "means ONE piece" % (label, word))
+            still = [r[0] for t in ('sales_transactions', 'purchase_transactions')
+                     for r in conn.execute("SELECT doc_no FROM %s WHERE product_id=? AND unit=? "
+                                           "ORDER BY doc_no" % t, (pid, OLD_UNIT))]
+            if still:
+                bad.append("%s: needs #600 first — %d bill line(s) still stored as %s meaning a "
+                           "gross (%s); after this rebase %s is ONE piece"
+                           % (label, len(still), OLD_UNIT, ', '.join(still), OLD_UNIT))
 
         stock = eng._stock(conn, pid)
         if stock != 0:
@@ -266,29 +272,6 @@ def preconditions(conn, eng, pids):
 
 
 # ── the steps around the engine ─────────────────────────────────────────────
-
-def _relabel(conn, pid, operator):
-    """Same-word products only: a bill still in the new base word means a gross.
-
-    It is rewritten to the unit map's own word for Express กร, read here rather
-    than typed, so the stored value IS what the importer writes for the same line
-    and the next import finds it unchanged. Before #599 that word is ตัว, the
-    rewrite is a no-op and the invariants roll the run back: a backstop behind
-    the precondition, not instead of it."""
-    import bsn_units
-    from models._shared import declared_update
-    if PLAN[pid]['new_unit'] != OLD_UNIT:
-        return 0
-    word = bsn_units.translate('กร', BOOK, conn=conn)
-    n = 0
-    for table in ('sales_transactions', 'purchase_transactions'):
-        for (rid,) in conn.execute("SELECT id FROM %s WHERE product_id=? AND unit=? ORDER BY id"
-                                   % table, (pid, OLD_UNIT)).fetchall():
-            declared_update(conn, table, rid, {'unit': word}, actor=operator,
-                            source='manual', reason=RELABEL_REASON)
-            n += 1
-    return n
-
 
 def _add_gross_row(conn, pid):
     """กุรุส at the OLD base's 1.0 — the engine then scales it with every other row.
@@ -372,9 +355,6 @@ def snapshot(conn, eng, pids, today):
             'n_bills': sum(conn.execute("SELECT COUNT(*) FROM %s WHERE product_id=?" % t,
                                         (pid,)).fetchone()[0]
                            for t in ('sales_transactions', 'purchase_transactions')),
-            'n_old_word': sum(conn.execute("SELECT COUNT(*) FROM %s WHERE product_id=? AND unit=?" % t,
-                                           (pid, OLD_UNIT)).fetchone()[0]
-                              for t in ('sales_transactions', 'purchase_transactions')),
             'n_cost_rows': conn.execute("SELECT COUNT(*) FROM product_cost_ledger WHERE product_id=?",
                                         (pid,)).fetchone()[0],
             'ledger_value': conn.execute("SELECT COALESCE(SUM(qty_change*unit_cost),0) FROM "
@@ -468,15 +448,6 @@ def assert_invariants(conn, eng, pids, before, others_before, openings, today):
                          for t in ('sales_transactions', 'purchase_transactions'))
         if n_new_word:
             bad.append("%s: %d bill(s) still say %s, which now means ONE piece" % (label, n_new_word, new_unit))
-        if new_unit == OLD_UNIT:
-            n_declared = conn.execute(
-                "SELECT COUNT(*) FROM sales_transactions WHERE product_id=? AND unit=? AND "
-                "change_reason=?", (pid, GROSS, RELABEL_REASON)).fetchone()[0] + conn.execute(
-                "SELECT COUNT(*) FROM purchase_transactions WHERE product_id=? AND unit=? AND "
-                "change_reason=?", (pid, GROSS, RELABEL_REASON)).fetchone()[0]
-            if n_declared != b['n_old_word']:
-                bad.append("%s: %d bill(s) relabelled through the declared path, expected %d"
-                           % (label, n_declared, b['n_old_word']))
 
         for tid, txn_type, qty, note, created_at in b['extra']:
             now = conn.execute("SELECT quantity_change FROM transactions WHERE id=?", (tid,)).fetchone()
@@ -593,7 +564,6 @@ def main(argv=None):
     ap.add_argument('--pids', required=True, help='comma list, each one in PLAN: %s' % sorted(PLAN))
     ap.add_argument('--mode', required=True, choices=['rehearse', 'live'])
     ap.add_argument('--confirm-live', help='live only: repeat --pids exactly')
-    ap.add_argument('--operator', required=True, help='who runs it; stamped on every relabelled bill')
     a = ap.parse_args(argv)
 
     pids = _parse_pids(a.pids)
@@ -655,7 +625,6 @@ def main(argv=None):
         openings = {}
         for pid in pids:
             plan = PLAN[pid]
-            _relabel(conn, pid, a.operator)
             _add_gross_row(conn, pid)
             _rescale_extra(conn, pid)
             # name today's base by its true word, so the engine re-denominates

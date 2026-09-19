@@ -13,12 +13,15 @@ The ledger is posted by the app's own sync, never typed in.
 Plus one control the script must not touch: 1186 (ขอตัว C 11in), which Put
 ruled is not a gross.
 
-Three orders are exercised, because #599 (the unit map's กร -> กุรุส) and #600
-(relabelling old rows) may land before or after this:
-  * 603-first  : the map still says กร -> ตัว, no กุรุส conversion exists.
-  * 599-first  : the map says กร -> กุรุส and #599 added กุรุส = 1.0.
-  * 600-first  : as 599-first, and the old rows already read กุรุส.
-The hasps (1187/1188 -> ตัว) may only run in the last two.
+Orders exercised, because #599 (the unit map's กร -> กุรุส) and #600
+(relabelling old rows from the Express stock card) may land before or after this:
+  * 603-first       : the map still says กร -> ตัว, no กุรุส conversion exists.
+  * 599-first       : the map says กร -> กุรุส and #599 added กุรุส = 1.0.
+  * 600-first       : as 599-first, and the old rows already read กุรุส.
+  * 600-without-599 : rows relabelled while the map still says ตัว (the order
+                      #600 is blocked from; used to show why gate (a) exists).
+The sandpapers run in every order. The hasps (1187/1188 -> ตัว) run only in
+600-first: they need (a) the map to read กร as กุรุส and (b) no bill still ตัว.
 """
 import importlib.util
 import os
@@ -132,12 +135,22 @@ PURCHASES = [
 OPENINGS = {1047: 0, 1048: 0, 1049: 0, 1052: 24, 1187: 0, 1188: 0}
 
 
+# order -> (the map's word for กร, #599's กุรุส conversion present, rows relabelled by #600)
+ORDERS = {
+    '603-first': ('ตัว', False, False),
+    '599-first': ('กุรุส', True, False),
+    '600-first': ('กุรุส', True, True),
+    '600-without-599': ('ตัว', True, True),
+}
+
+
 def _seed(conn, order='603-first'):
     """Prod's pre-state. `order` simulates #599 / #600 having landed first."""
     from models import bsn_sync, wacc
     gross = 'กุรุส'
+    map_word, gross_row, relabelled = ORDERS[order]
     conn.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'กร', ?)",
-                 ('ตัว' if order == '603-first' else gross,))
+                 (map_word,))
     conn.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว')")
     codes = {}
     for pid, name, cost, base, tier, code, extra in PRODUCTS + [
@@ -150,7 +163,7 @@ def _seed(conn, order='603-first'):
         conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
                      " VALUES (?, ?, ?, '')", (code, name, pid))
         units = {'กร': 1.0, 'ตัว': 1.0, **extra}
-        if order != '603-first':
+        if gross_row:
             units[gross] = 1.0            # #599 copies the กร row's ratio
         for u, r in units.items():
             conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?,?,?)",
@@ -161,8 +174,8 @@ def _seed(conn, order='603-first'):
             conn.execute("INSERT INTO product_price_history (product_id, field_name, old_value,"
                          " new_value, changed_at) VALUES (?, 'base_sell_price', 0.0, ?,"
                          " '2026-08-28 04:29:04')", (pid, base))
-    sale_unit = gross if order == '600-first' else 'ตัว'
-    buy_unit = gross if order == '600-first' else 'กร'
+    sale_unit = gross if relabelled else 'ตัว'
+    buy_unit = gross if relabelled else 'กร'
     for pid, date, doc, qty, price, net, vat, cust, ccode in SALES + [
             (1186, '2024-10-24', 'IV6702851-1', 1.0, 130.0, 123.5, 1, 'สายัณห์ก่อสร้าง(2018)', '53ส01')]:
         conn.execute("INSERT INTO customers (code, name) VALUES (?, ?) ON CONFLICT(code) DO NOTHING",
@@ -212,6 +225,11 @@ def db599(empty_db, empty_db_conn):
     return _make(empty_db, empty_db_conn, '599-first')
 
 
+@pytest.fixture()
+def db600(empty_db, empty_db_conn):
+    return _make(empty_db, empty_db_conn, '600-first')
+
+
 def _conn(path):
     c = sqlite3.connect(path)
     c.row_factory = sqlite3.Row
@@ -235,8 +253,7 @@ def _all(path, sql, *args):
 
 
 def _run(path, pids, *extra, mod=None, mode='rehearse'):
-    return (mod or _load()).main(['--db', path, '--pids', pids, '--mode', mode,
-                                  '--operator', 'test-operator', *extra])
+    return (mod or _load()).main(['--db', path, '--pids', pids, '--mode', mode, *extra])
 
 
 def _state(path):
@@ -423,13 +440,17 @@ def test_break_it_once_unregistered_source_rolls_back(db, capsys, monkeypatch):
     assert _state(db) == before
 
 
-# ── hasps: only after #599 ──────────────────────────────────────────────────
+# ── hasps: deferred until #599 AND #600 ─────────────────────────────────────
+
+HASP_SALES = ['IV6700203-5', 'IV6701146-6', 'IV6702591-3', 'IV6702875-3', 'IV6702875-4',
+              'IV6801764-11', 'IV6802085-1', 'IV6802850-5']
+
 
 def test_hasps_refused_while_the_map_reads_kr_as_tua(db, capsys):
     before = _state(db)
     assert _run(db, HASP_ARG) == 2
     out = capsys.readouterr().out
-    assert 'REFUSED' in out and '#599' in out, out
+    assert 'REFUSED' in out and '#599' in out and '#600' in out, out
     assert _state(db) == before
 
 
@@ -438,6 +459,27 @@ def test_hasps_refused_even_mixed_with_sandpapers(db, capsys):
     assert _run(db, SANDPAPER_ARG + ',' + HASP_ARG) == 2
     assert '#599' in capsys.readouterr().out
     assert _state(db) == before
+
+
+def test_gate_b_600_the_map_alone_is_not_enough(db599, capsys):
+    """#599 landed, #600 not yet: the 8 sales still say ตัว. Refused, naming each."""
+    before = _state(db599)
+    assert _run(db599, HASP_ARG) == 2
+    out = capsys.readouterr().out
+    assert 'needs #600 first' in out and 'needs #599' not in out, out
+    assert all(doc in out for doc in HASP_SALES), out
+    assert _state(db599) == before
+
+
+def test_gate_a_599_relabelled_rows_alone_are_not_enough(empty_db, empty_db_conn, capsys):
+    """Rows relabelled but the map still reads กร as ตัว: the next import would
+    put ตัว back. Refused on #599 only."""
+    path = _make(empty_db, empty_db_conn, '600-without-599')
+    before = _state(path)
+    assert _run(path, HASP_ARG) == 2
+    out = capsys.readouterr().out
+    assert 'needs #599 first' in out and 'needs #600' not in out, out
+    assert _state(path) == before
 
 
 def _assert_rebased_hasps(path):
@@ -456,65 +498,69 @@ def _assert_rebased_hasps(path):
                     pid)[0] == 0, "no bill may still say ตัว: that word is now a single hasp"
 
 
-def test_hasps_rebase_after_599(db599):
-    assert _run(db599, HASP_ARG) == 0
-    _assert_rebased_hasps(db599)
-    legs = _legs(db599, 1187)
+def test_hasps_rebase_after_599_and_600(db600):
+    labels = _state(db600)[6]
+    assert _run(db600, HASP_ARG) == 0
+    _assert_rebased_hasps(db600)
+    legs = _legs(db600, 1187)
     assert len(legs) == 8, legs
     assert legs['IV6702591-3'] == -576 and legs['RR6700379'] == 576, "4 gross = 576 hasps"
+    assert _state(db600)[6] == labels, "this script writes no bill: relabelling is #600's"
 
 
-def test_hasp_bills_are_relabelled_through_the_declared_path(db599):
-    assert _run(db599, HASP_ARG) == 0
-    rows = _all(db599, "SELECT unit, change_source, change_actor FROM sales_transactions"
-                       " WHERE product_id IN (1187, 1188)")
-    assert len(rows) == 8 and set(rows) == {('กุรุส', 'manual', 'test-operator')}, rows
-    audits = _all(db599, "SELECT changed_fields FROM audit_log WHERE table_name='sales_transactions'"
-                         " AND action='UPDATE' AND user='test-operator'")
-    assert len(audits) == 8 and all('กุรุส' in a[0] for a in audits), audits
-    assert _all(db599, "SELECT DISTINCT unit FROM purchase_transactions WHERE product_id IN (1187,1188)") \
-        == [('กร',)], "purchases already read a gross spelling; not touched"
-
-
-def test_hasp_cogs_unchanged(db599):
-    before = {pid: _cogs(db599, pid) for pid in HASPS}
+def test_hasp_cogs_unchanged(db600):
+    before = {pid: _cogs(db600, pid) for pid in HASPS}
     assert all(before.values())
-    assert _run(db599, HASP_ARG) == 0
+    assert _run(db600, HASP_ARG) == 0
     for pid in HASPS:
-        assert _cogs(db599, pid) == pytest.approx(before[pid], abs=0.005), pid
+        assert _cogs(db600, pid) == pytest.approx(before[pid], abs=0.005), pid
 
 
-def test_hasp_repeat_customer_answer_unchanged(db599):
-    """Before, a gross was asked as 'ตัว'. After, the same bill reads 'กุรุส'."""
-    before = {pid: _answers(db599, pid) for pid in HASPS}
-    assert _run(db599, HASP_ARG) == 0
-    after = {pid: _answers(db599, pid) for pid in HASPS}
+def test_hasp_repeat_customer_answer_unchanged(db600):
+    before = {pid: _answers(db600, pid) for pid in HASPS}
+    assert _run(db600, HASP_ARG) == 0
+    after = {pid: _answers(db600, pid) for pid in HASPS}
     assert sum(len(v) for v in before.values()) == 7, before
+    assert sum(b == 'last_paid' for v in before.values() for b, _p in v.values()) == 6, before
     assert after == before
 
 
-@pytest.mark.parametrize('order', ['599-first', '600-first'])
-def test_all_six_after_599_and_600(empty_db, empty_db_conn, order):
+@pytest.mark.parametrize('order,hasps_ok', [('603-first', False), ('599-first', False),
+                                            ('600-first', True)])
+def test_sandpapers_in_every_order_hasps_only_after_600(empty_db, empty_db_conn, order, hasps_ok):
     path = _make(empty_db, empty_db_conn, order)
-    assert _run(path, SANDPAPER_ARG + ',' + HASP_ARG) == 0
+    assert _run(path, SANDPAPER_ARG + ',' + HASP_ARG) == (0 if hasps_ok else 2)
+    assert _run(path, SANDPAPER_ARG) == (2 if hasps_ok else 0), "sandpapers: done above, or now"
     _assert_rebased_sandpapers(path)
-    _assert_rebased_hasps(path)
+    if hasps_ok:
+        _assert_rebased_hasps(path)
 
 
-def test_sandpapers_first_then_hasps_after_599(db):
-    """The runbook's order: sandpapers now, #599 lands (its migration upserts
-    กุรุส from the live กร row), then the hasps."""
-    assert _run(db, SANDPAPER_ARG) == 0
-    c = sqlite3.connect(db)
+def _simulate_599_and_600(path):
+    """#599: the map reads กร as กุรุส and a กุรุส row copies each กร row's LIVE ratio
+    (an upsert). #600: the hasp and sandpaper rows Express says were กร read กุรุส,
+    through the mig-173 declared path. Labels only: no quantity, no ledger."""
+    c = sqlite3.connect(path)
     c.execute("UPDATE unit_map SET word='กุรุส' WHERE book='BSN5657' AND spelling='กร'")
     c.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio)"
-              " SELECT product_id, 'กุรุส', ratio FROM unit_conversions WHERE bsn_unit='กร'"
+              " SELECT product_id, 'กุรุส', ratio FROM unit_conversions WHERE bsn_unit='กร' AND true"
               " ON CONFLICT(product_id, bsn_unit) DO UPDATE SET ratio=excluded.ratio")
+    for t, old in (('sales_transactions', 'ตัว'), ('purchase_transactions', 'กร')):
+        c.execute("UPDATE %s SET unit='กุรุส', change_source='manual', change_actor='sim-600',"
+                  " change_token='sim600-' || id, change_reason='จำลอง #600 ตามบัตรสต็อก Express'"
+                  " WHERE unit=? AND product_id IN (1047,1048,1049,1052,1187,1188)" % t, (old,))
     c.commit()
     c.close()
+
+
+def test_runbook_order_sandpapers_now_hasps_after_599_and_600(db):
+    assert _run(db, SANDPAPER_ARG) == 0
+    _simulate_599_and_600(db)
     assert _run(db, HASP_ARG) == 0
     _assert_rebased_sandpapers(db)
     _assert_rebased_hasps(db)
+    for pid in SANDPAPERS + HASPS:
+        assert _stock(db, pid) == 0
 
 
 # ── the NEXT import: the stored unit must be what the importer writes ───────
@@ -542,30 +588,28 @@ def _stock(path, pid):
     return _one(path, "SELECT quantity FROM stock_levels WHERE product_id=?", pid)[0]
 
 
-def test_reimport_after_the_hasp_rebase_is_a_no_op(db599):
-    assert _run(db599, HASP_ARG) == 0
-    legs = {pid: _legs(db599, pid) for pid in HASPS}
+def test_reimport_after_the_hasp_rebase_is_a_no_op(db600):
+    assert _run(db600, HASP_ARG) == 0
+    legs = {pid: _legs(db600, pid) for pid in HASPS}
     n, stats = _reimport_sales(HASPS)
     assert n == 8 and stats['unchanged'] == 8 and stats['overwritten'] == 0, stats
     for pid in HASPS:
-        assert _stock(db599, pid) == 0 and _legs(db599, pid) == legs[pid]
+        assert _stock(db600, pid) == 0 and _legs(db600, pid) == legs[pid]
 
 
-def test_why_the_hasps_wait_for_599(db, capsys):
-    """The harm the map gate prevents, reproduced: gate deleted AND the relabel
-    word hard-coded to กุรุส (the tempting shortcut). The run itself is
-    consistent, and the very next import undoes it."""
-    src = _src()
-    head, sep, tail = src.partition("def _relabel(")
-    tail = tail.replace("    word = bsn_units.translate('กร', BOOK, conn=conn)\n", "    word = GROSS\n", 1)
-    mutant = (head + sep + tail).replace("if word != GROSS:", "if False:")
-    assert mutant.count("if False:") == 1 and mutant.count("    word = GROSS\n") == 1
-    assert _run(db, HASP_ARG, mod=_load(mutant)) == 0
-    assert _stock(db, 1187) == 0 and _stock(db, 1188) == 0, "control: consistent right after"
+def test_why_the_hasps_wait_for_599(empty_db, empty_db_conn, capsys):
+    """The harm gate (a) prevents, reproduced: rows already relabelled กุรุส but the
+    map still reads กร as ตัว. With the gate deleted the run itself is consistent,
+    and the very next import puts ตัว back on all 8 lines."""
+    path = _make(empty_db, empty_db_conn, '600-without-599')
+    mutant = _src().replace("if word != GROSS:", "if False:")
+    assert mutant.count("if False:") == 1
+    assert _run(path, HASP_ARG, mod=_load(mutant)) == 0
+    assert _stock(path, 1187) == 0 and _stock(path, 1188) == 0, "control: consistent right after"
     n, stats = _reimport_sales(HASPS)
     assert n == 8 and stats['overwritten'] == 8, stats
     # every gross sold now counts as one hasp; the purchases still count 144
-    assert _stock(db, 1187) == 7 * 144 - 7 and _stock(db, 1188) == 4 * 144 - 4
+    assert _stock(path, 1187) == 7 * 144 - 7 and _stock(path, 1188) == 4 * 144 - 4
 
 
 def test_reimport_of_sandpapers_on_either_side_of_599(db):
@@ -597,12 +641,12 @@ def test_everything_else_is_untouched(db):
     assert any(r[0] == 1187 for r in keep(after)[0]), "control: the hasps are in the comparison"
 
 
-def test_refuses_to_convert_twice(db599):
+def test_refuses_to_convert_twice(db600):
     for pids in (SANDPAPER_ARG, HASP_ARG):
-        assert _run(db599, pids) == 0
-        once = _state(db599)
-        assert _run(db599, pids) == 2, "the engine's own unit_type guard cannot see a ตัว->ตัว rerun"
-        assert _state(db599) == once
+        assert _run(db600, pids) == 0
+        once = _state(db600)
+        assert _run(db600, pids) == 2, "the engine's own unit_type guard cannot see a ตัว->ตัว rerun"
+        assert _state(db600) == once
 
 
 def test_pids_are_required_and_limited_to_the_plan(db, capsys):
@@ -671,6 +715,17 @@ def _drift(path, sql):
 #  not assumed: they name what stands behind each guard, so a guard whose
 #  backstop disappears goes red. rc 0 = the guard is the only defence against
 #  that drift, and the run commits without it.
+# #599's and #600's writes, as drift on the 603-first fixture
+MAP_599_SQL = (
+    "UPDATE unit_map SET word='กุรุส' WHERE book='BSN5657' AND spelling='กร';"
+    " INSERT INTO unit_conversions (product_id, bsn_unit, ratio) SELECT product_id, 'กุรุส', ratio"
+    " FROM unit_conversions WHERE bsn_unit='กร' AND true ON CONFLICT(product_id, bsn_unit) DO NOTHING;")
+RELABEL_ROWS_SQL = (
+    "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (1187,'กุรุส',1.0),(1188,'กุรุส',1.0);"
+    " UPDATE sales_transactions SET unit='กุรุส', change_source='manual', change_actor='sim-600',"
+    " change_token='sim600-' || id, change_reason='จำลอง #600 ตามบัตรสต็อก Express'"
+    " WHERE product_id IN (1187,1188) AND unit='ตัว';")
+
 GUARDS = [
     ('unit_type', SANDPAPER_ARG, "UPDATE products SET unit_type='แผ่น' WHERE id=1048",
      "unit_type is 'แผ่น'", ("if unit_type != OLD_UNIT:", "if False:"), 0, 'COMMITTED'),
@@ -705,9 +760,12 @@ GUARDS = [
     ('foreign', SANDPAPER_ARG, "INSERT INTO promotions (product_id, promo_name, promo_type,"
      " discount_value, date_start, is_active) VALUES (1052, 'ทดสอบ', 'percent', 10, '2026-01-01', 1)",
      'promotions', ("if n and table not in HANDLED:", "if False:"), 0, 'COMMITTED'),
-    # backstop: the relabel writes the map's own word (ตัว before #599), a no-op
-    # the invariants catch. test_why_the_hasps_wait_for_599 shows the harm itself.
-    ('map_599', HASP_ARG, "SELECT 1", '#599', ("if word != GROSS:", "if False:"),
+    # (a) rows relabelled, map not: the run itself is consistent without the gate;
+    # the harm lands on the NEXT import (test_why_the_hasps_wait_for_599)
+    ('map_599', HASP_ARG, RELABEL_ROWS_SQL, 'needs #599 first', ("if word != GROSS:", "if False:"),
+     0, 'COMMITTED'),
+    # (b) map updated, rows not: backstop = the invariants (bills post one per gross)
+    ('rows_600', HASP_ARG, MAP_599_SQL, 'needs #600 first', ("if still:", "if False:"),
      1, 'still say ตัว, which now means ONE piece'),
 ]
 
@@ -758,10 +816,9 @@ def test_plan_base_must_be_base_over_144_rounded_up(db, capsys):
 # ── invariants: a wrong conversion rolls back ───────────────────────────────
 
 INVARIANT_MUTATIONS = [
-    # the hasp relabel is the whole same-word story: without it the 8 hasp
-    # sales post as single pieces
-    ('relabel', ("            _relabel(conn, pid, a.operator)\n", "            pass\n"),
-     HASP_ARG, 'posted'),
+    # the base word's rename is what lets the unchanged engine take ตัว -> ตัว
+    ('rename_base', ("            conn.execute(\"UPDATE products SET unit_type=? WHERE id=?\", (GROSS, pid))\n",
+                     "            pass\n"), HASP_ARG, 'refusing to convert twice'),
     # 1052's orphan ADJUST left in the old base
     ('extra_scale', ("        _rescale_extra(conn, pid)\n", "        pass\n"), SANDPAPER_ARG,
      'non-bill ledger row'),
@@ -775,15 +832,15 @@ INVARIANT_MUTATIONS = [
 
 @pytest.mark.parametrize('iid,mutation,pids,fragment', INVARIANT_MUTATIONS,
                          ids=[m[0] for m in INVARIANT_MUTATIONS])
-def test_break_it_once_invariants_catch_a_wrong_conversion(db599, capsys, iid, mutation, pids, fragment):
+def test_break_it_once_invariants_catch_a_wrong_conversion(db600, capsys, iid, mutation, pids, fragment):
     old, new = mutation
     src = _src()
     assert src.count(old) == 1, "mutation target must exist exactly once: %r" % old
     mutant = src.replace(old, new)
     assert mutant != src
-    before = _state(db599)
-    rc = _run(db599, pids, mod=_load(mutant))
+    before = _state(db600)
+    rc = _run(db600, pids, mod=_load(mutant))
     out = capsys.readouterr().out
     assert rc in (1, 2) and fragment in out, out
     assert ('ROLLED BACK' in out) or ('REFUSED' in out), out
-    assert _state(db599) == before
+    assert _state(db600) == before
