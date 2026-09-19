@@ -42,6 +42,9 @@ class Actor:
 
 _FIELDS = ('who', 'source', 'reason')
 
+# The words every #590 refusal carries: migration 190's RAISE and ActorMissing.
+REFUSAL_MARK = 'ต้องระบุตัวผู้แก้ต้นทุน'
+
 # Each frame is (is_root, Actor). A tuple, so a reset token restores it exactly.
 _frames = contextvars.ContextVar('sendy_actor_frames', default=())
 _fallback = None
@@ -115,7 +118,7 @@ class ActorMissing(RuntimeError):
     def __init__(self, operation):
         self.operation = operation
         super().__init__(
-            f'ต้องระบุตัวผู้แก้ต้นทุน (#590) ก่อน {operation}: เขียนผ่านหน้าเว็บ '
+            f'{REFUSAL_MARK} (#590) ก่อน {operation}: เขียนผ่านหน้าเว็บ '
             f'หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)')
 
 
