@@ -31,6 +31,19 @@ from models import system_alerts
 D = datetime.date(2026, 1, 15)
 
 
+@pytest.fixture(autouse=True)
+def _seed_unit_map(empty_db_conn):
+    """`empty_db_conn` is a SCHEMA-only clone (#596: unit_map exists, 0
+    rows) — every `line()` fixture below defaults to Express's raw code
+    'ตว' specifically so the drift comparison has to run normalize_unit()
+    to agree with `put_sales`/`put_purchase`'s stored 'ตัว' (see `line()`'s
+    own docstring). Force the one row this whole file needs rather than
+    inherit it."""
+    empty_db_conn.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว')")
+    empty_db_conn.commit()
+
+
 def hdr(doc, *, rectyp='3', date=D, flgvat='1', party=None, discamt=0.0,
         docstat='N', sales=True):
     """An ARTRN/APTRN header row. ⚠ RECTYP / FLGVAT / DOCSTAT are STRINGS here

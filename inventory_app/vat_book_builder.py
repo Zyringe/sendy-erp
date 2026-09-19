@@ -64,19 +64,32 @@ def _stmas_cost(r):
     return val if val > 0 else 0.0
 
 
-def seed_products_from_stmas(conn, stmas_rows):
+def seed_products_from_stmas(conn, stmas_rows, unit_map=None):
     """Create one product + one catch-all mapping row per STMAS code.
     Returns {stkcod: product_id}. Blank STKDES falls back to the code itself
     (product_name is NOT NULL); duplicate STKCOD keeps the first row.
     cost_price := STMAS.UNITPR (plan §4.2) — the VAT book is a mirror of
-    Express, so Express's own valuation is the truth everywhere it shows."""
+    Express, so Express's own valuation is the truth everywhere it shows.
+
+    `unit_map`: an already-loaded {spelling: word} dict, per #596. `conn`
+    here is always a FRESH/isolated build-target DB (the subprocess's own
+    DATA_DIR-scoped db, or a throwaway test schema) — never the one main db
+    the unit_map TABLE actually lives in and is seeded in, so looking the
+    unit up on `conn` would silently find nothing. `build()` loads the real
+    map once from the main db and passes it in; `None` (a direct call with
+    no better source, e.g. a unit test) falls back to bsn_units' own default
+    connection instead of `conn`."""
     code_to_pid = {}
     for r in stmas_rows:
         code = str(r.get('STKCOD') or '').strip()
         if not code or code in code_to_pid:
             continue
         name = str(r.get('STKDES') or '').strip() or code
-        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip(), conn=conn) or 'ตัว'
+        raw_unit = str(r.get('QUCOD') or '').strip()
+        if unit_map is not None:
+            unit = unit_map.get(raw_unit, raw_unit) or 'ตัว'
+        else:
+            unit = bsn_units.normalize_unit(raw_unit) or 'ตัว'
         cost = _stmas_cost(r)
         cur = conn.execute(
             "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)",
@@ -265,13 +278,36 @@ def _require_snapshots_ok(per_type):
                 f'{label}: สร้างไม่สำเร็จ — ไม่ publish สมุด VAT รอบนี้ ({err})')
 
 
-def build(source_dir, snapshot_date=None):
+def _load_main_unit_map(main_db_path):
+    """Read #596's unit_map from the REAL main app db — read-only, and on a
+    connection that has nothing to do with `database.get_connection()`
+    (which this subprocess has just pointed at the fresh build-target db via
+    DATA_DIR). None in, None out: callers with no main_db_path (a direct
+    unit test) get bsn_units' own fallback instead."""
+    if not main_db_path:
+        return None
+    import sqlite3
+    conn = sqlite3.connect(f'file:{main_db_path}?mode=ro', uri=True)
+    try:
+        return bsn_units.load_unit_map(conn=conn)
+    finally:
+        conn.close()
+
+
+def build(source_dir, snapshot_date=None, main_db_path=None):
     """Full build at config.DATABASE_PATH (guarded). Returns a summary dict.
 
     snapshot_date: the as-of date for this book's outstanding snapshots, decided
     ONCE by the upload request and passed down, so both books carry the same date.
     Letting it default here would stamp the VAT book from this subprocess's own
     clock — it starts minutes after the request and can cross midnight.
+
+    main_db_path: the REAL main app db (the CLI's own `--result-db`, captured
+    by the route before this subprocess's DATA_DIR override took effect) —
+    the one place #596's unit_map table actually has its seeded rows. This
+    subprocess's own `database.get_connection()` points at a fresh
+    DATA_DIR-scoped build db instead, whose unit_map (if it has the table at
+    all) is empty (see seed_products_from_stmas's docstring).
     """
     db_path = _guard_subprocess_target()
 
@@ -286,10 +322,12 @@ def build(source_dir, snapshot_date=None):
     isvat = eds.open_table(source_dir, 'ISVAT')
     isinfo = eds.open_table(source_dir, 'ISINFO')
 
+    unit_map = _load_main_unit_map(main_db_path)
+
     conn = database.get_connection()
     try:
         seed_companies(conn)
-        code_to_pid = seed_products_from_stmas(conn, stmas)
+        code_to_pid = seed_products_from_stmas(conn, stmas, unit_map=unit_map)
         per_type = import_router.commit_express_dbf(
             source_dir, db_path=db_path, since_days=None,
             snapshot_date=snapshot_date)
@@ -429,7 +467,8 @@ if __name__ == '__main__':
             # rebuilds must serialize the entire lifecycle, not just the swap).
             if args.publish_to:
                 lock_fd = acquire_publish_lock(args.publish_to)
-            summary = build(args.source, snapshot_date=args.snapshot_date)
+            summary = build(args.source, snapshot_date=args.snapshot_date,
+                            main_db_path=args.result_db)
             if args.publish_to:
                 publish(summary['db_path'], args.publish_to)
             outcome = {'ok': True, 'counts': summary['counts'],
