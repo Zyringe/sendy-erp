@@ -57,7 +57,8 @@ def _m_customer(**over):
                 'credit_days': None, 'lat': None, 'lng': None,
                 'salesperson': None}
     customer.update(over)
-    return _render('m/customer.html', path='/m/customer/x',
+    return _render('m/customer.html', path='/m/customer/code/C001',
+                   customer_code=customer['code'],
                    customer_name=customer['name'], customer=customer,
                    region=None, unpaid=[], unpaid_total=0,
                    unpaid_snapshot_date=None, last_sales=[], stats={})

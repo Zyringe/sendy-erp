@@ -156,7 +156,7 @@ FRESH = date.today().isoformat()
 SURFACES = [
     ('express AR drill-down', '/express/ar/customer/' + CODE, 'ZZBAN-IV'),
     ('customer summary',      '/customer/code/' + CODE,       'ZZBAN-IV'),
-    ('mobile customer',       '/m/customer/' + NAME,          'ZZBAN-IV'),
+    ('mobile customer',       '/m/customer/code/' + CODE,     'ZZBAN-IV'),
     ('call card',             '/call/' + CODE,                'ค้างชำระทั้งหมด'),
 ]
 

@@ -255,7 +255,7 @@ def test_mobile_stats_and_doc_list_agree_on_a_giveaway_document(tmp_db):
     conn.close()
 
     c = _client(tmp_db)
-    html = c.get(f'/m/customer/{quote(TEST_NAME)}').data.decode()
+    html = c.get(f'/m/customer/code/{quote(TEST_CODE)}').data.decode()
     assert 'IV49318' not in html
     assert 'IV49319' in html
     idx = html.find('เอกสารทั้งหมด')
@@ -270,7 +270,7 @@ def test_mobile_customer_documents_grouped_by_doc_base(cust):
     _line(conn, doc_base='IV49309', suffix=2, pid=pid, date_iso='2026-01-01',
           qty=1, unit_price=50, net=50, vat_type=0)
     import models
-    docs = models.get_customer_documents('customer', TEST_NAME, limit=5)
+    docs = models.get_customer_documents('customer_code', TEST_CODE, limit=5)
     ours = [d for d in docs if d['doc_base'] == 'IV49309']
     assert len(ours) == 1
     assert ours[0]['item_count'] == 2
@@ -353,6 +353,6 @@ def test_mobile_customer_page_lists_documents_not_lines(tmp_db):
     conn.close()
 
     c = _client(tmp_db)
-    html = c.get(f'/m/customer/{quote(TEST_NAME)}').data.decode()
+    html = c.get(f'/m/customer/code/{quote(TEST_CODE)}').data.decode()
     assert _doc_links(html, 'IV49313') == 1
     assert '2 รายการ' in html

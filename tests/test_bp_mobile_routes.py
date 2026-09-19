@@ -8,9 +8,7 @@ files. The same routes would render for staff too.
 Uses tmp_db so route + models + templates execute against a live-DB
 clone and never touch the real DB. Covers 3 of the 4 mobile endpoints:
 stock search page, stock search JSON API, and the region-grouped sales-
-trip view. customer_detail (path-arg with Thai name) is left out — the
-3-endpoint target is met and the URL-encoding is brittle for a smoke
-test.
+trip view. customer_detail is covered by its issue-specific route tests.
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -137,7 +135,7 @@ def test_sales_trip_outstanding_still_excludes_hs_cash_sale(tmp_db):
 def _trip_due(html, customer_name):
     """The ฿ figure rendered on ONE customer's /m/sales-trip row, as a float.
 
-    Scoped to that customer's own `<a href="/m/customer/...">` block on
+    Scoped to that customer's own `<a href="/m/customer/code/...">` block on
     purpose: `trip-cust-due` and any given amount also appear elsewhere on the
     page (every other customer's row, the group banner), so a page-wide
     substring test answers a different question. Parses the number out rather
@@ -148,7 +146,7 @@ def _trip_due(html, customer_name):
     vacuously true.
     """
     import re
-    blocks = [b for b in html.split('<a href="/m/customer/')
+    blocks = [b for b in html.split('<a href="/m/customer/code/')
               if 'trip-cust-name">{}<'.format(customer_name) in b]
     assert len(blocks) == 1, (
         'control failed — expected exactly 1 /m/sales-trip row for {!r}, found {}. '
