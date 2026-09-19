@@ -193,3 +193,47 @@ def test_the_bootstrap_route_still_accepts_a_good_file(live, tmp_path, monkeypat
         "SELECT user, change_reason FROM audit_log WHERE table_name = 'database'"
         " AND row_key = 'bootstrap'").fetchall()
     assert stamp == [('bootstrap-token', 'system:bootstrap_upload_db')]
+
+
+# ── the VAT-book build runs as the person who uploaded ──────────────────────
+
+def test_the_vat_build_is_declared_as_the_uploader(monkeypatch):
+    """U5 → P2: the detached builder has no request, so the spawning request
+    passes its actor down (--uploader) and build() declares it."""
+    import import_router
+    import vat_book_builder as vb
+    seen = {}
+
+    def _cap(*a, **k):
+        seen['actor'] = actor.current()
+        raise RuntimeError('stop after the declaration was observed')
+    monkeypatch.setattr(vb, '_guard_subprocess_target', lambda: '/tmp/unused.db')
+    monkeypatch.setattr(database, 'init_db', lambda *a, **k: None)
+    monkeypatch.setattr(database, 'get_connection', lambda *a, **k: sqlite3.connect(':memory:'))
+    import express_dbf_source as eds
+    monkeypatch.setattr(eds, 'open_table', lambda *a, **k: [])
+    monkeypatch.setattr(vb, 'seed_companies', lambda conn: None)
+    monkeypatch.setattr(vb, '_use_main_unit_map', lambda *a, **k: None)
+    monkeypatch.setattr(vb, 'seed_products_from_stmas', lambda conn, rows: {})
+    monkeypatch.setattr(import_router, 'commit_express_dbf', _cap)
+    with pytest.raises(RuntimeError, match='declaration was observed'):
+        vb.build('/nonexistent', uploader='admin')
+    got = seen['actor']
+    assert (got.who, got.source, got.reason) == ('admin', 'import', 'system:vat-book-build')
+
+
+def test_the_upload_route_passes_its_actor_to_the_builder(tmp_db, monkeypatch):
+    from blueprints import bsn
+    argv = {}
+
+    class _Proc:
+        def __init__(self, args, **kw):
+            argv['args'] = args
+
+        def poll(self):
+            return 0
+    monkeypatch.setattr(bsn.subprocess, 'Popen', _Proc)
+    with actor.acting_as(kind='ui', who='admin', source='manual', detail='bsn.express_dbf_upload'):
+        bsn._spawn_vat_rebuild('/nonexistent/dataset', 1, '2026-08-17')
+    args = argv['args']
+    assert args[args.index('--uploader') + 1] == 'admin'

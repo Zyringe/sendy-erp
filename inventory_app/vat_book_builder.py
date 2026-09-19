@@ -34,6 +34,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 
+import actor
 import bsn_units
 import express_registers
 import import_router
@@ -298,7 +299,22 @@ def _use_main_unit_map(conn, main_db_path):
     conn.commit()
 
 
-def build(source_dir, snapshot_date=None, main_db_path=None):
+def build(source_dir, snapshot_date=None, main_db_path=None, uploader=None):
+    """Full build, attributed to the person whose upload started it (#590).
+
+    `uploader` comes from the spawning request (--uploader). The build rebuilds
+    WACC through the real importers, so every cost row it writes carries
+    system/vat-book-build and that person. With no uploader nothing is declared,
+    and the importers refuse before their first write, as for any unsigned run.
+    """
+    if not uploader:
+        return _build(source_dir, snapshot_date, main_db_path)
+    with actor.acting_as(kind='system', who=uploader, source='import',
+                         detail='vat-book-build'):
+        return _build(source_dir, snapshot_date, main_db_path)
+
+
+def _build(source_dir, snapshot_date=None, main_db_path=None):
     """Full build at config.DATABASE_PATH (guarded). Returns a summary dict.
 
     snapshot_date: the as-of date for this book's outstanding snapshots, decided
@@ -460,6 +476,9 @@ if __name__ == '__main__':
     p.add_argument('--snapshot-date',
                    help='as-of date (ISO) for this book\'s outstanding snapshots, '
                         'decided by the upload request so both books agree')
+    p.add_argument('--uploader',
+                   help='who uploaded the dataset; every cost row the build '
+                        'writes is attributed to them (#590)')
     args = p.parse_args()
     lock_fd = None
     try:
@@ -469,7 +488,7 @@ if __name__ == '__main__':
             if args.publish_to:
                 lock_fd = acquire_publish_lock(args.publish_to)
             summary = build(args.source, snapshot_date=args.snapshot_date,
-                            main_db_path=args.result_db)
+                            main_db_path=args.result_db, uploader=args.uploader)
             if args.publish_to:
                 publish(summary['db_path'], args.publish_to)
             outcome = {'ok': True, 'counts': summary['counts'],
