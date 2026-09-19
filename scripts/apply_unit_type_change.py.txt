@@ -1,3 +1,17 @@
+⛔ RETIRED 2026-09-19 — DO NOT RUN. Renamed to .py.txt so it is not runnable
+and does not look like an ordinary utility.
+
+It is wrong in two ways today:
+  * it hand-writes `stock_levels`, which DOUBLE-COUNTS since migration 080 added
+    the `after_transaction_update` trigger (measured: stock 288 instead of 24);
+  * it converts the stock ledger but NOT the prices, leaving `base_sell_price`
+    at the pack figure against a per-piece `unit_type`.
+
+The working replacements, both of which replay through the app's own engine
+instead of hand-writing anything:
+  * scripts/2026_08_17_bolt_dozen_to_piece.py   (โหล -> ตัว, no-history products)
+  * scripts/2026_09_19_gross_to_piece.py        (กุรุส -> piece, with history)
+
 """DEPRECATED: one-off from 2026-05-19. Kept for audit trail. Do not re-run;
 if a similar fix is needed, write a new dated script.
 
