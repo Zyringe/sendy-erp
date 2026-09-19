@@ -141,6 +141,10 @@ CONV = {
 
 @pytest.mark.parametrize('verb', sorted(CONV))
 def test_the_conversion_log_refuses_every_unsigned_verb(fresh, verb):
+    """⚠ An unsigned INSERT is refused TWICE over: by the insert guard, and, if
+    that were gone, by the update guard the stamp trigger fires. So deleting the
+    insert guard alone leaves this green (break-it-once G3); the run deletes
+    both (G3b) to prove the refusal is real."""
     _refused(_unsigned(fresh), CONV[verb])
     c = _signed(fresh)
     c.execute(CONV[verb])                                            # control
@@ -157,12 +161,14 @@ def test_the_conversion_log_is_stamped_by_the_database(fresh):
 
 def test_a_caller_cannot_supply_or_rewrite_the_stamp(fresh):
     c = _signed(fresh)
-    with pytest.raises(sqlite3.IntegrityError, match='written_by'):
+    # Two different guards, each named by its own message: the supply guard must
+    # be what refuses this, not the rewrite guard catching it one step later.
+    with pytest.raises(sqlite3.IntegrityError, match='do not supply it'):
         c.execute("INSERT INTO conversion_cost_log (output_product_id, event_date, output_qty,"
                   " total_input_cost, unit_cost, written_by) VALUES (1, '2026-09-03', 1, 1, 1, 'me')")
     c.rollback()
     cur = c.execute(CONV['INSERT'])
-    with pytest.raises(sqlite3.IntegrityError, match='written_by'):
+    with pytest.raises(sqlite3.IntegrityError, match='never rewritten'):
         c.execute("UPDATE conversion_cost_log SET written_by = 'me' WHERE id = ?", (cur.lastrowid,))
 
 

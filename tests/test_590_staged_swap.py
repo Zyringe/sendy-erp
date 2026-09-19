@@ -132,15 +132,40 @@ def _client():
     return c
 
 
+def _flashes(c):
+    """The refusal branch is the only one that flashes these words. A test that
+    asserts only 'the live DB survived' also passes when the route returns early
+    for an unrelated reason — which is exactly how the first version of the full
+    upload test went vacuous (it posted the wrong file field)."""
+    with c.session_transaction() as s:
+        return ' '.join(m for _, m in s.get('_flashes', []))
+
+
 def test_the_full_upload_route_refuses_the_file(live, tmp_path):
     bad = _stamped_but_unguarded(live, tmp_path)
     _marker(live)
+    c = _client()
     with open(bad, 'rb') as f:
-        resp = _client().post('/admin/upload-db', data={
-            'mode': 'full', 'confirm': 'yes', 'db': (io.BytesIO(f.read()), 'x.db')},
+        resp = c.post('/admin/upload-db', data={
+            'mode': 'full', 'confirm': 'yes', 'db_file': (io.BytesIO(f.read()), 'x.db')},
             content_type='multipart/form-data')
     assert resp.status_code == 302
+    assert 'StagedDbRefused' in _flashes(c) or 'ไม่อัปโหลด' in _flashes(c), _flashes(c)
     assert _marker_survived(live)
+
+
+def test_the_full_upload_route_still_swaps_a_good_file(live, tmp_path):
+    """Control: the same POST with a good file really replaces the live DB."""
+    good = _pre_590_file(live, tmp_path)
+    _marker(live)
+    c = _client()
+    with open(good, 'rb') as f:
+        resp = c.post('/admin/upload-db', data={
+            'mode': 'full', 'confirm': 'yes', 'db_file': (io.BytesIO(f.read()), 'x.db')},
+            content_type='multipart/form-data')
+    assert resp.status_code == 302
+    assert not _marker_survived(live), _flashes(c)
+    assert _refuses_unsigned_cost(live)
 
 
 def test_the_upload_confirm_route_refuses_the_held_file(live, tmp_path):
@@ -152,6 +177,7 @@ def test_the_upload_confirm_route_refuses_the_held_file(live, tmp_path):
         s['pending_upload_path'] = held
     resp = c.post('/admin/upload-db/confirm', data={'action': 'apply'})
     assert resp.status_code == 302
+    assert 'ไม่อัปโหลด' in _flashes(c), _flashes(c)
     assert _marker_survived(live)
 
 
@@ -160,8 +186,10 @@ def test_the_restore_route_refuses_the_backup(live, tmp_path):
     snap = db_backup.create_backup('unified', db_path=_stamped_but_unguarded(live, tmp_path),
                                    backup_dir=bdir)
     _marker(live)
-    resp = _client().post('/admin/backups/restore', data={'name': snap['name'], 'confirm': 'yes'})
+    c = _client()
+    resp = c.post('/admin/backups/restore', data={'name': snap['name'], 'confirm': 'yes'})
     assert resp.status_code == 302
+    assert 'products' in _flashes(c) and 'กู้คืนไม่สำเร็จ' in _flashes(c), _flashes(c)
     assert _marker_survived(live)
 
 
