@@ -66,6 +66,7 @@ _DUMMY_DOC_BASES = ('IV6900401', 'IV6900402', 'IV6900403')
 _UNIT_REBASE_SOURCES = (
     'script:2026_09_19_gross_to_piece',
     'script:2026_09_19_rebase_689_767',
+    'script:2026_09_20_rebase_gross_603',
 )
 
 # ⭐ FOUR questions are asked of `ar_writeoffs` in this repo, and they do NOT

@@ -147,6 +147,8 @@ def _seed(conn, order='603-first'):
             "INSERT INTO products (id, product_name, unit_type, cost_price, base_sell_price,"
             " opening_cost, low_stock_threshold, is_active) VALUES (?,?,'ตัว',?,?,0.0,10,1)",
             (pid, name, cost, base))
+        conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
+                     " VALUES (?, ?, ?, '')", (code, name, pid))
         units = {'กร': 1.0, 'ตัว': 1.0, **extra}
         if order != '603-first':
             units[gross] = 1.0            # #599 copies the กร row's ratio
@@ -515,6 +517,71 @@ def test_sandpapers_first_then_hasps_after_599(db):
     _assert_rebased_hasps(db)
 
 
+# ── the NEXT import: the stored unit must be what the importer writes ───────
+# erp-engineering-discipline: a rewrite of a column an importer also writes must
+# equal the importer's own output for the same raw input, or the next re-import
+# reads it as a changed line and replaces it. Driven through the REAL importer
+# (models.imports.import_weekly), fed the lines as the Express weekly file prints
+# them: unit code กร.
+
+CODES = {pid: code for pid, _n, _c, _b, _t, code, _e in PRODUCTS}
+
+
+def _reimport_sales(pids):
+    from models import imports
+    entries = [{'doc_no': doc, 'date_iso': date, 'product_code_raw': CODES[pid],
+                'product_name_raw': 'raw', 'party': cust, 'party_code': ccode, 'qty': qty,
+                'unit': 'กร', 'unit_price': price, 'vat_type': vat, 'discount': '',
+                'total': net, 'net': net}
+               for pid, date, doc, qty, price, net, vat, cust, ccode in SALES if pid in pids]
+    return len(entries), imports.import_weekly(entries, 'sales', 'reimport-603.txt',
+                                               apply_removals=False)
+
+
+def _stock(path, pid):
+    return _one(path, "SELECT quantity FROM stock_levels WHERE product_id=?", pid)[0]
+
+
+def test_reimport_after_the_hasp_rebase_is_a_no_op(db599):
+    assert _run(db599, HASP_ARG) == 0
+    legs = {pid: _legs(db599, pid) for pid in HASPS}
+    n, stats = _reimport_sales(HASPS)
+    assert n == 8 and stats['unchanged'] == 8 and stats['overwritten'] == 0, stats
+    for pid in HASPS:
+        assert _stock(db599, pid) == 0 and _legs(db599, pid) == legs[pid]
+
+
+def test_why_the_hasps_wait_for_599(db, capsys):
+    """The harm the map gate prevents, reproduced: with the gate deleted the run
+    itself is consistent, and the very next import undoes it."""
+    src = _src()
+    mutant = src.replace("if word != GROSS:", "if False:")
+    assert mutant != src
+    assert _run(db, HASP_ARG, mod=_load(mutant)) == 0
+    assert _stock(db, 1187) == 0 and _stock(db, 1188) == 0, "control: consistent right after"
+    n, stats = _reimport_sales(HASPS)
+    assert n == 8 and stats['overwritten'] == 8, stats
+    # every gross sold now counts as one hasp; the purchases still count 144
+    assert _stock(db, 1187) == 7 * 144 - 7 and _stock(db, 1188) == 4 * 144 - 4
+
+
+def test_reimport_of_sandpapers_on_either_side_of_599(db):
+    assert _run(db, SANDPAPER_ARG) == 0
+    n, stats = _reimport_sales(SANDPAPERS)
+    assert n == 18 and stats['unchanged'] == 18, stats
+    # #599 lands: กร now reads กุรุส, so the old ตัว lines are replaced — at the same 144
+    c = sqlite3.connect(db)
+    c.execute("UPDATE unit_map SET word='กุรุส' WHERE book='BSN5657' AND spelling='กร'")
+    c.commit()
+    c.close()
+    n, stats = _reimport_sales(SANDPAPERS)
+    assert stats['overwritten'] == 18, stats
+    for pid in SANDPAPERS:
+        assert _stock(db, pid) == 0
+        assert set(_all(db, "SELECT unit FROM sales_transactions WHERE product_id=?", pid)) == {('กุรุส',)}
+    assert set(v for k, v in _legs(db, 1047).items() if k.startswith('IV')) == {-144}
+
+
 # ── scope, modes, double runs ───────────────────────────────────────────────
 
 def test_everything_else_is_untouched(db):
@@ -587,41 +654,54 @@ def _drift(path, sql):
     c.close()
 
 
-# (id, pids, drift, refusal fragment, mutation that deletes the guard)
+# (id, pids, drift, refusal fragment, mutation that deletes the guard, rc with
+#  the guard off, what the guard-off run must print). The last two are MEASURED,
+#  not assumed: they name what stands behind each guard, so a guard whose
+#  backstop disappears goes red. rc 0 = the guard is the only defence against
+#  that drift, and the run commits without it.
 GUARDS = [
     ('unit_type', SANDPAPER_ARG, "UPDATE products SET unit_type='แผ่น' WHERE id=1048",
-     "unit_type is 'แผ่น'", ("if unit_type != OLD_UNIT:", "if False:")),
+     "unit_type is 'แผ่น'", ("if unit_type != OLD_UNIT:", "if False:"), 0, 'COMMITTED'),
+    # a second run of the hasps keeps unit_type ตัว: THIS is their double-run guard
     ('money', SANDPAPER_ARG, "UPDATE products SET base_sell_price=810 WHERE id=1047",
-     'cost/opening_cost/base', ("if money != plan['money']:", "if False:")),
+     'cost/opening_cost/base', ("if money != plan['money']:", "if False:"), 2, 'rounded UP'),
     ('stock', SANDPAPER_ARG, "INSERT INTO transactions (product_id, txn_type, quantity_change,"
      " unit_mode, note, created_at) VALUES (1049, 'ADJUST', 1, 'unit', 'นับจริง', '2026-09-01 00:00:00')",
-     'stock is 1', ("if stock != 0:", "if False:")),
+     'stock is 1', ("if stock != 0:", "if False:"), 2, 'non-bill ledger rows'),
     ('ratios', SANDPAPER_ARG, "UPDATE unit_conversions SET ratio=144 WHERE product_id=1047 AND bsn_unit='กร'",
-     'unit_conversions', ("if ratios != plan['units'] and ratios != with_gross:", "if False:")),
+     'unit_conversions', ("if ratios != plan['units'] and ratios != with_gross:", "if False:"),
+     0, 'COMMITTED'),
     ('tiers', SANDPAPER_ARG, "UPDATE product_price_tiers SET price=810 WHERE product_id=1048",
-     'tiers are', ("if tiers != plan['tiers']:", "if False:")),
+     'tiers are', ("if tiers != plan['tiers']:", "if False:"), 0, 'COMMITTED'),
+    ('opening', SANDPAPER_ARG, "DELETE FROM transactions WHERE product_id=1047 AND note='%s'"
+     % OPENING_NOTE, 'opening plug', ("if opening != plan['opening']:", "if False:"), 0, 'COMMITTED'),
     ('extra_ledger', SANDPAPER_ARG, "INSERT INTO transactions (product_id, txn_type, quantity_change,"
      " unit_mode, note, created_at) VALUES (1047, 'ADJUST', 0, 'unit', 'ปรับมือ', '2026-09-01 00:00:00')",
-     'non-bill ledger rows', ("if extra != plan['extra']:", "if False:")),
+     'non-bill ledger rows', ("if extra != plan['extra']:", "if False:"), 0, 'COMMITTED'),
     ('bills', SANDPAPER_ARG, "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id,"
      " qty, unit, unit_price, net, vat_type, synced_to_stock, customer) VALUES ('2026-09-10',"
      " 'IV6999999-1', 'IV6999999', 1049, 1, 'ตัว', 880, 880, 1, 1, 'x')",
-     'bills are', ("if bills != plan['bills'][table]:", "if False:")),
+     'bills are', ("if bills != plan['bills'][table]:", "if False:"),
+     1, 'opening recomputed to 144, expected 0'),
     ('bill_unit', SANDPAPER_ARG, "UPDATE sales_transactions SET unit='โหล', change_source='manual',"
      " change_actor='t', change_token='t603', change_reason='ทดสอบหน่วยที่ไม่ใช่กุรุส'"
      " WHERE doc_no='IV6802995-6'",
-     'not a gross spelling', ("if units - GROSS_SPELLINGS:", "if False:")),
+     'not a gross spelling', ("if units - GROSS_SPELLINGS:", "if False:"),
+     2, 'no unit_conversions row'),
     ('unsynced', SANDPAPER_ARG, "UPDATE sales_transactions SET synced_to_stock=0 WHERE doc_no='IV6802317-2'",
-     'unsynced', ("if n_unsynced:", "if False:")),
+     'unsynced', ("if n_unsynced:", "if False:"), 0, 'COMMITTED'),
     ('foreign', SANDPAPER_ARG, "INSERT INTO promotions (product_id, promo_name, promo_type,"
      " discount_value, date_start, is_active) VALUES (1052, 'ทดสอบ', 'percent', 10, '2026-01-01', 1)",
-     'promotions', ("if n and table not in HANDLED:", "if False:")),
-    ('map_599', HASP_ARG, "SELECT 1", '#599', ("if word != GROSS:", "if False:")),
+     'promotions', ("if n and table not in HANDLED:", "if False:"), 0, 'COMMITTED'),
+    # the run itself is consistent without it; the harm lands on the NEXT import
+    ('map_599', HASP_ARG, "SELECT 1", '#599', ("if word != GROSS:", "if False:"), 0, 'COMMITTED'),
 ]
 
 
-@pytest.mark.parametrize('gid,pids,drift,fragment,mutation', GUARDS, ids=[g[0] for g in GUARDS])
-def test_guard_refuses_before_any_write(db, capsys, gid, pids, drift, fragment, mutation):
+@pytest.mark.parametrize('gid,pids,drift,fragment,mutation,rc_off,backstop', GUARDS,
+                         ids=[g[0] for g in GUARDS])
+def test_guard_refuses_before_any_write(db, capsys, gid, pids, drift, fragment, mutation,
+                                        rc_off, backstop):
     _drift(db, drift)
     before = _state(db)
     assert _run(db, pids) == 2
@@ -630,21 +710,26 @@ def test_guard_refuses_before_any_write(db, capsys, gid, pids, drift, fragment, 
     assert _state(db) == before
 
 
-@pytest.mark.parametrize('gid,pids,drift,fragment,mutation', GUARDS, ids=[g[0] for g in GUARDS])
-def test_break_it_once_guard_is_load_bearing(db, capsys, gid, pids, drift, fragment, mutation):
-    """Delete the guard; the refusal naming it must disappear."""
+@pytest.mark.parametrize('gid,pids,drift,fragment,mutation,rc_off,backstop', GUARDS,
+                         ids=[g[0] for g in GUARDS])
+def test_break_it_once_guard_off_behaves_as_measured(db, capsys, gid, pids, drift, fragment,
+                                                      mutation, rc_off, backstop):
+    """Delete the guard. The run must COMPLETE (nothing swallowed) and end in the
+    measured outcome, so a mutant that dies early, or a backstop that goes
+    missing, turns this red — not merely "the guard's own text is gone"."""
     old, new = mutation
     src = _src()
     assert src.count(old) == 1, "mutation target must exist exactly once: %r" % old
     mutant = src.replace(old, new)
     assert mutant != src and mutant.count(old) == 0, "the mutation did not land"
     _drift(db, drift)
-    try:
-        _run(db, pids, mod=_load(mutant))
-        err = ''
-    except Exception as exc:        # a later step may trip over the drift instead
-        err = str(exc)
-    assert fragment not in capsys.readouterr().out + err, "guard %s is not load-bearing" % gid
+    before = _state(db)
+    rc = _run(db, pids, mod=_load(mutant))
+    out = capsys.readouterr().out
+    assert rc == rc_off, (rc, out)
+    assert fragment not in out and backstop in out, out
+    if rc_off:
+        assert _state(db) == before, "a refused or rolled-back run wrote something"
 
 
 def test_plan_base_must_be_base_over_144_rounded_up(db, capsys):
@@ -661,7 +746,7 @@ def test_plan_base_must_be_base_over_144_rounded_up(db, capsys):
 INVARIANT_MUTATIONS = [
     # the hasp relabel is the whole same-word story: without it the 8 hasp
     # sales post as single pieces
-    ('relabel', ("        _relabel(conn, pid, operator)\n", "        pass\n"),
+    ('relabel', ("            _relabel(conn, pid, a.operator)\n", "            pass\n"),
      HASP_ARG, 'posted'),
     # 1052's orphan ADJUST left in the old base
     ('extra_scale', ("        _rescale_extra(conn, pid)\n", "        pass\n"), SANDPAPER_ARG,
