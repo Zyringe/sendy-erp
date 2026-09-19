@@ -44,6 +44,10 @@ import sys
 CUTOFF = '2026-03-03 23:59:59'
 CUTOFF_DATE = CUTOFF[:10]
 PIN_NOTE = 'ปรับยอดยกมา: 1 {unit} = {ratio:g} {unit_type} (#592) คงยอดนับ 2026-02-23'
+# Every Express code the unit map translates to each unit (bsn_unit_full.json on
+# 2026-09-19, and the same pairs in #612's unit_map seed). Pinned rather than
+# read from bsn_units, whose lookup moves into the DB with #612.
+TWINS = {'ซอง': ('ซง',), 'ชุด': ('ชด',), 'แพ็ค': ('แพ', 'แพค')}
 
 # `absorbed` = every bill in `unit` dated on or before the cutoff, as
 # (doc_no, qty), read from prod 2026-09-19 (prod-2026-09-19T1103Z-post-mig187).
@@ -111,7 +115,7 @@ def min_running_balance(conn, pid):
     return low
 
 
-def preconditions(conn, normalize_unit):
+def preconditions(conn):
     bad = []
     for pid, plan in PLAN.items():
         label, unit = plan['label'], plan['unit']
@@ -129,7 +133,7 @@ def preconditions(conn, normalize_unit):
                 label, unit, ratios.get(unit),
                 ' — already fixed, refusing to run twice' if ratios.get(unit) == plan['ratio'] else ''))
 
-        twins = sorted(u for u in ratios if u != unit and normalize_unit(u) == unit)
+        twins = sorted(u for u in ratios if u in TWINS[unit])
         if twins:
             bad.append("%s: conversion row %s normalises to %s — a bill spelled that way would "
                        "keep its own ratio" % (label, twins, unit))
@@ -342,7 +346,6 @@ def main(argv=None):
         return 2
     if app_dir not in sys.path:
         sys.path.insert(0, app_dir)
-    from bsn_units import normalize_unit
     from models import bsn_sync, wacc
 
     conn = sqlite3.connect(a.db, timeout=15)
@@ -352,7 +355,7 @@ def main(argv=None):
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("BEGIN IMMEDIATE")
     try:
-        problems = preconditions(conn, normalize_unit)
+        problems = preconditions(conn)
         if problems:
             conn.rollback()
             print("REFUSED — preconditions not met:")
