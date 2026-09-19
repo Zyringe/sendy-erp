@@ -409,3 +409,16 @@ def test_break_it_once_invariants_catch_a_wrong_fix(db, capsys, iid, mutation, f
     out = capsys.readouterr().out
     assert 'ROLLED BACK' in out and fragment in out, out
     assert _state(db) == before
+
+
+def test_break_it_once_the_oracle_alone_catches_the_ui_path_result(db):
+    """With the compensation AND the invariant gate both removed, the script does
+    what /unit-conversions does. The typed-in evidence table must still reject it,
+    so it is an oracle independent of the script's own invariants."""
+    src = _src()
+    mutant = src.replace("    if delta:\n", "    if False:\n").replace("    if bad:\n", "    if False:\n")
+    assert "    if delta:\n" not in mutant and "    if bad:\n" not in mutant, "the mutation did not land"
+    assert _run(db, '--apply', mod=_load(mutant)) in (0, 1)
+    got = {pid: _stock(db, pid) for pid in EXPECTED_STOCK}
+    assert got != EXPECTED_STOCK
+    assert (got[578], got[926], got[623]) == (231, -8, 43), got
