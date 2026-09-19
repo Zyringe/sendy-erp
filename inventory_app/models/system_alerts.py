@@ -48,6 +48,7 @@ OWNERSHIP RULE — read before wiring a new caller
 import json
 import sys
 
+import actor
 from database import get_connection
 
 KIND_WACC_IDENTITY = 'wacc_identity'
@@ -550,6 +551,18 @@ def record_actor_missing_alert(exc, *, extra=None):
     except Exception as alert_exc:            # noqa: BLE001
         print(f"[system_alerts] failed to record alert: {alert_exc}", file=sys.stderr)
         return None
+
+
+def require_actor_or_alert(conn, operation, *, extra=None):
+    """The A2 preflight for a seam that OWNS `conn` (#590): refuse before the
+    first write when nobody is declared, closing the connection and recording
+    the alert on a fresh one first — the ownership order above."""
+    try:
+        return actor.require(conn, operation)
+    except actor.ActorMissing as e:
+        conn.close()
+        record_actor_missing_alert(e, extra=extra)
+        raise
 
 
 def record_wacc_cost_outlier_alert(conn, *, product_id, reference_no, event_type,

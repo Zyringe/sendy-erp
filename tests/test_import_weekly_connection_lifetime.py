@@ -19,6 +19,8 @@ import sqlite3
 
 import pytest
 
+import actor
+
 
 class _Boom(Exception):
     """Sentinel: stands in for any raise inside the pre-commit stretch."""
@@ -63,6 +65,7 @@ def tracked(empty_db, monkeypatch):
         real = sqlite3.connect(empty_db)
         real.row_factory = sqlite3.Row
         real.execute("PRAGMA foreign_keys = ON")
+        actor.install(real)          # #590: as get_connection does; the test default signs it
         tc = _TrackedConnection(real)
         made.append(tc)
         return tc
