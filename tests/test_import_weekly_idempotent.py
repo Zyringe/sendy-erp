@@ -29,8 +29,8 @@ def _conn(path):
 def _ensure_unit_map(c):
     """empty_db clones the live schema (unit_map TABLE present, #596: ZERO
     rows — it's a data-less clone) — (re-)apply migration 185 unconditionally
-    (idempotent, drops-first) so import_weekly's bsn_units calls see the real
-    44-row seed instead of raising UnitMapNotSeeded on an empty table."""
+    (idempotent) so import_weekly's bsn_units calls see the real 44-row seed
+    instead of an empty table, which reads every code as unknown."""
     with open(_MIG_185, encoding="utf-8") as f:
         c.executescript(f.read())
 
@@ -39,9 +39,9 @@ def _ensure_unit_map(c):
 def _seed_unit_map(empty_db):
     """Every test in this file uses `empty_db` and none of them is ABOUT
     unit translation — seed the real map once per test so a normalize_unit()
-    call inside import_weekly doesn't raise UnitMapNotSeeded on the
-    data-less clone (the one test that IS about acronym normalisation still
-    asserts its own specific row below)."""
+    call inside import_weekly translates as it would on a real db (the one
+    test that IS about acronym normalisation still asserts its own specific
+    row below)."""
     c = _conn(empty_db)
     _ensure_unit_map(c)
     c.commit()

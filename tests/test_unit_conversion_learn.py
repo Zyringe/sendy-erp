@@ -22,9 +22,11 @@ _FORWARD_MIG = Path(REPO) / "data" / "migrations" / "185_unit_map_table.sql"
 
 def _ensure_migrated(conn):
     """Self-contained regardless of whether some earlier test in this
-    session already migrated the DB `tmp_db` copied from — 185 drops-first,
-    so re-applying it is safe (erp-engineering-discipline.md ordering trap)."""
-    conn.executescript(_FORWARD_MIG.read_text(encoding="utf-8"))
+    session already migrated the DB `tmp_db` copied from (erp-engineering-
+    discipline.md ordering trap). Resets the table first: 185 itself keeps
+    existing rows, and the live DB may carry codes named on prod."""
+    conn.executescript("DROP TABLE IF EXISTS unit_map;\n"
+                       + _FORWARD_MIG.read_text(encoding="utf-8"))
     conn.commit()
 
 

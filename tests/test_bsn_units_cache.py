@@ -29,9 +29,10 @@ def _ensure_migrated(conn):
     """Guarantee the 44-row seed exists on `conn`'s DB, regardless of
     whether some earlier test in this session already migrated the file
     `tmp_db` copied from (erp-engineering-discipline.md's ordering trap —
-    this file must pass run alone too). Safe to call on an already-migrated
-    DB: migration 185 drops-first."""
-    conn.executescript(_FORWARD_MIG.read_text(encoding='utf-8'))
+    this file must pass run alone too). Resets the table first: 185 itself
+    keeps existing rows, and the live DB may carry codes named on prod."""
+    conn.executescript('DROP TABLE IF EXISTS unit_map;\n'
+                       + _FORWARD_MIG.read_text(encoding='utf-8'))
     conn.commit()
 
 

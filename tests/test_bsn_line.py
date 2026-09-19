@@ -153,7 +153,7 @@ def test_a_raw_acronym_stored_unit_matches_its_normalised_form(tmp_db_conn):
     ).fetchone():
         # tmp_db copies whatever state the live DB happens to be in — if no
         # earlier test in this session has migrated it yet (file run alone),
-        # the table won't exist. Create it (idempotent, drops-first).
+        # the table won't exist. Create it (idempotent).
         tmp_db_conn.executescript(_MIG_185.read_text(encoding='utf-8'))
     tmp_db_conn.execute(
         "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', ?, 'โหล') "
