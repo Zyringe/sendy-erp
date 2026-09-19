@@ -76,7 +76,7 @@ def seed_products_from_stmas(conn, stmas_rows):
         if not code or code in code_to_pid:
             continue
         name = str(r.get('STKDES') or '').strip() or code
-        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip()) or 'ตัว'
+        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip(), conn=conn) or 'ตัว'
         cost = _stmas_cost(r)
         cur = conn.execute(
             "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)",

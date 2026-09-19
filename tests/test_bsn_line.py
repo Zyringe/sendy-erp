@@ -9,13 +9,20 @@ one test red rather than being absorbed by a neighbour. The party test is the
 CONTROL for the claim that a stock-event change is not the negation of a field
 diff: it changes something `field_diff` does not look at.
 
-No database: the whole module is pure.
+No database, except unit normalisation (#596's DB-backed unit map) — the one
+test exercising it (`test_a_raw_acronym_stored_unit_matches_its_normalised_form`)
+threads its own `conn=` through rather than relying on ambient DB state.
 """
+
+from pathlib import Path
 
 import pytest
 
 import bsn_units
 from models import bsn_line
+
+_MIG_185 = (Path(__file__).resolve().parents[1] / 'data' / 'migrations'
+            / '185_unit_map_table.sql')
 
 
 def _row(**over):
@@ -131,16 +138,33 @@ def test_a_real_satang_difference_is_a_change():
     assert len(diffs) == 1 and diffs[0][0] == 'net'
 
 
-def test_a_raw_acronym_stored_unit_matches_its_normalised_form():
+def test_a_raw_acronym_stored_unit_matches_its_normalised_form(tmp_db_conn):
     """The ~95%-churn trap: legacy rows hold raw acronyms (หล/ตว/กก…) while the
     incoming unit is normalised. Comparing them raw marks nearly every purchase
-    row as changed and churns the ledger for nothing."""
+    row as changed and churns the ledger for nothing.
+
+    Seeds its own unit_map row on `tmp_db_conn` — never relies on ambient DB
+    state — so this stays deterministic regardless of which acronyms #599/
+    #601 later add or repoint.
+    """
     raw = 'หล'
-    normalised = bsn_units.normalize_unit(raw)
+    if not tmp_db_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
+    ).fetchone():
+        # tmp_db copies whatever state the live DB happens to be in — if no
+        # earlier test in this session has migrated it yet (file run alone),
+        # the table won't exist. Create it (idempotent, drops-first).
+        tmp_db_conn.executescript(_MIG_185.read_text(encoding='utf-8'))
+    tmp_db_conn.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', ?, 'โหล') "
+        "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word", (raw,))
+    tmp_db_conn.commit()
+    normalised = bsn_units.normalize_unit(raw, conn=tmp_db_conn)
     assert normalised != raw, (
         'fixture no longer exercises the trap: normalize_unit is a no-op for '
         f'{raw!r}. Pick an acronym that is actually in the unit map.')
-    assert bsn_line.field_diff(_row(unit=raw), _entry(), 77, normalised) == []
+    assert bsn_line.field_diff(_row(unit=raw), _entry(), 77, normalised,
+                               conn=tmp_db_conn) == []
 
 
 def test_the_unit_diff_reports_the_stored_unit_raw():

@@ -6,12 +6,27 @@ direction — the fix for those rows is a per-unit split mapping
 (/mapping/split-save), not a ratio.
 """
 import os
+from pathlib import Path
 
 os.environ.setdefault('SKIP_DB_INIT', '1')
 
 import pytest
 
 import models
+
+_MIG_185 = (Path(__file__).resolve().parents[1] / 'data' / 'migrations'
+            / '185_unit_map_table.sql')
+
+
+def _ensure_unit_map(conn):
+    """empty_db_conn clones the live schema, which may not have mig 185
+    (unit_map) applied yet if this file runs before anything else has
+    imported `app` — apply it (idempotent, drops-first)."""
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
+    ).fetchone():
+        conn.executescript(_MIG_185.read_text(encoding='utf-8'))
+        conn.commit()
 
 PACK = 950001      # unit_type แผง, has active [แพ็ค]/[แกะ] pair with LOOSE
 LOOSE = 950002     # unit_type ตัว, pair partner of PACK
@@ -106,8 +121,14 @@ def test_no_hazard_same_unit_or_bulk(empty_db_conn):
 
 def test_hazard_acronym_normalized(empty_db_conn):
     import bsn_units
-    if bsn_units.normalize_unit('ตว') != 'ตัว':
-        pytest.skip('ตว is not mapped to ตัว in bsn_unit_full.json on this checkout')
+    _ensure_unit_map(empty_db_conn)
+    # empty_db_conn MAY already carry the real 185 seed (if some earlier test
+    # in this session migrated the live DB first) — upsert, don't assume empty.
+    empty_db_conn.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว') "
+        "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word")
+    empty_db_conn.commit()
+    assert bsn_units.normalize_unit('ตว', conn=empty_db_conn) == 'ตัว'
     _seed(empty_db_conn)
     hz = models.cross_unit_hazard(empty_db_conn, PACK, 'ตว')
     assert hz is not None

@@ -449,7 +449,7 @@ def run(conn, models):
             for row in rows:
                 raw_unit = row['unit']
                 distinct_units_seen[code][table].add(raw_unit)
-                norm_unit = models.bsn_units.normalize_unit(raw_unit) or ''
+                norm_unit = models.bsn_units.normalize_unit(raw_unit, conn=conn) or ''
                 target_pid = targets_for_code.get(norm_unit)
                 if target_pid is None:
                     raise AssertionError(

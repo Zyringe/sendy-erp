@@ -1,131 +1,181 @@
-"""Shared BSN-unit acronym → full-Thai helper.
+"""Unit map — one DB table (`unit_map`), keyed by Express book + spelling.
 
-Single source of truth = data/reference/bsn_unit_full.json. Used by
-models.import_weekly (auto-normalise every imported ledger unit so it
-matches the already-normalised unit_conversions → far fewer pending)
-and by the /unit-conversions page (learn a new acronym Put types in).
+Translates every Express unit code, and every other spelling variant, into
+the ONE Sendy word for that หน่วย. See docs/adr/0018 and the "Units (หน่วย)"
+section of CONTEXT.md.
 
-Keep this dependency-free (no Flask / no DB) so scripts can import it too.
+This ticket (#596) moves the map from a JSON file (data/reference/
+bsn_unit_full.json, now deleted) to the DB with NO MEANING CHANGE: the table
+is seeded with exactly the 44 entries the JSON held, all under BSN5657
+(`DEFAULT_BOOK`) — a caller that doesn't pass a `book` yet keeps reading
+today's translations (`กร` still means `ตัว` here; tickets #599/#601 correct
+that and add xp5-specific rows such as `หอ` -> `หลอด`).
+
+No per-process cache. A code `learn()`ed by one gunicorn worker must be
+visible to the OTHER worker on its very next request, so every call reads the
+DB fresh — the same PR#103 per-worker-state trap the JSON version's
+stat-keyed cache existed to dodge, just solved here by not caching at all
+(a 44-row indexed SQLite lookup is microseconds; nothing here runs a request
+anywhere near the old JSON-reparse hot loop that justified that cache).
+
+Callers that already hold a `sqlite3.Connection` should pass `conn=` — the
+lookup then runs on THEIR connection (same transaction, and in a test, the
+temp DB the test's fixture pointed at) instead of a fresh one. Callers with
+no connection (a bare script, or a call site that never needed a `conn`
+before) get one from `database.get_connection()`, imported lazily so this
+module still imports with no hard Flask/DB dependency for callers that
+always pass their own `conn`.
 """
 from __future__ import annotations
 
-import json
-import os
-import threading
-import types
+import sqlite3
+from typing import Optional
 
-_MAP_PATH = os.path.join(os.path.dirname(__file__), "..", "data",
-                         "reference", "bsn_unit_full.json")
-_lock = threading.Lock()
-
-# (stat_key, mapping) or None. ONE tuple, read in a single load, because two
-# separate globals can be read either side of a writer and pair a stale map
-# with a fresh key.
-_cache = None
+BOOK_BSN5657 = 'BSN5657'
+BOOK_XP5 = 'xp5'
+BOOK_ANY = '*'          # a variant that applies to every book
+DEFAULT_BOOK = BOOK_BSN5657
 
 
-def map_path() -> str:
-    return os.path.abspath(_MAP_PATH)
+def _connect():
+    from database import get_connection
+    return get_connection()
 
 
-def _load() -> dict:
-    with open(map_path(), encoding="utf-8") as f:
-        return json.load(f)
+def _no_such_table(exc: sqlite3.OperationalError) -> bool:
+    return 'no such table: unit_map' in str(exc)
 
 
-def _stat_key(path):
-    """What makes a cached map still valid. `st_mtime_ns`, not `st_mtime`: a
-    value swapped for one of equal length inside the same second changes neither
-    the second nor the size — the same shape as the bytecode-cache trap already
-    documented in .claude/rules. Measured on this filesystem: 200 tight rewrites
-    produced 200 distinct mtime_ns."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None                      # missing/unreadable → never cache it
-    return (path, st.st_mtime_ns, st.st_size)
+def translate(spelling, book: str = DEFAULT_BOOK, *, conn=None) -> Optional[str]:
+    """The one Sendy word for `spelling` in `book`, or None if unknown.
 
-
-def invalidate_unit_map_cache() -> None:
-    """Drop the cached map. Called on the write path; tests use it to isolate."""
-    global _cache
-    with _lock:
-        _cache = None
-
-
-def load_unit_map():
-    """acronym → full Thai (identity entries kept; callers may filter).
-
-    Cached, because this is called once per ledger row: profiling the Express
-    drift comparison on the real dataset (2026-08-25) found 74,905 calls
-    re-parsing the same 3KB of JSON for ~2.4s of a ~3.5s run, and the weekly BSN
-    import calls it on the same hot path inside a request with a 60s ceiling.
-
-    ⚠ It REVALIDATES on every call (one `os.stat`, measured at 0.10s per 75k).
-    Under `gunicorn -w 2` the worker that did not handle an `add_acronym`
-    request must still see the new acronym, so a cache that never re-checks
-    would be the per-worker-state bug this repo shipped twice (PR #103). The
-    result is read-only so no caller can edit the shared copy in place.
+    A book-specific row wins; a `BOOK_ANY` (book-independent) row is the
+    fallback for a spelling variant that means the same thing in every book.
     """
-    global _cache
-    key = _stat_key(map_path())
-    cached = _cache
-    if key is not None and cached is not None and cached[0] == key:
-        return cached[1]
-    mapping = types.MappingProxyType(dict(_load().get("map", {})))
-    if key is not None:
-        with _lock:
-            _cache = (key, mapping)
-    return mapping
+    if not spelling:
+        return None
+    own = conn is None
+    conn = conn or _connect()
+    try:
+        row = conn.execute(
+            "SELECT word FROM unit_map WHERE book = ? AND spelling = ?",
+            (book, spelling)).fetchone()
+        if row is None and book != BOOK_ANY:
+            row = conn.execute(
+                "SELECT word FROM unit_map WHERE book = ? AND spelling = ?",
+                (BOOK_ANY, spelling)).fetchone()
+        return row[0] if row is not None else None
+    except sqlite3.OperationalError as exc:
+        # Only a DB whose migrations never ran (a test importing this module
+        # in isolation, before any fixture has run init_db()) hits this — the
+        # real app always runs init_db() before serving a request. Read paths
+        # degrade to "unknown" rather than crash; learn() below does not.
+        if _no_such_table(exc):
+            return None
+        raise
+    finally:
+        if own:
+            conn.close()
 
 
-def full_units() -> set:
-    """The set of canonical full-Thai unit names (map values)."""
-    return set(load_unit_map().values())
+def normalize_unit(spelling, book: str = DEFAULT_BOOK, *, conn=None):
+    """`translate()`, falling back to `spelling` unchanged when unknown — an
+    unmapped code surfaces as-is (pending review on /unit-conversions)
+    instead of vanishing. Mirrors the JSON version's `map.get(unit, unit)`."""
+    if not spelling:
+        return spelling
+    return translate(spelling, book, conn=conn) or spelling
 
 
-def normalize_unit(unit):
-    """Return the full-Thai form if `unit` is a known acronym, else `unit`
-    unchanged (unknown acronyms are left as-is so they surface as pending
-    with a suggestion)."""
-    if not unit:
-        return unit
-    return load_unit_map().get(unit, unit)
+def full_units(*, conn=None) -> set:
+    """Every canonical Sendy word the map currently produces (the `word`
+    column, deduplicated) — for suggestion widgets that must offer words,
+    never codes."""
+    own = conn is None
+    conn = conn or _connect()
+    try:
+        return {r[0] for r in conn.execute("SELECT DISTINCT word FROM unit_map")}
+    except sqlite3.OperationalError as exc:
+        if _no_such_table(exc):
+            return set()
+        raise
+    finally:
+        if own:
+            conn.close()
 
 
-def is_known(unit) -> bool:
-    """True if `unit` is already a canonical full unit or a mapped acronym."""
-    m = load_unit_map()
-    return unit in m or unit in set(m.values())
+def is_known(spelling, book: str = DEFAULT_BOOK, *, conn=None) -> bool:
+    """True if `spelling` already translates, or is itself one of the
+    canonical words (so re-checking an already-normalised value still
+    reads as known, matching the JSON version's `unit in m or unit in
+    set(m.values())`)."""
+    if not spelling:
+        return False
+    if translate(spelling, book, conn=conn) is not None:
+        return True
+    return spelling in full_units(conn=conn)
 
 
-def add_acronym(acronym: str, full: str) -> None:
-    """Persist a newly-learned acronym→full mapping to the JSON
-    (idempotent; thread-safe enough for the single-writer Flask app)."""
-    acronym = (acronym or "").strip()
-    full = (full or "").strip()
-    if not acronym or not full or acronym == full:
+def load_unit_map(book: str = DEFAULT_BOOK, *, conn=None) -> dict:
+    """One dict snapshot (`spelling -> word`) for a hot loop that reads the
+    map ONCE and then does local `.get()` lookups per row (the shape
+    `detect_document_drift` needs over ~150k lines). Read fresh on every
+    call — never cached across calls — so a second gunicorn worker always
+    sees a `learn()` a sibling worker just made.
+
+    Book-specific rows are overlaid on top of `BOOK_ANY` rows, matching
+    `translate()`'s precedence.
+    """
+    own = conn is None
+    conn = conn or _connect()
+    try:
+        out = {}
+        for spelling, word in conn.execute(
+                "SELECT spelling, word FROM unit_map WHERE book = ?", (BOOK_ANY,)):
+            out[spelling] = word
+        if book != BOOK_ANY:
+            for spelling, word in conn.execute(
+                    "SELECT spelling, word FROM unit_map WHERE book = ?", (book,)):
+                out[spelling] = word
+        return out
+    except sqlite3.OperationalError as exc:
+        if _no_such_table(exc):
+            return {}
+        raise
+    finally:
+        if own:
+            conn.close()
+
+
+def learn(spelling: str, book: str, word: str, *, conn=None) -> None:
+    """Record a new spelling -> word row (idempotent upsert). Writes on the
+    SAME connection when given one, so a caller mid-transaction can still
+    roll the whole request back on a later failure; opens + commits its own
+    otherwise."""
+    spelling = (spelling or '').strip()
+    word = (word or '').strip()
+    if not spelling or not word or spelling == word:
         return
-    with _lock:
-        data = _load()
-        data.setdefault("map", {})
-        if data["map"].get(acronym) == full:
-            return
-        data["map"][acronym] = full
-        note = data.get("_doc", "")
-        if "learned via /unit-conversions" not in note:
-            data["_doc"] = note + " | learned via /unit-conversions UI."
-        tmp = map_path() + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, map_path())
-        # Invalidate INSIDE the lock, after the atomic replace.
-        # ⚠ Measured: removing these two lines turns NO test red, because
-        # os.replace moves st_mtime_ns and the stat key catches it on its own.
-        # They are kept for the case the stat key cannot cover — a filesystem
-        # whose timestamp resolution is coarser than two writes (a network
-        # mount, a volume with 1s granularity), where an in-process write would
-        # otherwise be invisible to this process until something else touched
-        # the file. Do not read them as the reason add_acronym works.
-        global _cache
-        _cache = None
+    own = conn is None
+    conn = conn or _connect()
+    try:
+        conn.execute(
+            "INSERT INTO unit_map (book, spelling, word) VALUES (?, ?, ?) "
+            "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word",
+            (book, spelling, word))
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def add_acronym(acronym: str, full: str, *, conn=None) -> None:
+    """Back-compat name for the /unit-conversions naming flow
+    (models/bsn_sync.py::learn_acronyms_normalize) and a couple of scripts:
+    `learn()` against `DEFAULT_BOOK`. Pending rows on /unit-conversions come
+    only from purchase_transactions/sales_transactions (the BSN weekly-import
+    ledger) today, so BSN5657 is the correct book for every caller of this
+    function — a caller that knows a different book should call `learn()`
+    directly."""
+    learn(acronym, DEFAULT_BOOK, full, conn=conn)

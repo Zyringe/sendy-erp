@@ -73,7 +73,7 @@ def main(argv=None):
 
     import models  # noqa: E402
 
-    norm_unit = models.bsn_units.normalize_unit(a.bsn_unit) if a.bsn_unit else None
+    norm_unit = models.bsn_units.normalize_unit(a.bsn_unit, conn=conn) if a.bsn_unit else None
 
     if norm_unit is not None:
         mapping_rows = conn.execute(
@@ -90,7 +90,7 @@ def main(argv=None):
         ).fetchall()
         if norm_unit is not None:
             rows = [r for r in rows
-                    if (models.bsn_units.normalize_unit(r["unit"]) or "") == norm_unit]
+                    if (models.bsn_units.normalize_unit(r["unit"], conn=conn) or "") == norm_unit]
         return rows
 
     ledger_rows = _ledger_pids("sales_transactions") + _ledger_pids("purchase_transactions")
@@ -185,7 +185,7 @@ def main(argv=None):
             "UNION ALL SELECT product_id, unit FROM purchase_transactions "
             "WHERE bsn_code=?", (a.code, a.code)).fetchall()
         bad = sum(1 for r in rows
-                  if (models.bsn_units.normalize_unit(r["unit"]) or "") == norm_unit
+                  if (models.bsn_units.normalize_unit(r["unit"], conn=conn) or "") == norm_unit
                   and r["product_id"] != a.dst)
     else:
         bad = conn.execute(

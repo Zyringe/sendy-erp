@@ -77,7 +77,7 @@ def preview_import(entries: list, file_type: str) -> dict:
     changes = []
     try:
         for e in entries:
-            unit = bsn_units.normalize_unit(e.get('unit'))
+            unit = bsn_units.normalize_unit(e.get('unit'), conn=conn)
             doc_no = e['doc_no']
             line_seq = e.get('line_seq', 1)
             pid, is_ignored, mapped = _resolve_mapping(conn, e['product_code_raw'], unit)
@@ -108,7 +108,7 @@ def preview_import(entries: list, file_type: str) -> dict:
             if old is None:
                 counts['new'] += 1
                 continue
-            diffs = bsn_line.field_diff(old, e, pid, unit)
+            diffs = bsn_line.field_diff(old, e, pid, unit, conn=conn)
             if not diffs:
                 counts['unchanged'] += 1
             else:
@@ -207,7 +207,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
         for e in entries:
             # Auto-normalise the BSN unit acronym → full Thai so it matches the
             # (already-normalised) unit_conversions table → far fewer pending.
-            e['unit'] = bsn_units.normalize_unit(e.get('unit'))
+            e['unit'] = bsn_units.normalize_unit(e.get('unit'), conn=conn)
             doc_no   = e['doc_no']
             doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
             line_seq = e.get('line_seq', 1)
@@ -273,7 +273,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 # hand, which matters because the operator ticks `apply_removals`
                 # on a count the PREVIEW produced and this function is what acts
                 # on it.
-                if not bsn_line.field_diff(old, e, product_id, e['unit']):
+                if not bsn_line.field_diff(old, e, product_id, e['unit'], conn=conn):
                     unchanged += 1
                     continue
                 # Real change → replace the source row; pass 2 rebuilds its ledger.
@@ -298,7 +298,7 @@ def import_weekly(entries: list, file_type: str, filename: str,
                 #    correction landed at 88 instead of 93 before mig 172.
                 if file_type == 'sales':
                     if not bsn_line.stock_event_changed(
-                            old, e, product_id, e['unit'], file_type):
+                            old, e, product_id, e['unit'], file_type, conn=conn):
                         carry_from = old['id']
                     else:
                         _moved, _recorded = reverse_platform_deduction(

@@ -14,6 +14,7 @@ import sqlite3
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _MIG_124 = os.path.join(_REPO, "data", "migrations", "124_restore_mapping_bsn_unit.sql")
+_MIG_185 = os.path.join(_REPO, "data", "migrations", "185_unit_map_table.sql")
 
 
 def _conn(path):
@@ -21,6 +22,17 @@ def _conn(path):
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     return c
+
+
+def _ensure_unit_map(c):
+    """empty_db clones the live schema, which may not have mig 185 (unit_map)
+    applied on this machine yet if this file runs before anything else has
+    imported `app` — apply it (idempotent, drops-first)."""
+    if not c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
+    ).fetchone():
+        with open(_MIG_185, encoding="utf-8") as f:
+            c.executescript(f.read())
 
 
 def _ensure_bsn_unit(c):
@@ -129,10 +141,17 @@ def test_reimport_raw_stored_unit_is_noop(empty_db):
     """
     import models, bsn_units
     raw = 'ลง'
-    norm = bsn_units.normalize_unit(raw)
-    assert norm != raw, "fixture needs a unit whose normalize() differs from raw"
 
     c = _conn(empty_db)
+    _ensure_unit_map(c)
+    # empty_db MAY already carry the real 185 seed (if some earlier test in
+    # this session migrated the live DB first) — upsert, don't assume empty.
+    c.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', ?, 'ลัง') "
+        "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word", (raw,))
+    norm = bsn_units.normalize_unit(raw, conn=c)
+    assert norm != raw, "fixture needs a unit whose normalize() differs from raw"
+
     _ensure_bsn_unit(c)
     cur = c.execute("INSERT INTO products (product_name, unit_type, cost_price) VALUES ('Praw', ?, 0)", (norm,))   # unit_type=norm → 1:1
     pid = cur.lastrowid

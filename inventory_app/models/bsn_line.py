@@ -10,8 +10,12 @@ count the PREVIEW produced, and the deletion is carried out by the COMMIT. A
 drift between the two copies is a drift between what the operator agreed to and
 what actually happened to the ledger.
 
-Everything here is pure — no database, no IO, and no mutation of its arguments
-— so the rules can be tested directly instead of through a whole import run.
+Everything here is pure given its inputs — no IO, no mutation of its
+arguments — so the rules can be tested directly instead of through a whole
+import run. The one exception is unit normalisation (`_unit_same`), which
+reads the DB-backed unit map (#596); every function that needs it takes an
+optional `conn=` so a caller mid-transaction, or a test with its own temp
+DB, can hand it the right connection instead of a fresh default one.
 
 Vocabulary: a *line key* identifies a line; a *field diff* says what changed
 about it. Sales lines additionally have a *stock-event* question — "would
@@ -70,7 +74,7 @@ def _num_same(a, b):
     return abs((a or 0) - (b or 0)) < EPSILON
 
 
-def _unit_same(stored_unit, new_unit):
+def _unit_same(stored_unit, new_unit, conn=None):
     """Compare units with the STORED side normalised.
 
     Legacy and rebuild rows were saved with raw acronym units (หล/ตว/กก…) while
@@ -79,10 +83,10 @@ def _unit_same(stored_unit, new_unit):
     rows as changed — cosmetic only (same base_qty), but it churns the ledger
     for nothing.
     """
-    return bsn_units.normalize_unit(stored_unit or '') == (new_unit or '')
+    return bsn_units.normalize_unit(stored_unit or '', conn=conn) == (new_unit or '')
 
 
-def field_diff(row, entry, product_id, new_unit):
+def field_diff(row, entry, product_id, new_unit, conn=None):
     """What changed between the stored row and this entry.
 
     Returns ``[(field, old_value, new_value), …]``, empty when the line is a
@@ -99,7 +103,7 @@ def field_diff(row, entry, product_id, new_unit):
     diffs = []
     if not _num_same(row['qty'], entry['qty']):
         diffs.append(('qty', row['qty'], entry['qty']))
-    if not _unit_same(row['unit'], new_unit):
+    if not _unit_same(row['unit'], new_unit, conn=conn):
         diffs.append(('unit', row['unit'], new_unit))
     if not _num_same(row['unit_price'], entry['unit_price']):
         diffs.append(('unit_price', row['unit_price'], entry['unit_price']))
@@ -110,7 +114,7 @@ def field_diff(row, entry, product_id, new_unit):
     return diffs
 
 
-def stock_event_changed(row, entry, product_id, new_unit, file_type):
+def stock_event_changed(row, entry, product_id, new_unit, file_type, conn=None):
     """Would replacing this row change what the stock ledger posted?
 
     Deliberately NOT the negation of `field_diff`:
@@ -128,7 +132,7 @@ def stock_event_changed(row, entry, product_id, new_unit, file_type):
     party_col = party_column(file_type)
     return not (
         _num_same(row['qty'], entry['qty'])
-        and _unit_same(row['unit'], new_unit)
+        and _unit_same(row['unit'], new_unit, conn=conn)
         and (row['product_id'] or 0) == (product_id or 0)
         and (row[party_col] or '').strip() == (entry['party'] or '').strip()
     )

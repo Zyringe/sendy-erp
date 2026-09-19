@@ -1,103 +1,132 @@
-"""The unit map is read from disk ONCE, and a change to it is still seen.
+"""The unit map has NO per-process cache (#596).
 
-WHY THIS EXISTS — measured, not suspected. `normalize_unit()` is
-`load_unit_map().get(unit, unit)`, and `load_unit_map()` used to `open()` +
-`json.load()` the file on EVERY call. Profiling the Express drift comparison on
-the real dataset (2026-08-25) showed 74,905 calls costing ~2.4s of a ~3.5s run —
-more than half the work, all of it re-parsing 3KB of JSON that had not changed.
-The same function runs per row on the weekly BSN import, which lives inside a
-request with a 60s gunicorn ceiling.
+WHY THIS EXISTS — this file used to pin a stat-keyed cache over
+data/reference/bsn_unit_full.json (removed with the file itself). The JSON
+cache existed because re-parsing 3KB of JSON 74,905 times cost ~2.4s of a
+~3.5s run (2026-08-25 profiling) — but it also had to REVALIDATE, because
+under `gunicorn -w 2` the worker that did not handle a `learn()` write must
+still see it (PR #103's per-worker-state bug, twice).
 
-⚠ A cache here is only safe because it REVALIDATES. `add_acronym()` rewrites the
-file, and under `gunicorn -w 2` the worker that did not handle that request must
-still see the new acronym — a module global that never re-checks is exactly the
-per-worker-state bug this repo has already shipped twice (PR #103). So the key is
-(mtime_ns, size) on every call, plus an explicit invalidation on the write path;
-tests 2 and 3 are the two halves of that, and neither passes without it.
+Moving the map into the DB removes the need for the cache entirely: a
+44-row indexed SQLite lookup is microseconds, so `bsn_units.py` now reads
+the DB fresh on every call. This file proves the replacement holds the same
+property the cache used to buy — a write from one connection ("worker") is
+immediately visible from a DIFFERENT, freshly-opened connection (the
+closest thing a single-process pytest run can do to modelling a second
+gunicorn worker) and after the module is re-imported ("app restart").
 """
-import json
-import os
-import time
+import importlib
+import sqlite3
+from pathlib import Path
 
 import bsn_units
 
-
-def _write(path, mapping):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump({'map': mapping}, f, ensure_ascii=False)
+_FORWARD_MIG = (Path(__file__).resolve().parents[1] / 'data' / 'migrations'
+                / '185_unit_map_table.sql')
 
 
-def _point_at(monkeypatch, tmp_path, mapping):
-    """Redirect the module at a throwaway copy of the map."""
-    p = tmp_path / 'bsn_unit_full.json'
-    _write(str(p), mapping)
-    monkeypatch.setattr(bsn_units, '_MAP_PATH', str(p))
-    bsn_units.invalidate_unit_map_cache()
-    return str(p)
+def _ensure_migrated(conn):
+    """Guarantee the 44-row seed exists on `conn`'s DB, regardless of
+    whether some earlier test in this session already migrated the file
+    `tmp_db` copied from (erp-engineering-discipline.md's ordering trap —
+    this file must pass run alone too). Safe to call on an already-migrated
+    DB: migration 185 drops-first."""
+    conn.executescript(_FORWARD_MIG.read_text(encoding='utf-8'))
+    conn.commit()
 
 
-def test_repeated_calls_parse_the_file_once(monkeypatch, tmp_path):
-    p = _point_at(monkeypatch, tmp_path, {'ตว': 'ตัว', 'หล': 'โหล'})
-    reads = []
-    real_open = open
-
-    def counting_open(file, *a, **kw):
-        if str(file) == p:
-            reads.append(str(file))
-        return real_open(file, *a, **kw)
-
-    monkeypatch.setattr('builtins.open', counting_open)
-
-    # CONTROL first: a cache that returns junk must not pass on call count alone.
-    assert [bsn_units.normalize_unit('ตว') for _ in range(50)] == ['ตัว'] * 50
-    assert bsn_units.normalize_unit('หล') == 'โหล'
-    assert bsn_units.normalize_unit('ไม่รู้จัก') == 'ไม่รู้จัก'
-
-    # COUNT, then the property — an `all(...)` over an empty list is vacuous.
-    assert len(reads) == 1, f'the map was parsed {len(reads)} times, not once'
+def _fresh_conn(tmp_db):
+    c = sqlite3.connect(tmp_db, timeout=10)
+    c.row_factory = sqlite3.Row
+    return c
 
 
-def test_a_change_on_disk_is_picked_up(monkeypatch, tmp_path):
-    """The revalidation half. A sibling gunicorn worker writes the file; this
-    process must not keep serving the value it cached before that."""
-    p = _point_at(monkeypatch, tmp_path, {'ตว': 'ตัว'})
-    assert bsn_units.normalize_unit('กป') == 'กป'          # unknown, so far
-
-    time.sleep(0.01)                                        # distinct mtime_ns
-    _write(p, {'ตว': 'ตัว', 'กป': 'กระป๋อง'})
-    assert bsn_units.normalize_unit('กป') == 'กระป๋อง'
-    assert bsn_units.normalize_unit('ตว') == 'ตัว'          # CONTROL: not clobbered
+def test_translate_reads_the_seeded_44_entries(tmp_db_conn):
+    _ensure_migrated(tmp_db_conn)
+    n = tmp_db_conn.execute(
+        "SELECT COUNT(*) FROM unit_map WHERE book = 'BSN5657'").fetchone()[0]
+    assert n == 44, f'expected the 44 seeded entries, found {n}'
+    assert bsn_units.translate('หล', conn=tmp_db_conn) == 'โหล'
+    assert bsn_units.translate('ไม่รู้จัก', conn=tmp_db_conn) is None
+    assert bsn_units.normalize_unit('ไม่รู้จัก', conn=tmp_db_conn) == 'ไม่รู้จัก'
 
 
-def test_a_same_size_same_second_rewrite_is_still_picked_up(monkeypatch, tmp_path):
-    """mtime alone is not enough, and neither is (mtime_seconds, size): a
-    value swapped for one of equal length within the same second changes
-    neither. This is the pycache trap the repo has documented, in a second place.
-    """
-    p = _point_at(monkeypatch, tmp_path, {'ถง': 'ถังใหญ่'})
-    assert bsn_units.normalize_unit('ถง') == 'ถังใหญ่'
-    _write(p, {'ถง': 'ถังเล็ก'})                            # same byte length
-    assert os.path.getsize(p) == os.path.getsize(p)
-    assert bsn_units.normalize_unit('ถง') == 'ถังเล็ก'
+def test_a_write_on_one_connection_is_visible_from_a_fresh_one(tmp_db):
+    """Models the gunicorn -w 2 requirement directly: connection A learns a
+    code, connection B (opened AFTER, sharing nothing but the file) must see
+    it without any cache-invalidation step."""
+    a = _fresh_conn(tmp_db)
+    b = _fresh_conn(tmp_db)
+    try:
+        _ensure_migrated(a)
+        assert bsn_units.translate('ลง', conn=b) == 'ลัง', (
+            'CONTROL: ลง must already resolve via the seeded data, or the '
+            'rest of this test proves nothing')
+        assert bsn_units.is_known('ลง', conn=b)
+        assert bsn_units.translate('Zx9', conn=b) is None
+
+        bsn_units.learn('Zx9', bsn_units.DEFAULT_BOOK, 'หน่วยใหม่', conn=a)
+        a.commit()
+
+        # B never re-opened, never told to invalidate anything — read fresh.
+        assert bsn_units.translate('Zx9', conn=b) == 'หน่วยใหม่'
+        assert bsn_units.is_known('Zx9', conn=b)
+        assert bsn_units.normalize_unit('ลง', conn=b) == 'ลัง'   # CONTROL: not clobbered
+    finally:
+        a.close()
+        b.close()
 
 
-def test_add_acronym_is_visible_immediately(monkeypatch, tmp_path):
-    p = _point_at(monkeypatch, tmp_path, {'ตว': 'ตัว'})
-    assert bsn_units.normalize_unit('ลง') == 'ลง'
-    bsn_units.add_acronym('ลง', 'ลัง')
-    assert bsn_units.normalize_unit('ลง') == 'ลัง'
-    assert json.load(open(p, encoding='utf-8'))['map']['ลง'] == 'ลัง'
-    assert bsn_units.is_known('ลง') and bsn_units.is_known('ตัว')
+def test_a_write_survives_a_reimport(tmp_db, monkeypatch):
+    """Models an app restart: re-import the module (a fresh Python process
+    would rebuild all module state) and confirm the write is still there —
+    there is no module-level dict left to have gone stale OR reset."""
+    import config
+    import database
+    monkeypatch.setattr(config, 'DATABASE_PATH', tmp_db)
+    monkeypatch.setattr(database, 'DATABASE_PATH', tmp_db)
+    seed_conn = _fresh_conn(tmp_db)
+    _ensure_migrated(seed_conn)
+    seed_conn.close()
+
+    bsn_units.add_acronym('Qq9', 'กระป๋องใหม่')
+
+    reloaded = importlib.reload(bsn_units)
+    try:
+        assert reloaded.normalize_unit('Qq9') == 'กระป๋องใหม่'
+    finally:
+        importlib.reload(bsn_units)   # restore the real module object identity
 
 
-def test_full_units_and_is_known_use_the_same_cache(monkeypatch, tmp_path):
-    p = _point_at(monkeypatch, tmp_path, {'ตว': 'ตัว', 'หล': 'โหล'})
-    reads = []
-    real_open = open
-    monkeypatch.setattr('builtins.open', lambda f, *a, **kw: (
-        reads.append(str(f)) if str(f) == p else None, real_open(f, *a, **kw))[1])
+def test_full_units_and_is_known_agree(tmp_db_conn):
+    _ensure_migrated(tmp_db_conn)
+    words = bsn_units.full_units(conn=tmp_db_conn)
+    assert {'ตัว', 'โหล', 'กิโลกรัม'} <= words
+    assert bsn_units.is_known('ตว', conn=tmp_db_conn)    # a spelling -> ตัว
+    assert bsn_units.is_known('โหล', conn=tmp_db_conn)   # a word, standing for itself
+    assert not bsn_units.is_known('ไม่มี', conn=tmp_db_conn)
 
-    assert bsn_units.full_units() == {'ตัว', 'โหล'}
-    assert bsn_units.is_known('ตว') and bsn_units.is_known('โหล')
-    assert not bsn_units.is_known('ไม่มี')
-    assert len(reads) == 1
+
+def test_learn_is_idempotent_upsert(tmp_db_conn):
+    _ensure_migrated(tmp_db_conn)
+    bsn_units.learn('Zab', 'BSN5657', 'หน่วยหนึ่ง', conn=tmp_db_conn)
+    bsn_units.learn('Zab', 'BSN5657', 'หน่วยสอง', conn=tmp_db_conn)   # re-learn, corrected spelling
+    tmp_db_conn.commit()
+    rows = tmp_db_conn.execute(
+        "SELECT word FROM unit_map WHERE book='BSN5657' AND spelling='Zab'").fetchall()
+    assert len(rows) == 1, 'UNIQUE(book, spelling) must upsert, not duplicate'
+    assert rows[0][0] == 'หน่วยสอง'
+
+
+def test_load_unit_map_overlays_book_specific_on_book_any(tmp_db_conn):
+    _ensure_migrated(tmp_db_conn)
+    tmp_db_conn.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('*', 'กก.', 'กิโลกรัม')")
+    tmp_db_conn.execute(
+        "INSERT INTO unit_map (book, spelling, word) VALUES ('xp5', 'หอ', 'หลอด')")
+    tmp_db_conn.commit()
+    m = bsn_units.load_unit_map('xp5', conn=tmp_db_conn)
+    assert m['กก.'] == 'กิโลกรัม'         # book-independent variant reachable under any book
+    assert m['หอ'] == 'หลอด'              # xp5-specific row
+    assert bsn_units.load_unit_map('BSN5657', conn=tmp_db_conn)['หอ'] == 'ห่อ', (
+        'BOOK_ANY must never shadow a book-specific row on a DIFFERENT book')

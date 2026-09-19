@@ -8,9 +8,12 @@ The fix normalises ledger units acronym→full Thai for affected products and
 drops superseded acronym conv rows. These tests would have caught it.
 """
 import csv
+import json
 import os
 import sqlite3
 import sys
+
+import pytest
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
@@ -18,6 +21,22 @@ import apply_stock_and_mapping_csv as app  # noqa: E402
 
 from tests import mapping_fixture  # noqa: E402  (idempotent mig-124 replay)
 from tests._pre_mig173 import emulate_pre_mig173  # noqa: E402
+
+# app.main() reads MAP_JSON unconditionally, even when every CSV row is
+# FALSE/Done (test_false_and_done_rows_untouched). #596 retired the real
+# data/reference/bsn_unit_full.json (the unit map moved to the unit_map DB
+# table) — this frozen, do-not-re-run script still hardcodes the JSON path,
+# so every test here points it at a throwaway copy holding exactly the
+# acronyms these tests exercise (หล, อน — plus ปน, which
+# test_unknown_acronym_skips_conversion_keeps_mapping needs absent, matching
+# what the real file held on 2026-05-18 before ปน was added 2026-05-18b, per
+# data/migrations/185_unit_map_table.sql's transcription of the final file).
+@pytest.fixture(autouse=True)
+def _stub_unit_map_json(monkeypatch, tmp_path):
+    p = tmp_path / "bsn_unit_full_stub.json"
+    p.write_text(json.dumps({"map": {"หล": "โหล", "อน": "อัน"}}, ensure_ascii=False),
+                 encoding="utf-8")
+    monkeypatch.setattr(app, "MAP_JSON", p)
 
 
 def _migrate124(conn):

@@ -409,7 +409,7 @@ def reopen_reconcile_flag(flag_id, resolved_by, conn=None):
 
 # ── Apply ────────────────────────────────────────────────────────────────────
 
-def _cas_compare(expected_rows, live_rows):
+def _cas_compare(expected_rows, live_rows, conn=None):
     """Field-wise CAS, canonicalized per plan §2c. Returns an error message,
     or None when the live state still matches what the flag last saw."""
     def key(r):
@@ -434,7 +434,8 @@ def _cas_compare(expected_rows, live_rows):
         for field in _CAS_NUMERIC:
             if abs((exp.get(field) or 0) - (live.get(field) or 0)) >= 1e-9:
                 return f'ข้อมูลเปลี่ยนไปตั้งแต่สแกนล่าสุด ({field} ของ {k}) — สแกนใหม่ก่อน apply'
-        if bsn_units.normalize_unit(exp.get('unit') or '') != bsn_units.normalize_unit(live.get('unit') or ''):
+        if (bsn_units.normalize_unit(exp.get('unit') or '', conn=conn)
+                != bsn_units.normalize_unit(live.get('unit') or '', conn=conn)):
             return f'ข้อมูลเปลี่ยนไปตั้งแต่สแกนล่าสุด (unit ของ {k}) — สแกนใหม่ก่อน apply'
         for field in ('id', 'product_id', 'customer', 'synced_to_stock', 'ref_invoice'):
             if (exp.get(field) or None) != (live.get(field) or None):
@@ -610,7 +611,7 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
             return {'ok': False, 'error': PLATFORM_REFUSAL_MSG}
 
         live_rows = _payload_for_doc(c, row['doc_base'])
-        cas_err = _cas_compare(payload_rows, live_rows)
+        cas_err = _cas_compare(payload_rows, live_rows, conn=c)
         if cas_err:
             c.rollback()
             return {'ok': False, 'error': cas_err}

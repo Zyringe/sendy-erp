@@ -116,7 +116,7 @@ def cross_unit_hazard(conn, product_id, bsn_unit, *, alert_on_caller_conn=False)
                                               tests/test_conversion_role_alert_
                                               durability.py)
         the two read/list callers     False — never write"""
-    norm = bsn_units.normalize_unit(bsn_unit) or ''
+    norm = bsn_units.normalize_unit(bsn_unit, conn=conn) or ''
     product = conn.execute(
         "SELECT product_name, unit_type FROM products WHERE id = ?", (product_id,)
     ).fetchone()
@@ -417,7 +417,7 @@ def get_pending_unit_conversions(search=None):
     out = []
     for r in rows:
         d = dict(r)
-        d['is_acronym'] = not bsn_units.is_known(d['bsn_unit'])
+        d['is_acronym'] = not bsn_units.is_known(d['bsn_unit'], conn=conn)
         d['hazard'] = cross_unit_hazard(conn, d['product_id'], d['bsn_unit'])
         out.append(d)
     conn.close()
@@ -426,13 +426,15 @@ def get_pending_unit_conversions(search=None):
 
 def learn_acronyms_normalize(pairs: dict):
     """For each acronym→full Put typed on /unit-conversions: persist it to
-    bsn_unit_full.json and rewrite that acronym → full across the BSN
-    ledger (so it matches unit_conversions and never recurs)."""
+    the unit_map table (#596, against bsn_units.DEFAULT_BOOK — every pending
+    row here comes from the BSN weekly-import ledger) and rewrite that
+    acronym → full across the BSN ledger (so it matches unit_conversions and
+    never recurs)."""
     if not pairs:
         return
     conn = get_connection()
     for acr, full in pairs.items():
-        bsn_units.add_acronym(acr, full)
+        bsn_units.add_acronym(acr, full, conn=conn)
         for t in ('sales_transactions', 'purchase_transactions'):
             # mig 173: `unit` is guarded, and this is reachable from
             # /unit-conversions. A bulk rewrite cannot go through
