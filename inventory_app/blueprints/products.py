@@ -655,6 +655,7 @@ def product_edit(product_id):
         f = request.form
         try:
             _cost = float(f.get('cost_price') or 0)
+            _basis_moved = float(product['opening_cost'] or 0) != _cost
             data = {
                 # Renaming is owned by the Master Naming page (/naming) — keep
                 # the existing name and ignore whatever the read-only field
@@ -671,19 +672,17 @@ def product_edit(product_id):
                 # columns present in this dict, so omitting them preserves
                 # whatever is already in the DB.
                 #
-                # The cost box is the WACC BASIS (ต้นทุนยกมา), not a standalone
-                # number. models/wacc.py seeds the cost ledger from
-                # `opening_cost` and writes `cost_price` back as its own live
-                # output, so writing only `cost_price` (the pre-#570 behaviour)
-                # made a typed cost inert AND let the next recalculate — which
-                # every import runs for every product in the file — silently
-                # revert it. The two move together, and the recalculate below
-                # is what turns the typed number into the real WACC.
-                'cost_price': _cost,
-                'opening_cost': _cost,
                 'base_sell_price': float(f.get('base_sell_price') or 0),
                 'low_stock_threshold': int(f.get('low_stock_threshold') or config.LOW_STOCK_DEFAULT_THRESHOLD),
             }
+            # The cost box is the WACC BASIS (ต้นทุนยกมา), not a standalone
+            # number. models/wacc.py seeds the cost ledger from `opening_cost`
+            # and writes `cost_price` back as its own live output. A changed
+            # basis moves both before recalculation; an untouched basis must
+            # omit both keys so it cannot overwrite the live WACC.
+            if _basis_moved:
+                data['cost_price'] = _cost
+                data['opening_cost'] = _cost
             # Typing a weight here IS the scale reading, so it is stamped
             # 'measured'. Returns {} when the form carries no weight box at
             # all, so a caller that doesn't render one cannot blank a real
@@ -699,7 +698,6 @@ def product_edit(product_id):
             return render_template('products/form.html', product=resubmit, action='edit', product_id=product_id)
 
         _who = session.get('username') or session.get('display_name') or '?'
-        _basis_moved = float(product['opening_cost'] or 0) != _cost
         models.update_product(product_id, data, source=f'manual:{_who}')
         locations = request.form.getlist('floor_no')
         models.save_product_locations(product_id, locations)
