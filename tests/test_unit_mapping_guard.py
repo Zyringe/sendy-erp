@@ -22,8 +22,8 @@ def _ensure_unit_map(conn):
     """empty_db_conn clones the live schema (unit_map TABLE present, #596:
     ZERO rows — it's a data-less clone) — (re-)apply migration 185
     unconditionally (idempotent, drops-first) so a bsn_units call inside
-    cross_unit_hazard/etc. sees the real 44-row seed instead of raising
-    UnitMapNotSeeded on an empty table."""
+    cross_unit_hazard/etc. sees the real 44-row seed instead of an empty
+    table (which reads every code as unknown)."""
     conn.executescript(_MIG_185.read_text(encoding='utf-8'))
     conn.commit()
 

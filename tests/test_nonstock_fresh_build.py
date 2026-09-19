@@ -23,7 +23,7 @@ def _seed_unit_map(empty_db_conn):
     ZERO rows — it's a data-less clone). Neither test here is ABOUT unit
     translation, but `_entry()`'s unit='ใบ' still goes through
     import_weekly's normalize_unit call — seed the real 44-row map
-    (idempotent, drops-first) so that doesn't raise UnitMapNotSeeded."""
+    (idempotent, drops-first) so it translates as it would on a real db."""
     empty_db_conn.executescript(_MIG_185.read_text(encoding='utf-8'))
     empty_db_conn.commit()
 

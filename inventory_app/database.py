@@ -653,6 +653,11 @@ def init_db():
     # own SQL directly (idempotent, drops-first) rather than duplicating its
     # 44-row list a second time in Python — it is a no-op on a DB that
     # already got it seeded the normal way (existing DB, mig 185 pending).
+    # EMPTY table only, so a map Put has since changed is never re-seeded.
+    # It replays 185 alone: a later migration that writes unit_map has to be
+    # replayed here too (test_no_later_migration_writes_unit_map fails until
+    # it is). The VAT-book build swaps this seed for the main db's map
+    # (vat_book_builder._use_main_unit_map).
     if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='unit_map'"
     ).fetchone() and not conn.execute("SELECT 1 FROM unit_map LIMIT 1").fetchone():
