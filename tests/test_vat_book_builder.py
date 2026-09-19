@@ -72,6 +72,20 @@ def test_use_main_unit_map_refuses_without_a_main_db(conn):
     assert conn.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 1
 
 
+def test_use_main_unit_map_refuses_an_empty_main_map(conn, tmp_path):
+    """An empty main map would leave the build reading every code as
+    unknown, so the whole book would import untranslated. Refuse instead,
+    before the build db's own map is touched."""
+    main_db = tmp_path / 'main.db'
+    c = sqlite3.connect(str(main_db))
+    c.execute("CREATE TABLE unit_map (book TEXT, spelling TEXT, word TEXT)")
+    c.commit()
+    c.close()
+    with pytest.raises(RuntimeError, match='unit_map is empty'):
+        vb._use_main_unit_map(conn, str(main_db))
+    assert conn.execute("SELECT COUNT(*) FROM unit_map").fetchone()[0] == 1
+
+
 def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     """The VAT book is a fresh db: init_db() fills its unit_map from
     data/schema.sql, the map as of the last schema dump. The main db's map is
@@ -89,6 +103,13 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     import config
     import database
     import express_dbf_source as eds
+    # The build imports these lazily. First imported under the patched
+    # DATABASE_PATH, they would keep the deleted tmp path for every later
+    # test (`from config import DATABASE_PATH` binds once); import them now.
+    import cashflow  # noqa: F401
+    import import_credit_notes  # noqa: F401
+    import payments_alloc  # noqa: F401
+    before = set(sys.modules)
 
     main_db = tmp_path / 'main.db'
     c = sqlite3.connect(str(main_db))
@@ -141,6 +162,9 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     assert product_unit == [('ขวด',)]        # the STMAS seed path
     # exactly the main map: schema.sql's dumped rows were replaced, not topped up
     assert rows == [('BSN5657', 'ขว', 'ขวด')]
+    leaked = sorted(m for m in set(sys.modules) - before
+                    if getattr(sys.modules[m], 'DATABASE_PATH', None) == db_path)
+    assert leaked == [], f'first imported inside the build, bound to the tmp db: {leaked}'
 
 
 def test_seed_blank_name_falls_back_to_code_and_dups_keep_first(conn):

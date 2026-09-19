@@ -286,6 +286,12 @@ def _use_main_unit_map(conn, main_db_path):
         rows = src.execute("SELECT book, spelling, word FROM unit_map").fetchall()
     finally:
         src.close()
+    if not rows:
+        # An empty map reads as "every code unknown": the whole book would
+        # import its unit codes untranslated, silently.
+        raise RuntimeError(
+            f"the main db's unit_map is empty ({main_db_path}); refusing to build "
+            "a VAT book that would import every unit code untranslated")
     conn.execute("DELETE FROM unit_map")
     conn.executemany(
         "INSERT INTO unit_map (book, spelling, word) VALUES (?, ?, ?)", rows)
