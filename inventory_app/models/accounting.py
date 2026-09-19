@@ -12,6 +12,7 @@ subtracted a second time — cashbook opex already includes the
 จ่ายค่าคอมมิชชั่น category (design.md Q5); `commission_total` is dropped.
 """
 
+import calendar as _cal
 from datetime import date
 
 import sales_filters
@@ -22,6 +23,13 @@ from database import get_connection
 # Unlike the pace panel (financial_health.py), this P&L wants salary IN opex
 # (no separate deterministic-salary calc here), so เงินเดือน is NOT excluded.
 _NON_OPEX_CATEGORIES = ('เงินทุน/เงินโอน', 'ซื้อสินค้า')
+
+# Incomplete-month reading (CONTEXT.md "Internal P&L" ->
+# เดือนที่ข้อมูลยังไม่ครบ): an account is "expected" for a month when it is
+# active, non-transfer, and carried a qualifying opex row in >= _MIN of the
+# _LOOKBACK calendar months before it.
+_EXPECTED_LOOKBACK_MONTHS = 6
+_EXPECTED_MIN_MONTHS = 3
 
 # 2026-03 giveaway (วรสวัสดิ์) distorts that month's revenue/COGS — flagged
 # as a note, not hard-coded out of the numbers (design.md step 5: no
@@ -49,6 +57,64 @@ def _overlaps(date_from, date_to, lo, hi):
     return date_from <= hi and date_to >= lo
 
 
+def _shift_ym(ym, delta_months):
+    """'YYYY-MM' shifted by a signed number of calendar months."""
+    y, m = (int(x) for x in ym.split('-'))
+    idx = y * 12 + (m - 1) + delta_months
+    y2, m2 = divmod(idx, 12)
+    return f'{y2:04d}-{m2 + 1:02d}'
+
+
+def _incomplete_months(conn, date_from, date_to):
+    """CONTEXT.md "Internal P&L" -> เดือนที่ข้อมูลยังไม่ครบ. Judged over the
+    WHOLE calendar month(s) the period touches, never the [date_from, date_to]
+    slice (a 10-day custom range must not flag every account as missing) —
+    so month enumeration and the presence window both use calendar-month
+    boundaries, ignoring the exact days in date_from/date_to.
+    """
+    first_ym = date_from[:7]
+    last_ym = date_to[:7]
+
+    window_start = _shift_ym(first_ym, -_EXPECTED_LOOKBACK_MONTHS) + '-01'
+    last_y, last_m = (int(x) for x in last_ym.split('-'))
+    window_end = f'{last_y:04d}-{last_m:02d}-{_cal.monthrange(last_y, last_m)[1]:02d}'
+
+    excl_placeholders = ','.join('?' * len(_NON_OPEX_CATEGORIES))
+    rows = conn.execute(f"""
+        SELECT COALESCE(ca.display_name, ca.code) AS label,
+               substr(ct.txn_date, 1, 7)           AS ym
+          FROM cashbook_transactions ct
+          JOIN cashbook_accounts ca ON ca.id = ct.account_id
+         WHERE ct.direction = 'expense'
+           AND ca.is_active = 1
+           AND ca.is_transfer = 0
+           AND COALESCE(ct.category, '') NOT IN ({excl_placeholders})
+           AND ct.txn_date >= ? AND ct.txn_date <= ?
+         GROUP BY label, ym
+    """, (*_NON_OPEX_CATEGORIES, window_start, window_end)).fetchall()
+
+    presence = {}
+    for r in rows:
+        presence.setdefault(r['label'], set()).add(r['ym'])
+
+    months = []
+    ym = first_ym
+    while ym <= last_ym:
+        months.append(ym)
+        ym = _shift_ym(ym, 1)
+
+    incomplete_months = []
+    for ym in months:
+        lookback = {_shift_ym(ym, -k) for k in range(1, _EXPECTED_LOOKBACK_MONTHS + 1)}
+        expected = [label for label, yms in presence.items()
+                    if len(yms & lookback) >= _EXPECTED_MIN_MONTHS]
+        missing = sorted(label for label in expected if ym not in presence[label])
+        if missing:
+            incomplete_months.append({'ym': ym, 'missing': missing})
+
+    return incomplete_months
+
+
 def get_accounting_summary(date_from=None, date_to=None):
     """
     Aggregate profit / cost / expenses for the /accounting page.
@@ -72,8 +138,6 @@ def get_accounting_summary(date_from=None, date_to=None):
     Commission is NOT subtracted separately — cashbook opex already
     includes it (see module docstring).
     """
-    import calendar as _cal
-
     conn = get_connection()
 
     # ── Resolve default period ────────────────────────────────────────────────
@@ -168,14 +232,22 @@ def get_accounting_summary(date_from=None, date_to=None):
             for r in exp_rows
         ]
         expenses = float(sum(c['total'] for c in expenses_by_category))
-        # ── Net profit — NO separate commission subtraction: cashbook opex
-        # above already includes จ่ายค่าคอมมิชชั่น (design.md Q5, avoids
-        # double-counting commission_payouts on top of it).
-        net_profit = gross_profit - expenses
+        incomplete_months = _incomplete_months(conn, date_from, date_to)
+        if incomplete_months:
+            expense_status = 'incomplete'
+            net_profit = None
+        else:
+            expense_status = 'complete'
+            # ── Net profit — NO separate commission subtraction: cashbook
+            # opex above already includes จ่ายค่าคอมมิชชั่น (design.md Q5,
+            # avoids double-counting commission_payouts on top of it).
+            net_profit = gross_profit - expenses
     else:
         expenses_by_category = []
         expenses = None
         net_profit = None
+        expense_status = 'no_coverage'
+        incomplete_months = []
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
@@ -251,7 +323,8 @@ def get_accounting_summary(date_from=None, date_to=None):
         'margin_pct': margin_pct,
         'expenses': expenses,
         'expenses_by_category': expenses_by_category,
-        'has_expense_coverage': has_expense_coverage,
+        'expense_status': expense_status,
+        'incomplete_months': incomplete_months,
         'net_profit': net_profit,
         'note_march_anomaly': note_march_anomaly,
         'brand_breakdown': brand_breakdown,
