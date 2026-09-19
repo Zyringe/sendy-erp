@@ -35,11 +35,24 @@
 </div>
 {% endif %}
 
-{% if s.expenses is none %}
+{% if s.expense_status == 'no_coverage' %}
 <div class="alert alert-danger py-2 mb-3 small">
   <i class="bi bi-slash-circle me-1"></i>
   ⚠ ช่วงนี้ยังไม่มีข้อมูลค่าใช้จ่ายในสมุดรับ-จ่าย → กำไรสุทธิคำนวณไม่ได้
   (สมุดรับ-จ่ายเริ่มมีข้อมูลตั้งแต่ มี.ค. 2569 — รายได้/COGS/กำไรขั้นต้นยังใช้ได้ตามปกติ)
+</div>
+{% endif %}
+
+{% if s.expense_status == 'incomplete' %}
+<div class="alert alert-warning py-2 mb-3 small" id="incomplete-month-alert">
+  <i class="bi bi-hourglass-split me-1"></i>
+  <strong>ข้อมูลค่าใช้จ่ายยังไม่ครบ</strong> — จึงยังไม่แสดง "กำไรสุทธิ" เพราะจะสูงเกินจริง
+  (รายได้ / ต้นทุนขาย / กำไรขั้นต้น ใช้ได้ตามปกติ)
+  <ul class="mb-0 mt-1">
+    {% for m in s.incomplete_months %}
+    <li>{{ m.ym }} — ยังไม่มีรายการในสมุดรับ-จ่ายของ {{ m.missing | join(', ') }}</li>
+    {% endfor %}
+  </ul>
 </div>
 {% endif %}
 
@@ -169,6 +182,9 @@
           <div class="stat-card-label">ค่าใช้จ่าย</div>
           <div class="stat-card-value" style="color:#7e22ce">
             {% if s.expenses is none %}—{% else %}{{ s.expenses | fmt_price }}{% endif %}
+            {% if s.expense_status == 'incomplete' %}
+            <span class="badge bg-warning text-dark" style="font-size:0.6em">ยังไม่ครบ</span>
+            {% endif %}
           </div>
         </div>
       </div>
@@ -200,13 +216,19 @@
           <div class="stat-card-label fw-bold">กำไรสุทธิโดยประมาณ</div>
           <div class="stat-card-value {% if s.net_profit is none %}text-subtle{% elif s.net_profit >= 0 %}text-success{% else %}text-danger{% endif %}"
                style="font-size:1.6rem">
-            {% if s.net_profit is none %}คำนวณไม่ได้{% else %}{{ s.net_profit | fmt_price }}{% endif %}
+            {% if s.net_profit is not none %}{{ s.net_profit | fmt_price }}
+            {% elif s.expense_status == 'incomplete' %}ยังไม่แสดง
+            {% else %}คำนวณไม่ได้{% endif %}
           </div>
         </div>
         {% if s.net_profit is not none %}
         <div class="ms-auto text-end text-subtle small">
           <div>= กำไรขั้นต้น {{ s.gross_profit | fmt_price }}</div>
           <div>− ค่าใช้จ่าย (รวมค่าคอมฯ) {{ s.expenses | fmt_price }}</div>
+        </div>
+        {% elif s.expense_status == 'incomplete' %}
+        <div class="ms-auto text-end text-subtle small">
+          <div>รอรายการค่าใช้จ่ายที่ยังไม่เข้า</div>
         </div>
         {% endif %}
       </div>
@@ -291,6 +313,9 @@
 <div class="card mb-4">
   <div class="card-header">
     <i class="bi bi-receipt-cutoff me-2 text-accent"></i>ค่าใช้จ่ายแยกตามหมวด (สมุดรับ-จ่าย BSN+SD)
+    {% if s.expense_status == 'incomplete' %}
+    <span class="text-subtle small ms-2">รายการยังไม่ครบ</span>
+    {% endif %}
   </div>
   {% if s.expenses is none %}
   <div class="card-body text-subtle text-center py-4">
