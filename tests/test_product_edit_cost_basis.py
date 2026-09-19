@@ -343,6 +343,47 @@ def test_untouched_many_decimal_basis_preserves_both_costs(admin_client, monkeyp
     assert after['opening_cost'] == before['opening_cost']
 
 
+def test_untouched_blank_box_preserves_purchase_driven_wacc(admin_client, monkeypatch):
+    """The dominant prod shape: opening_cost = 0 with a live cost_price > 0.
+
+    850 of the 894 exposed active products on the 2026-09-19 15:36Z prod
+    snapshot look like this — their cost came from purchase bills only, so the
+    basis was never typed. The box renders `{{ 0.0 or '' }}` = BLANK and posts
+    back ''. Before the fix that wrote 0 to BOTH columns, zeroing a real WACC.
+    The two tests above seed opening == cost != 0 and cannot see this branch.
+    """
+    import models
+
+    c, db = admin_client
+    pid = _seed_product(db, cost=0.0)
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE products SET cost_price=41.5 WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    before = _row(db, pid)
+    # control: the two columns really diverge the way the 850 do
+    assert before['opening_cost'] == 0.0 and before['cost_price'] == 41.5
+
+    box = _rendered_cost_box(c, pid)
+    assert box.get('value') == '', 'control: a zero basis renders as a blank box'
+
+    recalculations = []
+
+    def record_recalculation(*args, **kwargs):
+        recalculations.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(models, 'recalculate_product_wacc', record_recalculation)
+    resp = _post_cost(c, pid, '', sell='104.25')
+    assert resp.status_code == 302
+
+    after = _row(db, pid)
+    assert after['base_sell_price'] == 104.25, 'canary: the route did not reach the write'
+    assert len(recalculations) == 0, 'a blank, untouched basis must not recalculate WACC'
+    assert after['cost_price'] == 41.5, 'the blank box zeroed the live WACC'
+    assert after['opening_cost'] == 0.0
+
+
 def test_edit_form_accepts_its_rendered_many_decimal_basis(admin_client):
     c, db = admin_client
     opening_cost = 15.158333333333333
