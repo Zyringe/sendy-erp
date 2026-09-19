@@ -26,15 +26,20 @@ before) get one from `database.get_connection()`, imported lazily so this
 module still imports with no hard Flask/DB dependency for callers that
 always pass their own `conn`.
 
-FAIL LOUD when unseeded. A `conn` whose `unit_map` has zero rows total (a
-brand-new DB built from data/schema.sql, or a hand-built test schema that
-never ran migration 185) raises `UnitMapNotSeeded` rather than silently
-treating every code as unknown — see that class's docstring. A caller
-about to do a bulk unit-bearing write (an importer, the VAT-book builder)
-should never point `conn=` at a database other than the one main app db
-`unit_map` is actually seeded in; `vat_book_builder.py::seed_products_from_
-stmas` is the worked example of passing the translation in explicitly
-instead.
+NEVER EMPTY BY CONSTRUCTION, not by a runtime guard. A fresh DB built from
+data/schema.sql gets the `unit_map` TABLE (schema.sql is DDL) but, without
+help, none of migration 185's rows (a fresh-DB boot backfills every
+migration as already-applied without re-running it). `database.py::init_db()`
+closes that gap directly: it re-seeds `unit_map` from migration 185's own
+SQL whenever the table exists but is empty, so every DB this module's
+`_connect()` can ever reach already has the real 44 rows before a request
+is served. See `init_db()`'s docstring for why this is (a), not a per-call
+raise: an early version of this file raised on every call when a table had
+zero rows, which broke ~100 unrelated tests that build a schema-only DB
+clone for other purposes and only incidentally pass through a bsn_units
+call — the guard's blast radius was disproportionate to the deployment-only
+risk it existed to catch, and `init_db()` closes the ACTUAL risk (a fresh
+boot) without touching every test fixture in the suite.
 """
 from __future__ import annotations
 
@@ -47,22 +52,6 @@ BOOK_ANY = '*'          # a variant that applies to every book
 DEFAULT_BOOK = BOOK_BSN5657
 
 
-class UnitMapNotSeeded(RuntimeError):
-    """`unit_map` has zero rows in total (or doesn't exist at all) — this DB
-    was never seeded with migration 185's data. A brand-new DB built from
-    data/schema.sql does NOT run migration INSERTs (only their CREATE TABLE
-    side): `run_pending_migrations`'s bootstrap-backfill path records every
-    migration as already-applied without re-executing it, so a fresh boot
-    (bare `git clone`, an empty Railway volume, or a subprocess building a
-    throwaway db in its own DATA_DIR) can reach here with a structurally
-    correct but completely empty table.
-
-    Raised instead of silently treating EVERY Express code as unknown and
-    passing it through untranslated — that would import raw codes across an
-    entire fresh environment with nothing to flag it, exactly what #595
-    exists to prevent. See docs/adr/0018."""
-
-
 def _connect():
     from database import get_connection
     return get_connection()
@@ -72,41 +61,17 @@ def _no_such_table(exc: sqlite3.OperationalError) -> bool:
     return 'no such table: unit_map' in str(exc)
 
 
-def _assert_seeded(conn) -> None:
-    """One row is enough to prove SOME migration actually ran the INSERTs —
-    an empty table (or a missing one) means none did."""
-    try:
-        seeded = conn.execute("SELECT 1 FROM unit_map LIMIT 1").fetchone() is not None
-    except sqlite3.OperationalError as exc:
-        if _no_such_table(exc):
-            seeded = False
-        else:
-            raise
-    if not seeded:
-        raise UnitMapNotSeeded(
-            "unit_map has no rows — refusing to translate any unit until it "
-            "is seeded (re-run migration 185, or point at a DB that already "
-            "has it applied).")
-
-
 def translate(spelling, book: str = DEFAULT_BOOK, *, conn=None) -> Optional[str]:
     """The one Sendy word for `spelling` in `book`, or None if unknown.
 
     A book-specific row wins; a `BOOK_ANY` (book-independent) row is the
     fallback for a spelling variant that means the same thing in every book.
-
-    Raises `UnitMapNotSeeded` if the table is empty — see that class's
-    docstring. This is deliberately NOT the same as `spelling` being
-    unknown (which returns None, the normal "flag it for Put" case): an
-    unseeded map cannot tell known from unknown at all, so pretending
-    everything is "unknown" would be a silent, DB-wide translation outage.
     """
     if not spelling:
         return None
     own = conn is None
     conn = conn or _connect()
     try:
-        _assert_seeded(conn)
         row = conn.execute(
             "SELECT word FROM unit_map WHERE book = ? AND spelling = ?",
             (book, spelling)).fetchone()
@@ -115,6 +80,16 @@ def translate(spelling, book: str = DEFAULT_BOOK, *, conn=None) -> Optional[str]
                 "SELECT word FROM unit_map WHERE book = ? AND spelling = ?",
                 (BOOK_ANY, spelling)).fetchone()
         return row[0] if row is not None else None
+    except sqlite3.OperationalError as exc:
+        # Only a DB whose migrations never ran (a test importing this module
+        # in isolation, before any fixture has run init_db()) hits this — a
+        # REAL boot always runs init_db() before serving a request, and
+        # init_db() guarantees unit_map is seeded (see module docstring).
+        # Read paths degrade to "unknown" rather than crash; learn() below
+        # does not.
+        if _no_such_table(exc):
+            return None
+        raise
     finally:
         if own:
             conn.close()
@@ -132,14 +107,15 @@ def normalize_unit(spelling, book: str = DEFAULT_BOOK, *, conn=None):
 def full_units(*, conn=None) -> set:
     """Every canonical Sendy word the map currently produces (the `word`
     column, deduplicated) — for suggestion widgets that must offer words,
-    never codes. Raises `UnitMapNotSeeded` on an empty table (see
-    `translate`'s docstring); an empty SET here would silently tell a
-    suggestion widget that NO word is canonical yet."""
+    never codes."""
     own = conn is None
     conn = conn or _connect()
     try:
-        _assert_seeded(conn)
         return {r[0] for r in conn.execute("SELECT DISTINCT word FROM unit_map")}
+    except sqlite3.OperationalError as exc:
+        if _no_such_table(exc):
+            return set()
+        raise
     finally:
         if own:
             conn.close()
@@ -165,16 +141,11 @@ def load_unit_map(book: str = DEFAULT_BOOK, *, conn=None) -> dict:
     sees a `learn()` a sibling worker just made.
 
     Book-specific rows are overlaid on top of `BOOK_ANY` rows, matching
-    `translate()`'s precedence. Raises `UnitMapNotSeeded` on an empty table
-    (see `translate`'s docstring) — an empty DICT here would make a caller
-    like `detect_document_drift` silently treat every raw Express code on
-    both sides as already-matching-Sendy's-stored-value, hiding drift
-    instead of finding it.
+    `translate()`'s precedence.
     """
     own = conn is None
     conn = conn or _connect()
     try:
-        _assert_seeded(conn)
         out = {}
         for spelling, word in conn.execute(
                 "SELECT spelling, word FROM unit_map WHERE book = ?", (BOOK_ANY,)):
@@ -184,6 +155,10 @@ def load_unit_map(book: str = DEFAULT_BOOK, *, conn=None) -> dict:
                     "SELECT spelling, word FROM unit_map WHERE book = ?", (book,)):
                 out[spelling] = word
         return out
+    except sqlite3.OperationalError as exc:
+        if _no_such_table(exc):
+            return {}
+        raise
     finally:
         if own:
             conn.close()

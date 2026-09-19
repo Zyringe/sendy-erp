@@ -129,3 +129,34 @@ def test_init_db_from_empty_completes(tmp_path, monkeypatch):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
+
+
+def test_init_db_from_empty_seeds_unit_map(tmp_path, monkeypatch):
+    """#596 (team-lead review): a brand-new DB built from data/schema.sql
+    gets the unit_map TABLE (schema.sql is DDL only) but none of migration
+    185's ROWS — run_pending_migrations()'s bootstrap-backfill path records
+    every migration as already-applied without re-running it. Without
+    init_db()'s explicit re-seed, bsn_units.py would silently treat every
+    Express code as unknown on a fresh install (bare git clone, empty
+    Railway volume) — the exact failure #595 exists to prevent."""
+    db_path = str(tmp_path / "fresh.db")
+
+    import config
+    import database
+    monkeypatch.setattr(config, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+
+    database.init_db()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM unit_map WHERE book = 'BSN5657'"
+        ).fetchone()[0]
+        assert n == 44, f"expected the 44 real seed rows, found {n}"
+        word = conn.execute(
+            "SELECT word FROM unit_map WHERE book = 'BSN5657' AND spelling = 'กร'"
+        ).fetchone()
+        assert word == ('ตัว',), "a fresh build must carry migration 185's REAL data, not a placeholder"
+    finally:
+        conn.close()
