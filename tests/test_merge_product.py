@@ -53,7 +53,7 @@ def test_merge(tmp_db):
     conn.commit()
     conn.close()
 
-    assert mp.main(["--from", str(SRC), "--to", str(DST),
+    assert mp.main(["--operator", "pytest", "--reason", "test merge", "--from", str(SRC), "--to", str(DST),
                     "--db", tmp_db, "--apply"]) == 0
     conn = sqlite3.connect(tmp_db)
 
@@ -87,7 +87,7 @@ def test_merge_dry_run_writes_nothing(tmp_db):
     _t(conn, 903201, 5)
     conn.commit()
     conn.close()
-    assert mp.main(["--from", "903201", "--to", "903202",
+    assert mp.main(["--operator", "pytest", "--reason", "test merge", "--from", "903201", "--to", "903202",
                     "--db", tmp_db]) == 0
     conn = sqlite3.connect(tmp_db)
     assert conn.execute("SELECT is_active FROM products WHERE id=903201"

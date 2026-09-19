@@ -85,8 +85,9 @@ from .wacc import (
 )
 from .system_alerts import (
     KIND_WACC_IDENTITY, KIND_WACC_COST_OUTLIER, KIND_SLOW_REQUEST,
-    KIND_CONVERSION_ROLE_ERROR,
+    KIND_CONVERSION_ROLE_ERROR, KIND_ACTOR_MISSING,
     create_system_alert, record_wacc_identity_alert, record_wacc_cost_outlier_alert,
+    record_actor_missing_alert,
     record_ignored_import_lines_alert, record_slow_request_alert,
     record_conversion_role_alert,
     get_open_system_alerts, count_open_system_alerts, resolve_system_alert,

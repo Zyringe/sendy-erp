@@ -60,11 +60,15 @@ def main(argv=None):
                          "through a dated ADJUST. Use when the opening balances "
                          "were seeded while the code was still mis-attributed "
                          "and nobody has re-counted the shelf.")
+    ap.add_argument("--operator", required=True,
+                    help="who is running this (#590: cost writes are signed)")
+    ap.add_argument("--reason", required=True, help="why this re-point")
     a = ap.parse_args(argv)
     EXPORTS.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    conn = sqlite3.connect(str(a.db))
-    conn.row_factory = sqlite3.Row
+    import database  # noqa: E402
+    conn = database.script_connection(__file__, operator=a.operator,
+                                      reason=a.reason, db_path=str(a.db))
 
     if not conn.execute("SELECT 1 FROM products WHERE id=?",
                         (a.dst,)).fetchone():
