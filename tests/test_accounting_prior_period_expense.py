@@ -20,9 +20,10 @@ direction='expense', `ca.is_transfer = 0`, category not in
 on account `904` (is_transfer=1 today) and stay invisible until ADR 0017
 un-flags it. Case 7 pins that.
 
-`net_profit` = `gross_profit - expenses - prior_period_expenses`, i.e. its
+`net_profit` = `gross_profit - (expenses + prior_period_expenses)`, i.e. its
 VALUE does not move (story 10: every baht still lands in the bottom line).
-Case 1's control is what proves that.
+Case 1's control proves that at two decimal places; the one_bit case proves
+it at full precision, which is where the parentheses turn out to matter.
 
 Fixture: `empty_db` / `admin_client_empty` (full live schema, zero rows) —
 never `tmp_db`, whose live-DB copy carries 458 real cashbook rows that would
@@ -121,6 +122,44 @@ def test_control_the_same_rows_unstamped_are_all_operating_expense(empty_db):
     assert s['expenses'] == pytest.approx(500.0)
     assert s['prior_period_expenses'] == pytest.approx(0.0)
     assert s['net_profit'] == pytest.approx(1000.0 - 500.0)
+
+
+def test_stamping_a_row_does_not_move_net_profit_by_one_bit(empty_db):
+    """Story 10 at full precision. Same DB, same rows, read twice — the only
+    difference between the two reads is the stamp — so `==` is the assertion,
+    not `approx`: a re-association of the subtraction that moved the result
+    by 1 ULP would pass `approx` and still contradict the claim being made
+    ("this number does not move"). The fixture's amounts are chosen so the
+    arithmetic is NOT exact in binary; with round numbers this test cannot
+    fail."""
+    # These three amounts are NOT arbitrary: they are a searched triple for
+    # which `X - (e + p)` and `(X - e) - p` differ in the last bit
+    # (-214254.95 vs -214254.94999999998). With round numbers the two forms
+    # agree and this test cannot fail — that is how the first draft of it was
+    # vacuous.
+    conn = _conn(empty_db)
+    a = _mk_account(conn, 'A')
+    _mk_expense(conn, a, '2026-03-10', 268405.12, category='ค่าเช่า')
+    stamped_id = _mk_expense(conn, a, '2026-03-09', 183478.77,
+                             category='จ่ายค่าโบนัส', belongs_to_period='2025')
+    _mk_sale(conn, '2026-03-05', 'IV114', net=237628.94)
+    conn.commit()
+    conn.close()
+
+    split = models.get_accounting_summary('2026-03-01', '2026-03-31')
+
+    conn = _conn(empty_db)
+    conn.execute("UPDATE cashbook_transactions SET belongs_to_period = NULL WHERE id = ?",
+                 (stamped_id,))
+    conn.commit()
+    conn.close()
+
+    whole = models.get_accounting_summary('2026-03-01', '2026-03-31')
+
+    assert whole['prior_period_expenses'] == 0.0        # control: the stamp really went
+    assert split['prior_period_expenses'] == 183478.77
+    assert split['expenses'] != whole['expenses']       # control: the split really happened
+    assert split['net_profit'] == whole['net_profit']
 
 
 # ── 2. expenses_by_category follows the same partition ─────────────────────

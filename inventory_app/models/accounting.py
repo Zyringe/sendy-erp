@@ -303,7 +303,16 @@ def get_accounting_summary(date_from=None, date_to=None):
         # Both expense lines are subtracted, so splitting them does NOT move
         # this number — every baht that left still lands in the bottom line
         # (ADR 0014 decision 3, spec #593 story 10).
-        net_profit = gross_profit - expenses - prior_period_expenses
+        # ⚠ The parentheses are load-bearing and must not be "simplified" to
+        # `gross_profit - expenses - prior_period_expenses`: subtracting twice
+        # re-associates the float and can move the result by 1 ULP. Measured
+        # on a prod-derived copy for 2026-03: -663652.6317031696 before the
+        # split and with this form, -663652.6317031697 with two subtractions.
+        # Invisible at two decimal places, but story 10's whole claim is that
+        # this number does not move, and "it moves in the last bit" is a
+        # weaker claim than the one being made.
+        # Pinned by test_stamping_a_row_does_not_move_net_profit_by_one_bit.
+        net_profit = gross_profit - (expenses + prior_period_expenses)
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
