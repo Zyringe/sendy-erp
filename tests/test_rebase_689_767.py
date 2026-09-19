@@ -368,7 +368,9 @@ GUARDS = [
     ('opening', "UPDATE transactions SET quantity_change=282 WHERE product_id=767 AND note='%s'"
                 % OPENING_NOTE,
      'opening plug', ("if openings != [plan['opening']]:", "if False:")),
-    ('bug_row', "UPDATE sales_transactions SET qty=12 WHERE doc_no='IV6702067-4'",
+    ('bug_row', "UPDATE sales_transactions SET qty=12, change_source='manual', change_actor='test',"
+                " change_token='t-586-bug-row', change_reason='ทดสอบว่าสคริปต์ปฏิเสธเมื่อบิลต้นทางเปลี่ยน'"
+                " WHERE doc_no='IV6702067-4'",
      'IV6702067-4', ("if not ok:", "if False:")),
     ('unsynced', "UPDATE sales_transactions SET synced_to_stock=0 WHERE doc_no='IV6703509-7'",
      'unsynced', ("if n_unsynced:", "if False:")),
