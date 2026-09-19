@@ -172,8 +172,8 @@ def test_moved_rows_keep_their_bsn_code_and_the_mapping_stays_on_meta(db):
         "SELECT bsn_code FROM sales_transactions WHERE product_id=? UNION "
         "SELECT bsn_code FROM purchase_transactions WHERE product_id=?", (belco, belco))}
     assert codes == {CODE}
-    assert db.execute("SELECT product_id FROM product_code_mapping WHERE bsn_code=?",
-                      (CODE,)).fetchall() == [(META,)]
+    assert [r[0] for r in db.execute("SELECT product_id FROM product_code_mapping WHERE bsn_code=?",
+                                     (CODE,))] == [META]
     assert db.execute("SELECT COUNT(*) FROM product_code_mapping WHERE product_id=?",
                       (belco,)).fetchone()[0] == 0
 
@@ -257,18 +257,18 @@ def test_refuses_to_run_twice(db):
 PRECONDITION_BREAKS = {
     'meta product renamed': (
         "UPDATE products SET product_name='x' WHERE id=1305",
-        "SELECT product_name FROM products WHERE id=1305", 'x', 'pid 1305'),
+        "SELECT product_name FROM products WHERE id=1305", 'x', 'wrong DB'),
     'meta cost not 7.00': (
         "UPDATE products SET cost_price=24.5 WHERE id=1305",
         "SELECT cost_price FROM products WHERE id=1305", 24.5, 'cost_price'),
     'meta stock not 0': (
         "INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode, note)"
         " VALUES (1305, 'ADJUST', 4, 'unit', 'นับจริง')",
-        "SELECT quantity FROM stock_levels WHERE product_id=1305", 4, 'stock'),
+        "SELECT quantity FROM stock_levels WHERE product_id=1305", 4, 'pid 1305 stock'),
     'purchase line gone': (
         "DELETE FROM purchase_transactions WHERE doc_no='HP6900041' AND bsn_code='528ด8655'",
         "SELECT COUNT(*) FROM purchase_transactions WHERE doc_no='HP6900041' AND bsn_code='528ด8655'",
-        0, 'HP6900041'),
+        0, 'HP6900041: 0 row(s) match'),
     'sale line name differs': (
         "DELETE FROM sales_transactions WHERE doc_no='IV6901138-7';"
         "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, bsn_code,"
@@ -276,18 +276,18 @@ PRECONDITION_BREAKS = {
         " VALUES ('2026-07-18','IV6901138-7','IV6901138',1305,'528ด8655',"
         " 'ดอกลมหัวลูกบล็อก 8mmx65mm เมต้า',13,'อัน',10,130,1)",
         "SELECT product_name_raw FROM sales_transactions WHERE doc_no='IV6901138-7'",
-        'ดอกลมหัวลูกบล็อก 8mmx65mm เมต้า', 'IV6901138-7'),
+        'ดอกลมหัวลูกบล็อก 8mmx65mm เมต้า', 'IV6901138-7: 0 row(s) match'),
     'sale line duplicated': (
         "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, bsn_code,"
         " product_name_raw, qty, unit, unit_price, net, synced_to_stock)"
         " VALUES ('2026-07-18','IV6901138-7','IV6901138',1305,'528ด8655',"
         " 'ดอกลมหัวลูกบล็อก 8mmx65mm BELCO',13,'อัน',10,130,0)",
-        "SELECT COUNT(*) FROM sales_transactions WHERE doc_no='IV6901138-7'", 2, 'IV6901138-7'),
+        "SELECT COUNT(*) FROM sales_transactions WHERE doc_no='IV6901138-7'", 2, 'IV6901138-7: 2 row(s) match'),
     'meta has an unexpected extra line': (
         "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, bsn_code,"
         " product_name_raw, qty, unit, unit_price, net, synced_to_stock)"
         " VALUES ('2026-09-01','IV6901500-1','IV6901500',1305,'528ด8655','x',1,'อัน',35,35,0)",
-        "SELECT COUNT(*) FROM sales_transactions WHERE product_id=1305", 3, 'IV6901500-1'),
+        "SELECT COUNT(*) FROM sales_transactions WHERE product_id=1305", 3, 'sales_transactions lines are'),
     'unsynced line on meta': (
         "UPDATE sales_transactions SET synced_to_stock=0 WHERE doc_no='IV6702971-2'",
         "SELECT synced_to_stock FROM sales_transactions WHERE doc_no='IV6702971-2'", 0, 'unsynced'),
@@ -343,7 +343,8 @@ def test_invariant_cost_catches_a_skipped_wacc_recalc(db, monkeypatch):
     before = _state(db)
     code, report = split_belco.run(db, apply=True)
     assert calls, "the injected fault never ran"
-    _assert_rolled_back(db, before, code, report, 'cost_price')
+    _assert_rolled_back(db, before, code, report, 'pid 1305 cost_price')
+    assert any('expected 7.00' in p for p in report['problems']), report['problems']
 
 
 def test_invariant_no_movement_lost_catches_a_skipped_purchase_replay(db, monkeypatch):
@@ -356,7 +357,23 @@ def test_invariant_no_movement_lost_catches_a_skipped_purchase_replay(db, monkey
     before = _state(db)
     code, report = split_belco.run(db, apply=True)
     assert len(calls) == 2, "the injected fault never ran"
-    _assert_rolled_back(db, before, code, report, 'movement')
+    _assert_rolled_back(db, before, code, report, 'replay lost')
+
+
+def test_invariant_movement_set_catches_a_lost_zero_quantity_row(db, monkeypatch):
+    """The one fault only the movement multiset can see: 1305's zero-quantity
+    back-solved opening row vanishing moves no stock, no cost, no identity and
+    strands no BSN leg — a DELETE pattern one notch too wide would do exactly this."""
+    from models import bsn_sync
+
+    def then_drop_plug(real, conn, table, file_type, **kw):
+        real(conn, table, file_type, **kw)
+        conn.execute("DELETE FROM transactions WHERE product_id=1305 AND note='ยอดยกมา (back-solved)'")
+    calls = _count_calls(monkeypatch, bsn_sync, '_sync_bsn_to_stock', then_drop_plug)
+    before = _state(db)
+    code, report = split_belco.run(db, apply=True)
+    assert calls, "the injected fault never ran"
+    _assert_rolled_back(db, before, code, report, 'ledger movement set changed')
 
 
 def test_invariant_ledger_equals_stock_catches_a_stock_level_write(db, monkeypatch):
