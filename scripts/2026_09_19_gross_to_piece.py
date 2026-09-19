@@ -75,12 +75,16 @@ def _ledger_sum(conn, pid):
         (pid,)).fetchone()[0]
 
 
-def rebase(conn, pid, new_unit, ratio, new_base_sell, preserve_stock):
+def rebase(conn, pid, new_unit, ratio, new_base_sell, preserve_stock, source=SOURCE):
     """Rebase one product onto `new_unit`, preserving its physical quantity.
 
     Returns the recomputed opening quantity — the free-evidence number.
     Raises RebaseRefused before writing anything if the product is not in the
     expected pre-state.
+
+    `source` names the script in each cost-ledger note. It defaults to this
+    file, so the run already applied to prod (1050/1320) is unchanged; a later
+    script reusing this engine passes its own name (#586, 689/767).
     """
     from models import bsn_sync
 
@@ -179,7 +183,7 @@ def rebase(conn, pid, new_unit, ratio, new_base_sell, preserve_stock):
             (ratio, ratio, ratio, ratio,
              "{} | แปลงหน่วย 2026-09-19: {:g} {} @ ฿{:.4f} → {:g} {} @ ฿{:.6f} ({})".format(
                  note or '(ไม่มีหมายเหตุเดิม)', qty, unit_type, unit_cost,
-                 qty * ratio, new_unit, unit_cost / ratio, SOURCE),
+                 qty * ratio, new_unit, unit_cost / ratio, source),
              lid))
     return needed
 
