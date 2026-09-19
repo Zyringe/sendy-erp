@@ -125,8 +125,10 @@ def customer_detail(customer_code):
         region_row['region'] = customer_geo.region_of(customer['address'])
 
     conn.close()
-    # How fast this customer pays (#499), keyed directly by the URL's code.
-    pay_speed = payments_alloc.payment_speed(customer_code)
+    # How fast this customer pays (#499). It sits among the header cells that come
+    # from the customers row, so a code without one shows none of them, the same
+    # rule as the desktop code page.
+    pay_speed = payments_alloc.payment_speed(customer_code) if customer else None
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
     unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
     # #493: the shared document grouping — same one the desktop customer page

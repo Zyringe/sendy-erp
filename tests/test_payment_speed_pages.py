@@ -205,14 +205,15 @@ def test_mobile_page_omits_the_figure_below_three_settled_bills(tmp_db):
     assert 'จ่ายจริง' not in html
 
 
-def test_mobile_page_without_a_customers_row_uses_the_url_code_for_figure(tmp_db):
-    """Payment speed is code-keyed even when no customers-master row exists."""
+def test_mobile_page_without_a_customers_row_shows_no_figure(tmp_db):
+    """Same rule as the desktop page: the header's detail cells come from the
+    customers row, so a code without one shows no figure, even though the code
+    itself has enough settled bills for one."""
     _seed(tmp_db)
     assert pa.payment_speed(NOROW[0])['invoices'] == 3, 'CONTROL: enough data for a figure'
     html = _get(_client(), f'/m/customer/code/{quote(NOROW[0])}')
     assert 'ไม่พบข้อมูลลูกค้า' not in html, 'CONTROL: took the not-found branch'
     assert 'ขายล่าสุด' in html, 'CONTROL: the page rendered its bills'
     assert NOROW[1] in html, 'the no-master page did not fall back to its latest bill name'
-    found = _element(html, 'm-pay-speed')
-    assert len(found) == 1, found
-    assert found[0] == 'จ่ายจริง ~10 วัน · 3 บิล / 3 ใบเสร็จ'
+    assert _element(html, 'm-pay-speed') == []
+    assert 'จ่ายจริง' not in html
