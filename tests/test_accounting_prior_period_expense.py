@@ -435,7 +435,12 @@ def test_render_prior_period_card_is_present_with_its_rows(empty_db, admin_clien
     assert 'ค่าใช้จ่ายของงวดก่อน' in elem
     assert '400,000.00' in elem
     assert 'โบนัสปี 68' in elem
-    assert '2025' in elem
+    # the period renders in พ.ศ. (Put, 2026-09-19) — the raw Gregorian value
+    # must NOT reach the page, or a reader sees '2025' beside "โบนัสปี 68".
+    # Scoped to the cell: a bare `'2025' not in elem` would also be tripped by
+    # an unrelated 2025 date elsewhere in the card.
+    assert 'ปี 2568' in elem
+    assert '<td>2025</td>' not in elem
     # the operating figure is the NARROWED one, on the page itself
     assert '<div class="stat-card-label">ค่าใช้จ่ายดำเนินงาน</div>' in html
 
