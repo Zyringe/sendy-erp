@@ -62,6 +62,12 @@ import vat_math
 # (that filter is shared with pages that DO want marketplace/dummy rows).
 _DUMMY_DOC_BASES = ('IV6900401', 'IV6900402', 'IV6900403')
 
+# A future unit-rebase script adds its module-level SOURCE here.
+_UNIT_REBASE_SOURCES = (
+    'script:2026_09_19_gross_to_piece',
+    'script:2026_09_19_rebase_689_767',
+)
+
 # ⭐ FOUR questions are asked of `ar_writeoffs` in this repo, and they do NOT
 # have the same answer. Two of them live in this file, side by side, which is
 # why they are two NAMED functions and not one function with a flag:
@@ -615,6 +621,8 @@ def _epoch_candidates(conn, product_id, unit, today):
                        NULL and not 0) — a row recording NULL/0 -> X is
                        Sendy learning the price for the first time, and is
                        skipped in favour of an older GENUINE change, if any.
+                       Unit-rebase script rows are also skipped because they
+                       re-denominate the same price rather than change it.
       promo_start   — the CURRENT price-slot promo's date_start. Untouched
                        by #555 — a promo start/end is an explicit business
                        event, never a first-time recording.
@@ -633,8 +641,9 @@ def _epoch_candidates(conn, product_id, unit, today):
         "SELECT changed_at FROM product_price_history "
         "WHERE product_id = ? AND field_name = 'base_sell_price' "
         "  AND old_value IS NOT NULL AND old_value <> 0 "
+        f"  AND COALESCE(source, '') NOT IN ({','.join('?' for _ in _UNIT_REBASE_SOURCES)}) "
         "ORDER BY changed_at DESC, id DESC LIMIT 1",
-        (product_id,)
+        (product_id, *_UNIT_REBASE_SOURCES)
     ).fetchone()
     if row is not None and row['changed_at']:
         out['base_changed'] = row['changed_at'][:10]

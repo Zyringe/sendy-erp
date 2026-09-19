@@ -516,7 +516,7 @@ def _assemble_db():
         );
         CREATE TABLE product_price_history (
             id INTEGER PRIMARY KEY, product_id INTEGER, field_name TEXT,
-            old_value REAL, new_value REAL, changed_at TEXT
+            old_value REAL, new_value REAL, changed_at TEXT, source TEXT
         );
         CREATE TABLE audit_log (
             id INTEGER PRIMARY KEY, table_name TEXT, row_id INTEGER, action TEXT,
