@@ -26,7 +26,7 @@ def _seed_schema(conn):
         CREATE TABLE purchase_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             bsn_code TEXT, date_iso TEXT, unit TEXT,
-            unit_price REAL, qty REAL, net REAL
+            unit_price REAL, qty REAL, net REAL, doc_base TEXT
         );
         CREATE TABLE sales_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,13 +36,16 @@ def _seed_schema(conn):
     """)
 
 
-def _add_p(conn, date, unit, cost=10.0, net=None):
+def _add_p(conn, date, unit, cost=10.0, net=None, doc_base=None):
     # `net` mirrors the real column: the whole LINE after discount. Defaults to
     # unit_price x qty (qty is 1 here) so a line with no discount reads the same
-    # as it did before the column existed.
+    # as it did before the column existed. `doc_base` defaults to NULL (a real
+    # purchase, not a GR) — #591's not_a_purchase_return_clause() is NULL-safe
+    # for exactly this reason.
     conn.execute(
-        "INSERT INTO purchase_transactions (bsn_code, date_iso, unit, unit_price, qty, net) "
-        "VALUES (?,?,?,?,1,?)", (CODE, date, unit, cost, cost if net is None else net))
+        "INSERT INTO purchase_transactions (bsn_code, date_iso, unit, unit_price, qty, net, doc_base) "
+        "VALUES (?,?,?,?,1,?,?)",
+        (CODE, date, unit, cost, cost if net is None else net, doc_base))
 
 
 def _add_s(conn, date, unit):
