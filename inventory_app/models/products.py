@@ -98,6 +98,9 @@ def get_product(product_id, conn=None):
                p.product_name, p.units_per_carton, p.units_per_box,
                p.unit_type, p.hard_to_sell, p.cost_price, p.opening_cost,
                p.base_sell_price,
+               -- The edit form renders these; without them its weight box was
+               -- blank for every product and every save cleared the weight (#619).
+               p.weight_kg, p.weight_source,
                p.low_stock_threshold, p.is_active, p.brand_id, p.category_id,
                p.sub_category, p.series, p.model, p.size,
                p.color_code, p.packaging_th, p.packaging_short, p.condition, p.pack_variant,
