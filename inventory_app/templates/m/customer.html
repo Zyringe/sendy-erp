@@ -4,10 +4,10 @@
 
 {% block content %}
 {% include '_ar_snapshot_banner.html' %}
-{# "Missing from the `customers` master under this name, with no sales history" is
+{# "Missing from the `customers` master under this code, with no sales history" is
    NOT "no such customer" — the same conflation #470 fixed on /express/ar/customer.
    By this point the route has already loaded the outstanding bills AND the excluded
-   docs for this name, so denying the customer hides debt that is on the books.
+   docs for this code, so denying the customer hides debt that is on the books.
    Deny only when there is genuinely nothing to show, which is the typo this was for. #}
 {% if not customer and not stats.doc_count and not unpaid and not excluded_docs %}
 <div class="card">
@@ -178,7 +178,7 @@
 {% endif %}
 
 <div class="text-center mb-3">
-  <a href="{{ url_for('partners.customer_summary', customer_name=customer_name) }}"
+  <a href="{{ url_for('partners.customer_detail', customer_code=customer_code) }}"
      class="btn btn-sm btn-outline-secondary">
     ดูรายละเอียดเต็ม →
   </a>
