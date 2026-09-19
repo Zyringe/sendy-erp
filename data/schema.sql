@@ -78,11 +78,6 @@ CREATE TABLE brands (
     updated_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , short_code TEXT);
 
-CREATE TABLE bsn_unit_alias (
-    acronym TEXT PRIMARY KEY,
-    full    TEXT NOT NULL
-);
-
 CREATE TABLE cashbook_accounts (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     code               TEXT    UNIQUE NOT NULL,   -- '392','LEX','SPX','ชฎามาศ','กิติยา','904'
@@ -1753,6 +1748,14 @@ CREATE TABLE unit_conversions (
     UNIQUE(product_id, bsn_unit)
 );
 
+CREATE TABLE unit_map (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    book        TEXT NOT NULL,   -- 'BSN5657' | 'xp5' | '*' (applies to every book)
+    spelling    TEXT NOT NULL,   -- the Express code or spelling variant, exactly as written
+    word        TEXT NOT NULL,   -- the one Sendy spelling for this หน่วย
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE "users" (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    UNIQUE NOT NULL,
@@ -2211,6 +2214,8 @@ CREATE INDEX idx_xp5_mapping_product ON xp5_product_mapping(product_id);
 CREATE UNIQUE INDEX ux_conv_active_pack_per_output
     ON conversion_formulas(output_product_id)
     WHERE is_active = 1 AND name LIKE '[แพ็ค]%';
+
+CREATE UNIQUE INDEX ux_unit_map_book_spelling ON unit_map(book, spelling);
 
 CREATE TRIGGER after_transaction_delete
 AFTER DELETE ON transactions
