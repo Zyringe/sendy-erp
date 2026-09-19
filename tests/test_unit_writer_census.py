@@ -1037,16 +1037,29 @@ def test_through_map_translated_value_reaches_a_write(site):
 THROUGH_MAP_TRANSITIVE_CONTROLS = {}
 
 
-def _missing_transitive_controls(allowed, control_names, existing_names):
+def _missing_transitive_controls(allowed, control_names, existing):
     """[(site, label, problem)] for every through_map_transitive entry in
-    `allowed` that has no entry in `control_names`, or whose named function
-    is not in `existing_names`. A pure function of its three arguments (not
-    tied to the real ALLOWED or this module's globals) so the checker can be
-    proven against a synthetic case below — the real ALLOWED currently has
-    ZERO through_map_transitive entries, which would make a test written
-    directly against it vacuously green (verification-discipline.md's
-    empty-collection trap: "an assertion over a collection that may be
-    EMPTY pins nothing")."""
+    `allowed` that has no entry in `control_names`, or whose named entry in
+    `existing` (a name -> object mapping, e.g. `globals()`) is not an actual
+    TEST FUNCTION — name starts with `test_` AND is callable. A pure
+    function of its three arguments (not tied to the real ALLOWED or this
+    module's globals) so the checker can be proven against a synthetic case
+    below — the real ALLOWED currently has ZERO through_map_transitive
+    entries, which would make a test written directly against it vacuously
+    green (verification-discipline.md's empty-collection trap: "an
+    assertion over a collection that may be EMPTY pins nothing").
+
+    Review S7: the first version only checked `name in existing_names` (a
+    bare set of names) — registering a real, unrelated global (the
+    reviewer's example: `'sqlite3'`, this module's own import) satisfied
+    it, because a module object IS "in" that set. `startswith('test_')`
+    +`callable` narrows this to "names a real pytest test", but even that
+    is not "names a test that actually proves THIS claim" — pointing at
+    some OTHER unrelated real test (e.g. a whitelist test elsewhere in
+    this file) still passes this gate. That residual gap is accepted and
+    left to code review of the registering PR, same as any other reason
+    field in ALLOWED; this check only rules out the cheapest way to fake
+    it, not every way."""
     problems = []
     for site, labels in allowed.items():
         for label, (status, _reason) in labels.items():
@@ -1055,14 +1068,17 @@ def _missing_transitive_controls(allowed, control_names, existing_names):
             name = control_names.get((site, label))
             if not name:
                 problems.append((site, label, 'no control test named'))
-            elif name not in existing_names:
-                problems.append((site, label, f'named control {name!r} does not exist'))
+                continue
+            obj = existing.get(name)
+            if obj is None or not name.startswith('test_') or not callable(obj):
+                problems.append(
+                    (site, label, f'named control {name!r} is not a real test function'))
     return problems
 
 
 def test_every_through_map_transitive_entry_names_an_existing_control():
     problems = _missing_transitive_controls(
-        ALLOWED, THROUGH_MAP_TRANSITIVE_CONTROLS, set(globals()))
+        ALLOWED, THROUGH_MAP_TRANSITIVE_CONTROLS, globals())
     assert not problems, (
         'through_map_transitive is only valid with a real, existing control '
         'test — a later ticket cannot "clear" a pending entry into this '
@@ -1074,25 +1090,35 @@ def test_missing_transitive_controls_catches_both_gaps():
     """Break-it-once for `_missing_transitive_controls` itself, against a
     SYNTHETIC allowed/control-map pair (see the empty-collection note
     above for why the real ALLOWED cannot exercise this). Proves the
-    checker catches BOTH an unregistered entry and a registration naming a
-    function that does not exist, stays silent on a non-transitive entry
-    (control), and clears once a real name is given."""
+    checker catches an unregistered entry, a registration naming a
+    function that does not exist, AND (review S7) a registration naming a
+    REAL global that is not a test function — the exact shape the
+    reviewer used to prove the first version was fakeable (`'sqlite3'`,
+    imported at the top of this file). Stays silent on a non-transitive
+    entry (control), and clears once a real `test_`-named callable is
+    given."""
+    def a_real_name():
+        pass
+
     fake_allowed = {
         'site_a': {'col': ('through_map_transitive', 'x' * 50)},
         'site_b': {'col': ('through_map_transitive', 'x' * 50)},
-        'site_c': {'col': ('through_map', 'x' * 50)},   # control: never flagged
+        'site_c': {'col': ('through_map_transitive', 'x' * 50)},
+        'site_d': {'col': ('through_map', 'x' * 50)},   # control: never flagged
     }
     fake_controls = {
         ('site_a', 'col'): 'this_function_does_not_exist_anywhere',
         # site_b: deliberately left unregistered
+        ('site_c', 'col'): 'sqlite3',   # review S7's exact reproduction
     }
-    problems = _missing_transitive_controls(fake_allowed, fake_controls, {'something_else'})
+    fake_existing = {'test_a_real_name': a_real_name, 'sqlite3': sqlite3}
+    problems = _missing_transitive_controls(fake_allowed, fake_controls, fake_existing)
     found = {(s, l) for s, l, _p in problems}
-    assert found == {('site_a', 'col'), ('site_b', 'col')}, problems
+    assert found == {('site_a', 'col'), ('site_b', 'col'), ('site_c', 'col')}, problems
 
-    # CONTROL: naming a REAL, existing function clears both entries.
-    fake_controls_ok = {('site_a', 'col'): 'a_real_name', ('site_b', 'col'): 'a_real_name'}
-    assert not _missing_transitive_controls(fake_allowed, fake_controls_ok, {'a_real_name'})
+    # CONTROL: naming a REAL test_-prefixed callable clears all three.
+    fake_controls_ok = {(s, 'col'): 'test_a_real_name' for s in ('site_a', 'site_b', 'site_c')}
+    assert not _missing_transitive_controls(fake_allowed, fake_controls_ok, fake_existing)
 
 
 def test_code_only_strips_comments_but_keeps_real_calls():
@@ -1179,16 +1205,30 @@ def test_supplier_product_mapping_unit_columns_still_have_no_writer():
     assert not hits, f'supplier_product_mapping now has a writer: {hits}'
 
 
+def _schema_sql_conn():
+    """A fresh in-memory sqlite3 connection built from data/schema.sql —
+    the tracked file a fresh `git clone` + first boot actually builds from
+    (database.py::init_db), always present, unlike the live dev DB (absent
+    in a fresh worktree or CI). Caller owns closing it."""
+    schema_path = os.path.join(_ROOT, 'data', 'schema.sql')
+    conn = sqlite3.connect(':memory:')
+    with open(schema_path, encoding='utf-8') as f:
+        conn.executescript(f.read())
+    return conn
+
+
 def test_transactions_unit_mode_is_a_documented_exclusion_not_an_oversight():
     """transactions.unit_mode is deliberately NOT in TARGET_COLUMNS (it is a
     CHECK-constrained unit/box/carton SCALE selector, never an Express
     code). Control: the column still exists and is still that same
     3-value enum, so the exclusion is describing real, current schema —
-    not a stale claim about a column that has since changed shape."""
-    db = os.path.join(APP, 'instance', 'inventory.db')
-    if not os.path.exists(db):
-        pytest.skip('no local dev DB to introspect')
-    conn = sqlite3.connect(db)
+    not a stale claim about a column that has since changed shape.
+
+    Review N7: reads data/schema.sql (via `_schema_sql_conn`, the same
+    source `_schema_sql_columns` below uses for the N1 guard) instead of
+    the live dev DB — the previous version skipped in a fresh worktree or
+    CI where that file does not exist."""
+    conn = _schema_sql_conn()
     try:
         sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='transactions'"
@@ -1199,17 +1239,10 @@ def test_transactions_unit_mode_is_a_documented_exclusion_not_an_oversight():
 
 
 def _schema_sql_columns():
-    """{table: [column, ...]} for the WHOLE schema, built by loading
-    data/schema.sql into a throwaway in-memory SQLite DB and introspecting
-    THAT (review N1) — not the live dev DB `test_transactions_unit_mode_...`
-    above reads, which is absent (and skips) in a fresh worktree or CI.
-    schema.sql is a tracked file, always present, and is what a fresh
-    `git clone` + first boot actually builds from (database.py::init_db)."""
-    schema_path = os.path.join(_ROOT, 'data', 'schema.sql')
-    conn = sqlite3.connect(':memory:')
+    """{table: [column, ...]} for the WHOLE schema, built from
+    data/schema.sql (review N1) — see `_schema_sql_conn`."""
+    conn = _schema_sql_conn()
     try:
-        with open(schema_path, encoding='utf-8') as f:
-            conn.executescript(f.read())
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")]
         return {t: [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")')]
