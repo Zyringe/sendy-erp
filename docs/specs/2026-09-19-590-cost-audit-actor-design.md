@@ -6,6 +6,39 @@ The inputs are in the census (`2026-09-19-590-cost-writer-census.md`): 34 entry 
 The whole problem is that a trigger cannot see who is acting. Each option below answers
 where the actor's **value** comes from and where it is **stored**.
 
+## Where `manual:<user>` goes today
+
+`product_edit` passes `source=f'manual:{_who}'` to `update_product`, yet every one of the 155
+prod `audit_log` rows that touch `products` cost since 2026-09-17 has `change_source` NULL
+and `user` NULL (prod, read 2026-09-19 16:04Z). **The value is not dropped along the way. It
+never had a way into `audit_log`.**
+
+1. `update_product` hands `source` to `_set_price_change_source(conn, source)`. That writes
+   the one-row side table `price_change_source` (mig 130), on the same connection and in the
+   same transaction, just before the UPDATE. Right after the UPDATE it sets the value back
+   to NULL.
+2. The UPDATE fires two AFTER UPDATE triggers on `products`. **Only one of them reads the
+   side table.**
+   - `product_price_history_update` inserts into `product_price_history (…, source)` with
+     `(SELECT source FROM price_change_source WHERE id = 1)`. So the name does land, but
+     only in `product_price_history.source`. For pid 27 at 2026-09-17 12:04:58 that is
+     `cost_price 33.0→48.5`, source `manual:admin`.
+   - `audit_products_update` inserts into `audit_log (table_name, row_id, action,
+     changed_fields)`. Those are its only four columns, read from prod's `sqlite_master`
+     rather than from the repo. It never mentions `user`, `change_source` or
+     `price_change_source`. The same edit's audit row, id 616627, has all three
+     provenance columns NULL.
+3. `audit_log.change_source` has existed since mig 173, but the only triggers that write it
+   are the six sales/purchase audit triggers, which copy `NEW.change_source` off the
+   document row. No `products` trigger was ever taught about it.
+4. The WACC recalculation that follows the edit runs on a second connection and stamps
+   `wac-sync`. So even `product_price_history` credits the resulting cost to the engine,
+   not to the person.
+
+Option A below fixes this at the source: the new cost audit trigger writes `user` /
+`change_source` / `change_reason` from `sendy_actor()`. `price_change_source` can then go
+back to its only job, the price-history label, and needs no further trust.
+
 ## What a spike established
 
 Spike D, `2026-09-19-590-spike-actor-function.py`. It ran on local SQLite 3.51.0 and on
