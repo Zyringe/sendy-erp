@@ -1,4 +1,4 @@
--- 185 — ค่าใช้จ่ายของงวดก่อน: which period a cashbook cost belongs to.
+-- 187 — ค่าใช้จ่ายของงวดก่อน: which period a cashbook cost belongs to.
 --
 -- Spec #593 user stories 8-12, ADR 0014 decision 3, CONTEXT.md "Internal
 -- P&L" -> ค่าใช้จ่ายของงวดก่อน. The internal P&L is accrual: a cost belongs
@@ -62,7 +62,7 @@
 -- `duplicate column name: belongs_to_period` — same documented shape as
 -- 159/176/178/183. The runner never repeats an applied migration (keyed by
 -- filename in applied_migrations); this only matters for a hand rehearsal,
--- where 185_prior_period_expense.rollback.sql must run first.
+-- where 187_prior_period_expense.rollback.sql must run first.
 --
 -- Rehearsed forward + rollback + forward on a `sqlite3 .backup` copy of
 -- ~/sendy-prod-backups/prod-2026-09-19T0820Z-post-uc4.db before commit
@@ -102,6 +102,6 @@ UPDATE cashbook_transactions
 -- INSERT OR IGNORE makes this safe whether or not the runner's own
 -- bookkeeping INSERT also fires.
 INSERT OR IGNORE INTO applied_migrations (filename, applied_by)
-VALUES ('185_prior_period_expense.sql', 'auto');
+VALUES ('187_prior_period_expense.sql', 'auto');
 
 COMMIT;

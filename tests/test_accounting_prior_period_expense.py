@@ -6,7 +6,7 @@ line, separate from ค่าใช้จ่ายดำเนินงาน, s
 measured without it while the money stays visible. ADR 0014 decision 3.
 
 The period is carried by `cashbook_transactions.belongs_to_period`
-(migration 185): NULL means "the cost belongs to the month it was paid"
+(migration 187): NULL means "the cost belongs to the month it was paid"
 (every row before this migration), a set value is the Gregorian period it
 belongs to, 'YYYY' or 'YYYY-MM'. Its CHECK makes it structurally impossible
 to store a period that is not strictly earlier than the payment month, or a

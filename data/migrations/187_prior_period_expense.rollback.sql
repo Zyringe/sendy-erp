@@ -1,8 +1,8 @@
--- Rollback 185.
+-- Rollback 187.
 --
 -- Un-stamp ONLY the rows this migration stamped — the same explicitly named
 -- (txn_date, amount, description) set, and only while they still carry
--- exactly the value 185 wrote ('2025'). A row someone has since re-stamped
+-- exactly the value 187 wrote ('2025'). A row someone has since re-stamped
 -- to a different period is newer than this migration and survives, same
 -- precedent as 183's rollback un-naming only its own exact strings and 176's
 -- un-stamping only its own (source, date_start) pair.
@@ -41,6 +41,6 @@ UPDATE cashbook_transactions
 
 ALTER TABLE cashbook_transactions DROP COLUMN belongs_to_period;
 
-DELETE FROM applied_migrations WHERE filename = '185_prior_period_expense.sql';
+DELETE FROM applied_migrations WHERE filename = '187_prior_period_expense.sql';
 
 COMMIT;

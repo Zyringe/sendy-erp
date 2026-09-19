@@ -135,7 +135,7 @@ def get_accounting_summary(date_from=None, date_to=None):
                (cashbook is not company-scoped). None when the period has
                ZERO qualifying cashbook rows (pre-cashbook-era months, e.g.
                before 2026-03) so the page can't show a fake profit.
-               That population is SPLIT on `belongs_to_period` (mig 185):
+               That population is SPLIT on `belongs_to_period` (mig 187):
                `expenses` is ค่าใช้จ่ายดำเนินงาน (the column NULL — the cost
                belongs to the month it was paid) and
                `prior_period_expenses` is ค่าใช้จ่ายของงวดก่อน (a period was
@@ -219,7 +219,7 @@ def get_accounting_summary(date_from=None, date_to=None):
     # ── Expenses (cashbook opex — replaces the dead expense_log) ──────────────
     # Count ROWS (not just sum) so a period with zero cashbook coverage is
     # distinguishable from a real month that happens to net to zero.
-    # ONE population, split in two by belongs_to_period (mig 185): NULL is
+    # ONE population, split in two by belongs_to_period (mig 187): NULL is
     # ค่าใช้จ่ายดำเนินงาน, a set value is ค่าใช้จ่ายของงวดก่อน. Both queries
     # therefore carry the SAME three filters — direction, non-transfer
     # account, non-COGS/transfer category — and the split is deliberately NOT
