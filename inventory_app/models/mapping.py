@@ -17,7 +17,8 @@ from .bsn_sync import (_BSN_LEDGER_NOTE_PATTERNS, _sync_bsn_to_stock,
 from .stock_filters import non_stock_clause, is_non_stock_code, NonStockCodeError
 from .wacc import (recalculate_product_wacc, preflight_batch,
                    WaccIdentityError)
-from .system_alerts import record_wacc_identity_alert
+import actor
+from .system_alerts import record_wacc_identity_alert, require_actor_or_alert
 
 
 def upsert_mapping(bsn_code: str, bsn_name: str, product_id=None, is_ignored=0,
@@ -494,6 +495,9 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
     own = conn is None
     if own:
         conn = get_connection()
+        require_actor_or_alert(conn, 'repoint', extra={'bsn_code': bsn_code})   # #590 A2
+    else:
+        actor.require(conn, 'repoint')     # the caller owns this connection and its alert
     _conn_closed = False
     try:
         if own:
@@ -804,7 +808,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
         # rolls back and closes.
         preflight_batch(conn, sorted(affected), operation='mapping_repoint')
         for pid in sorted(affected):
-            recalculate_product_wacc(pid, conn)
+            recalculate_product_wacc(pid, conn, operation='repoint')
 
         # ── 6b. Did the backdated compensation break the replay? ─────────────
         # See 5b: the head is the right place semantically, but a negative
@@ -855,7 +859,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
             conn.execute(
                 "UPDATE transactions SET created_at = datetime('now','localtime')"
                 " WHERE id = ?", (compensation_rowid[pid],))
-            recalculate_product_wacc(pid, conn)
+            recalculate_product_wacc(pid, conn, operation='repoint')
             if _frozen_purchases(pid) >= at_head:
                 # The compensation was not the cause — put it back where it
                 # belongs and leave this product's WACC exactly as it was.
@@ -863,7 +867,7 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
                     "UPDATE transactions SET created_at = COALESCE(?, datetime('now','localtime'))"
                     " WHERE id = ?",
                     (opening_at, compensation_rowid[pid]))
-                recalculate_product_wacc(pid, conn)
+                recalculate_product_wacc(pid, conn, operation='repoint')
                 continue
             compensations_moved_late.append(pid)
 

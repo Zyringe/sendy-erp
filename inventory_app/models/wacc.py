@@ -6,12 +6,15 @@ Imports nothing from other domain submodules (products/customers/etc) —
 only the shared `_shared` leaf helper (no circular-import risk) plus
 stdlib/database, matching the pattern every other Phase-11 submodule uses.
 """
+import json
 from collections import defaultdict
 
+import actor
 from database import get_connection
 
 from ._shared import _set_price_change_source
-from .system_alerts import record_wacc_identity_alert, record_wacc_cost_outlier_alert
+from .system_alerts import (record_wacc_identity_alert, record_wacc_cost_outlier_alert,
+                            record_actor_missing_alert)
 
 # #546 (Put's 2026-09-16 triage, option B): at walk stock 0 the incoming bill
 # is taken as the new WACC (see the two `elif current_stock == 0` branches
@@ -168,16 +171,24 @@ def recalculate_product_wacc(product_id, conn=None, operation=None):
     function only propagates.
     """
     if conn is not None:
-        return _recalculate_product_wacc(product_id, conn)
+        return _recalculate_product_wacc(product_id, conn, operation)
 
     conn = get_connection()
     _closed = False          # bound BEFORE the try: the success path returns
                              # from inside the try, so `finally` must always
                              # find this defined
     try:
-        wacc = _recalculate_product_wacc(product_id, conn)
+        wacc = _recalculate_product_wacc(product_id, conn, operation)
         conn.commit()
         return wacc
+    except actor.ActorMissing as e:
+        # Raised before anything was written (#590): nothing to undo, but the
+        # refusal must reach Put, not only whoever ran the script.
+        conn.rollback()
+        conn.close()
+        _closed = True
+        record_actor_missing_alert(e, extra={'product_id': product_id})
+        raise
     except WaccIdentityError as e:
         # We own this connection, so we own the durable alert too: roll back
         # and close FIRST, then record on a fresh connection. This is the
@@ -198,10 +209,23 @@ def recalculate_product_wacc(product_id, conn=None, operation=None):
             conn.close()
 
 
-def _recalculate_product_wacc(product_id, conn):
+def _recalculate_product_wacc(product_id, conn, operation=None):
     """The real work. Never commits, never closes — connection lifecycle
     belongs to recalculate_product_wacc above, or to the caller that supplied
-    the connection."""
+    the connection.
+
+    #590: refuses before its first write when nobody is declared on `conn`
+    (actor.ActorMissing), and runs inside a scope that adds WHAT ran
+    (`wacc:<operation>`) to whoever is already acting, so every audit row the
+    rebuild writes names both.
+    """
+    op = operation or 'recalculate'
+    actor.require(conn, f'wacc:{op}')
+    with actor.acting_as(detail=f'wacc:{op}'):
+        return _rebuild_product_wacc(product_id, conn, op)
+
+
+def _rebuild_product_wacc(product_id, conn, op):
     product = conn.execute(
         "SELECT id, unit_type, cost_price, opening_cost FROM products WHERE id=?", (product_id,)
     ).fetchone()
@@ -271,6 +295,9 @@ def _recalculate_product_wacc(product_id, conn):
     # UNCOSTED quantity into products.cost_price.
     preflight_source_identity(conn, product_id)
 
+    ledger_rows_before = conn.execute(
+        "SELECT COUNT(*) FROM product_cost_ledger WHERE product_id=?", (product_id,)
+    ).fetchone()[0]
     conn.execute("DELETE FROM product_cost_ledger WHERE product_id=?", (product_id,))
 
     # Pre-compute non-purchase INs on exactly INITIAL_DATE (stock imports with no note)
@@ -419,6 +446,22 @@ def _recalculate_product_wacc(product_id, conn):
             note=f'ยอดยกมา {current_stock:g} {unit_type} @ {cost_price:.2f} บาท/{unit_type}'
         ))
 
+    # One recalc-event row per rebuild (#590): the ledger has no actor column
+    # because every rebuild re-inserts it, so THIS row is what says which
+    # operation ran and who set it off. Same transaction as the rebuild.
+    new_cost = current_wacc if current_wacc and current_wacc > 0 else product['cost_price']
+    conn.execute(
+        "INSERT INTO audit_log (table_name, row_id, action, changed_fields,"
+        " user, change_source, change_reason)"
+        " VALUES ('product_cost_ledger', ?, 'UPDATE', ?,"
+        " sendy_actor('who'), sendy_actor('source'), sendy_actor('reason'))",
+        (product_id, json.dumps({
+            'operation': op,
+            'cost_price': [product['cost_price'], new_cost],
+            'ledger_rows': [ledger_rows_before, len(entries)],
+        }))
+    )
+
     for e in entries:
         conn.execute(
             "INSERT INTO product_cost_ledger"
@@ -465,12 +508,20 @@ def get_current_wacc(product_id, conn=None):
 
         if row is None:
             # Lazy-calculate on first access
-            wacc = recalculate_product_wacc(product_id, conn)
+            wacc = recalculate_product_wacc(product_id, conn, operation='lazy_read')
             if close_conn:
                 conn.commit()
             return wacc
 
         return row['wacc_after']
+    except actor.ActorMissing as e:
+        # Same ownership rule as below: only the owner of the connection alerts.
+        if close_conn:
+            conn.rollback()
+            conn.close()
+            _closed = True
+            record_actor_missing_alert(e, extra={'product_id': product_id})
+        raise
     except WaccIdentityError as e:
         # Only alert when we OWN the connection. With a caller-supplied one we
         # cannot roll back or close, so the alert is the owner's to record —
@@ -504,7 +555,7 @@ def get_cost_history(product_id):
             "SELECT 1 FROM product_cost_ledger WHERE product_id=? LIMIT 1", (product_id,)
         ).fetchone()
         if not exists:
-            recalculate_product_wacc(product_id, conn)
+            recalculate_product_wacc(product_id, conn, operation='lazy_read')
             conn.commit()
 
         rows = conn.execute(
@@ -513,6 +564,12 @@ def get_cost_history(product_id):
             (product_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+    except actor.ActorMissing as e:
+        conn.rollback()
+        conn.close()
+        _closed = True
+        record_actor_missing_alert(e, extra={'product_id': product_id})
+        raise
     except WaccIdentityError as e:
         # This wrapper always owns its connection, so it owns the alert too.
         # Without this the /products/<id>/cost-history page just 500s and the
@@ -546,7 +603,7 @@ def recalculate_waccs_for_products(product_ids, operation=None):
     try:
         preflight_batch(conn, pids, operation=operation)
         for pid in pids:
-            recalculate_product_wacc(pid, conn)
+            recalculate_product_wacc(pid, conn, operation=operation)
         conn.commit()
     except Exception:
         conn.rollback()

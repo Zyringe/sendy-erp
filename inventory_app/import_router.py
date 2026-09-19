@@ -351,6 +351,13 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     import import_express
 
     db_path = db_path or config.DATABASE_PATH
+    # #590 A2: refuse an unsigned run before any importer below writes.
+    import actor
+    import sqlite3 as _sqlite3
+    from models.system_alerts import require_actor_or_alert
+    _probe = actor.install(_sqlite3.connect(db_path))
+    require_actor_or_alert(_probe, 'import:express_dbf')    # closes it on refusal
+    _probe.close()
     cutoff = (datetime.date.today() - datetime.timedelta(days=since_days)
               if since_days is not None else None)
     snapshot_date = snapshot_date or datetime.date.today().isoformat()

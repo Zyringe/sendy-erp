@@ -685,3 +685,34 @@
   the Excel and edited in Sendy, **not tied to `products`**. It is a superset of the live own-brand
   catalogue and has no reliable key back to a product. A future `product_id` link will be matched by
   **barcode**. See `docs/adr/0009`. _Avoid_: "product field", "product column".
+
+## Who changed a cost (ใครแก้ต้นทุน — #590)
+
+- **Actor (ผู้แก้)** — whoever a write of cost is attributed to: `products.cost_price` /
+  `opening_cost`, `product_cost_ledger`, `conversion_cost_log`. Resolved when the write
+  happens by the SQL function `sendy_actor(field)` (`inventory_app/actor.py`), from the
+  request (the logged-in user and the page) or from a declared scope (a script, a
+  migration, the VAT-book build). A cost write with no actor is **refused**. _Avoid_:
+  reading `audit_log.user` NULL on an older cost row as "the system did it": before
+  migration 190 no cost row carried a person at all.
+
+- **`change_source`** — the mig-173 vocabulary, kept: **`manual`** (a person, through a
+  page or a script they declared), **`import`** (an importer run: `/import-data`, the
+  Express DBF upload, the VAT-book build), plus two values mig 173 had no word for:
+  **`migration`** (deploy-time SQL, `who` = `deploy`) and **`test`** (never on prod).
+
+- **`change_reason`** — WHAT ran, as a chain: `ui:<endpoint>` or `script:<file>: <reason>`
+  or `migration:<file>` or `system:vat-book-build`, then ` > import:<file>` and
+  ` > wacc:<operation>` as the work passes through the importer and the WACC engine. So
+  a WACC rebuild set off by a page view reads `ui:products.product_cost_history >
+  wacc:lazy_read`, never as that viewer typing a cost.
+
+- **Recalc event** — the one `audit_log` row (`table_name = 'product_cost_ledger'`,
+  `row_id` = product) a WACC rebuild writes, carrying the operation, `cost_price`
+  old→new and the ledger row counts. The ledger itself has no actor column: every
+  rebuild re-inserts it, so a column would only name the last recalculator.
+
+- **Ceiling** — a products INSERT, `REPLACE INTO products` and a products DELETE are
+  recorded without an actor and are not refused: an actor inside a products INSERT
+  trigger would break every raw INSERT (SQLite resolves the function when it compiles
+  the statement). The master upload and whole-file swaps write their own signed rows.

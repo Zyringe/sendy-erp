@@ -321,7 +321,7 @@ EXPECTED = {
         'called from imports.py::import_weekly on a corrected/removed '
         'sales_transactions row (below).',
 
-    ('models/imports.py', 'import_weekly'):
+    ('models/imports.py', '_import_weekly'):
         'TWO distinct things, neither of which is a NEW deduction: (1) '
         'calls reverse_platform_deduction (its own entry above) on a '
         "corrected/removed line's OLD row before deleting it -- D7, "
@@ -418,7 +418,7 @@ def test_sync_bsn_to_stock_dynamic_table_never_targets_platform_skus():
     import inspect
     import models
     sites = [
-        ('models/imports.py', 'import_weekly'),
+        ('models/imports.py', '_import_weekly'),
         ('models/bsn_sync.py', 'update_unit_conversion_ratio'),
         ('models/mapping.py', 'repoint_bsn_code'),
     ]

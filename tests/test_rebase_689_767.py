@@ -24,6 +24,7 @@ import sqlite3
 import types
 
 import pytest
+from tests._pre_mig590 import sign_raw_connections  # noqa: E402
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "2026_09_19_rebase_689_767.py"
 _ENGINE = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "2026_09_19_gross_to_piece.py"
@@ -120,6 +121,13 @@ def _seed(conn):
               ('purchase', '2024-08-20', 'HP6799999', 12.0, 'หล', 180.0)], 3, '900ถ2121')
     conn.commit()
 
+
+
+@pytest.fixture(autouse=True)
+def _pre_mig590_world(monkeypatch):
+    """A dated one-off script's raw connections, in the world it ran in (#590).
+    See tests/_pre_mig590.py."""
+    sign_raw_connections(monkeypatch)
 
 @pytest.fixture()
 def db(empty_db, empty_db_conn):

@@ -71,14 +71,18 @@ def main(argv=None):
     ap.add_argument("--to", dest="dst", type=int, required=True)
     ap.add_argument("--db", type=Path, default=DB_PATH)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--operator", required=True,
+                    help="who is running this (#590: cost writes are signed)")
+    ap.add_argument("--reason", required=True, help="why this merge")
     a = ap.parse_args(argv)
     if a.src == a.dst:
         print("from == to", file=sys.stderr)
         return 2
     EXPORTS.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    conn = sqlite3.connect(str(a.db))
-    conn.row_factory = sqlite3.Row
+    import database  # noqa: E402
+    conn = database.script_connection(__file__, operator=a.operator,
+                                      reason=a.reason, db_path=str(a.db))
     import models  # noqa: E402
 
     for pid in (a.src, a.dst):

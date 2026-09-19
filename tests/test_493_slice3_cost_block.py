@@ -459,7 +459,8 @@ def _seed_distinctive(tmp_db):
     62.87% (100 kept) and at today's price 69.06% (list 120) — different on
     purpose, so each margin is checked on its own."""
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name='สินค้าทุนลับ', base=120.0, cost=37.13)
@@ -536,7 +537,8 @@ def test_template_gates_cost_even_if_the_data_carries_it(tmp_db, monkeypatch):
 
 def test_manager_badge_sits_on_the_figure_it_judges(tmp_db):
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     # Last price 95 (kept) < WACC 96; today's list price 120 > WACC.
@@ -557,7 +559,8 @@ def _seed_every_line(tmp_db):
     = 108, against WACC 110 and last purchase 115 — so all FOUR badges fire,
     two on each price, and both margins show (negative)."""
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name='ทุกบรรทัดในช่อง', base=120.0, cost=110.0)
@@ -597,7 +600,8 @@ def test_manager_today_margin_reveal_shows_its_arithmetic(tmp_db):
 
 def test_manager_margin_reveal_shows_the_rows_own_arithmetic(tmp_db):
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name='กำไรแตะดู', base=100.0, cost=60.0)
@@ -671,7 +675,8 @@ def test_manager_sees_at_new_cost_margin_under_both_margins(tmp_db):
     """#527: last purchase 80 > WACC 60 -> ที่ทุนใหม่ 20.00% shows under BOTH
     the ราคาล่าสุด and ราคาวันนี้ margins."""
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name='ทุนใหม่สูงกว่าเฉลี่ย', base=100.0, cost=60.0)
@@ -687,7 +692,8 @@ def test_manager_sees_at_new_cost_margin_under_both_margins(tmp_db):
 
 def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name='ไม่มีทุนเลย', base=100.0, cost=0.0)
@@ -703,7 +709,8 @@ def test_manager_sees_no_cost_text_for_a_costless_product(tmp_db):
 
 def test_manager_sees_last_purchase_and_its_badge_for_a_costless_product(tmp_db):
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name='ไม่มีทุนแต่มีบิลซื้อ', base=60.0, cost=0.0)
@@ -762,7 +769,8 @@ def test_gap_is_none_when_the_wacc_prints_as_zero(cust):
 
 def _cost_cell(tmp_db, name, cost, lp=None):
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
+    import actor
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: seeds write cost rows
     _mk_customer(conn)
     _clear_customer(conn)
     pid = _mk_product(conn, name=name, base=100.0, cost=cost)

@@ -5,6 +5,7 @@ module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain an `admin.`
 prefix.
 """
+import json
 import os
 import signal
 import sqlite3
@@ -16,7 +17,9 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, abort, send_file, current_app, Response)
 from werkzeug.security import generate_password_hash
 
+import actor
 import config
+import database
 import db_backup
 import hr_queries as hrq
 from database import get_connection
@@ -455,6 +458,48 @@ def _table_exists(conn, schema, table):
     return cur.fetchone() is not None
 
 
+def _refuse_unless_prepared(path, operation):
+    """#590 C2: migrate + prove the guards on a file BEFORE it replaces the live
+    DB. Returns a redirect to send when it is refused (and removes the file),
+    or None when the swap may go ahead."""
+    try:
+        database.prepare_staged_db(path, operation)
+        return None
+    except database.StagedDbRefused as e:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        flash(f'ไม่อัปโหลด: ไฟล์นี้เอาขึ้นแทนฐานข้อมูลไม่ได้ ({e}). DB ปัจจุบันไม่ถูกแก้ไข', 'danger')
+        return redirect(url_for('admin.upload_db'))
+
+
+def _audit_master_upload_costs(cur, replaced):
+    """The master upload replaces products wholesale, so no UPDATE trigger ever
+    sees a cost change. Write what did change, signed, inside the upload's own
+    transaction (#590 C3): one row per product whose cost moved, plus one
+    summary row. Nothing is written after the commit."""
+    with actor.acting_as(detail='master_upload'):
+        cur.execute("""
+            INSERT INTO main.audit_log (table_name, row_id, action, changed_fields,
+                                        user, change_source, change_reason)
+            SELECT 'products', n.id, 'UPDATE',
+                   json_object('cost_price',   json_array(o.cost_price,   n.cost_price),
+                               'opening_cost', json_array(o.opening_cost, n.opening_cost)),
+                   sendy_actor('who'), sendy_actor('source'), sendy_actor('reason')
+              FROM main.products n JOIN temp._cost_before o ON o.id = n.id
+             WHERE o.cost_price IS NOT n.cost_price OR o.opening_cost IS NOT n.opening_cost""")
+        moved = cur.rowcount
+        cur.execute("""
+            INSERT INTO main.audit_log (table_name, row_id, row_key, action, changed_fields,
+                                        user, change_source, change_reason)
+            VALUES ('products', 0, 'master_upload', 'UPDATE', ?,
+                    sendy_actor('who'), sendy_actor('source'), sendy_actor('reason'))""",
+                    (json.dumps({'tables_replaced': sorted(replaced),
+                                 'products_cost_changed': moved}),))
+    cur.execute("DROP TABLE temp._cost_before")
+
+
 def _replace_master_tables(current_path, uploaded_path):
     """Replace MASTER tables in current DB with rows from uploaded DB.
     Transaction tables and anything not in _MASTER_TABLES are untouched.
@@ -463,8 +508,11 @@ def _replace_master_tables(current_path, uploaded_path):
     On any failure, rolls back and raises — current DB unchanged.
     Returns dict {table: rows_after_replace}.
     """
-    conn = sqlite3.connect(current_path)
+    conn = actor.install(sqlite3.connect(current_path))
     try:
+        # #590: whoever uploads is named on the audit rows written below, in
+        # THIS transaction; an unsigned upload is refused before the DELETE.
+        actor.require(conn, 'master_upload')
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("ATTACH DATABASE ? AS upl", (uploaded_path,))
         replaced = {}
@@ -472,6 +520,8 @@ def _replace_master_tables(current_path, uploaded_path):
         cur = conn.cursor()
         cur.execute("BEGIN")
         try:
+            cur.execute("CREATE TEMP TABLE _cost_before AS"
+                        " SELECT id, cost_price, opening_cost FROM main.products")
             for table in _MASTER_TABLES:
                 if not _table_exists(conn, 'main', table):
                     skipped.append((table, 'missing in current DB'))
@@ -483,6 +533,7 @@ def _replace_master_tables(current_path, uploaded_path):
                 cur.execute(f"INSERT INTO main.{table} SELECT * FROM upl.{table}")
                 cur.execute(f"SELECT COUNT(*) FROM main.{table}")
                 replaced[table] = cur.fetchone()[0]
+            _audit_master_upload_costs(cur, replaced)
             # Verify FK integrity before commit
             violations = cur.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
@@ -603,6 +654,10 @@ def upload_db():
                 disk=db_backup.disk_usage_mb(os.path.dirname(config.DATABASE_PATH)),
             )
 
+        refused = _refuse_unless_prepared(tmp, 'full_upload')
+        if refused:
+            return refused
+
         # Always backup the current DB before replacing (WAL-safe online backup —
         # a bare file copy of a WAL-mode DB can capture a torn snapshot).
         backup_info, backup_err = db_backup.safe_create_backup(
@@ -653,6 +708,10 @@ def upload_db_confirm():
             pass
         flash('ยกเลิกการอัปโหลดแล้ว', 'info')
         return redirect(url_for('admin.upload_db'))
+
+    refused = _refuse_unless_prepared(hold_path, 'full_upload')
+    if refused:
+        return refused
 
     backup_info, backup_err = db_backup.safe_create_backup(
         'pre-upload-full', db_path=config.DATABASE_PATH, backup_dir=_backups_dir())
@@ -747,8 +806,9 @@ def backup_restore():
         flash('ต้องยืนยันก่อนกู้คืน', 'warning')
         return redirect(url_for('admin.backups_list'))
     try:
-        db_backup.restore_backup(name, db_path=config.DATABASE_PATH,
-                                 backup_dir=_backups_dir())
+        db_backup.restore_backup(
+            name, db_path=config.DATABASE_PATH, backup_dir=_backups_dir(),
+            prepare=lambda path: database.prepare_staged_db(path, f'restore:{name}'))
     except Exception as e:
         flash(f'กู้คืนไม่สำเร็จ: {e}', 'danger')
         return redirect(url_for('admin.backups_list'))

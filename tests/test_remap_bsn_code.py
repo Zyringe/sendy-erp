@@ -60,7 +60,7 @@ def test_remap(tmp_db):
     conn.commit()
     conn.close()
 
-    assert rb.main(["--code", CODE, "--to", str(NEW),
+    assert rb.main(["--operator", "pytest", "--reason", "test re-point", "--code", CODE, "--to", str(NEW),
                     "--db", tmp_db, "--apply"]) == 0
     conn = sqlite3.connect(tmp_db)
 
@@ -98,7 +98,7 @@ def test_remap_creates_mapping_when_absent(tmp_db):
     _s(conn, 903401, "ZZNOMAP")                    # no mapping row exists
     conn.commit()
     conn.close()
-    assert rb.main(["--code", "ZZNOMAP", "--to", "903401",
+    assert rb.main(["--operator", "pytest", "--reason", "test re-point", "--code", "ZZNOMAP", "--to", "903401",
                     "--db", tmp_db, "--apply"]) == 0
     conn = sqlite3.connect(tmp_db)
     assert conn.execute("SELECT product_id FROM product_code_mapping WHERE "
@@ -114,7 +114,7 @@ def test_remap_dry_run_writes_nothing(tmp_db):
                  "product_id,is_ignored) VALUES ('ZZDRY','n',903501,0)")
     conn.commit()
     conn.close()
-    assert rb.main(["--code", "ZZDRY", "--to", "903502", "--db",
+    assert rb.main(["--operator", "pytest", "--reason", "test re-point", "--code", "ZZDRY", "--to", "903502", "--db",
                     tmp_db]) == 0
     conn = sqlite3.connect(tmp_db)
     assert conn.execute("SELECT product_id FROM product_code_mapping WHERE "

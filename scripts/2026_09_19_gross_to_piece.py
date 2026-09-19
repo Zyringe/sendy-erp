@@ -351,6 +351,9 @@ def main():
                     help="low_stock_threshold is base-unit-expressed, so converting changes its "
                          "physical meaning. Put ruled 'keep' on 2026-08-17. No default: his call.")
     ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--operator', required=True,
+                    help='who is running this (#590: cost writes are signed)')
+    ap.add_argument('--reason', required=True, help='why this rebase')
     a = ap.parse_args()
     if a.threshold != 'keep':
         print("REFUSED — only --threshold keep is implemented (Put's 2026-08-17 ruling).")
@@ -370,11 +373,11 @@ def main():
     else:
         print("REFUSED — cannot locate inventory_app; set SENDY_APP_DIR")
         sys.exit(2)
-    conn = sqlite3.connect(a.db, timeout=15)
-    # set up exactly like models.database.get_connection: _sync_bsn_to_stock
-    # indexes rows by NAME (row['bsn_code']), so a default tuple factory raises
-    # "tuple indices must be integers".
-    conn.row_factory = sqlite3.Row
+    import database
+    # database.script_connection sets up exactly like get_connection (row_factory
+    # Row: _sync_bsn_to_stock indexes rows by NAME) and signs the cost writes (#590).
+    conn = database.script_connection(__file__, operator=a.operator,
+                                      reason=a.reason, db_path=a.db)
     conn.execute("PRAGMA busy_timeout=15000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("BEGIN IMMEDIATE")
