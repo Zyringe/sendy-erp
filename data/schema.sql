@@ -126,7 +126,12 @@ CREATE TABLE "cashbook_transactions" (
     source_row      INTEGER,
     import_batch_id TEXT,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-, created_by      TEXT, payroll_run_id  INTEGER REFERENCES payroll_runs(id), payroll_item_id INTEGER REFERENCES payroll_items(id), salary_advance_id INTEGER REFERENCES salary_advances(id), commission_payout_id INTEGER REFERENCES commission_payouts(id), payout_platform TEXT, payout_deposit_date TEXT, payout_amount REAL, payout_occurrence INTEGER);
+, created_by      TEXT, payroll_run_id  INTEGER REFERENCES payroll_runs(id), payroll_item_id INTEGER REFERENCES payroll_items(id), salary_advance_id INTEGER REFERENCES salary_advances(id), commission_payout_id INTEGER REFERENCES commission_payouts(id), payout_platform TEXT, payout_deposit_date TEXT, payout_amount REAL, payout_occurrence INTEGER, belongs_to_period TEXT
+    CHECK (belongs_to_period IS NULL
+           OR ((belongs_to_period GLOB '[0-9][0-9][0-9][0-9]'
+                OR belongs_to_period GLOB '[0-9][0-9][0-9][0-9]-0[1-9]'
+                OR belongs_to_period GLOB '[0-9][0-9][0-9][0-9]-1[0-2]')
+               AND belongs_to_period < substr(txn_date, 1, length(belongs_to_period)))));
 
 CREATE TABLE categories (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

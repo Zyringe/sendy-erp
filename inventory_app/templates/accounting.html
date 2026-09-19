@@ -24,13 +24,15 @@
   รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount, หักยอดคืน SR แล้ว) &nbsp;·&nbsp;
   COGS = qty (แปลงเป็นหน่วยสินค้าแล้ว) × cost_price ปัจจุบัน (<strong>ประมาณการ</strong>) &nbsp;·&nbsp;
   ไม่รวม VAT &nbsp;·&nbsp;
-  กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่าย (รวมค่าคอมมิชชั่นแล้ว ไม่หักซ้ำ)
+  กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่ายดำเนินงาน − ค่าใช้จ่ายของงวดก่อน
+  (ค่าใช้จ่ายรวมค่าคอมมิชชั่นแล้ว ไม่หักซ้ำ)
 </div>
 
 {% if s.note_march_anomaly %}
 <div class="alert alert-warning py-2 mb-3 small">
   <i class="bi bi-exclamation-triangle me-1"></i>
-  ⚠ มี.ค. 69 มีของแถมวรสวัสดิ์ ~฿154,000 ปนอยู่ในยอดขาย + โบนัสปี 68 ฿400,000 ในค่าใช้จ่าย — เดือนนี้ตัวเลขผิดปกติ
+  ⚠ มี.ค. 69 มีของแถมวรสวัสดิ์ ~฿154,000 ปนอยู่ในยอดขาย — เดือนนี้ตัวเลขผิดปกติ
+  (โบนัสปี 68 ฿400,000 แยกไปอยู่บรรทัดค่าใช้จ่ายของงวดก่อนแล้ว)
   (จะแก้เองเมื่อฝ่ายบัญชีลงใบลดหนี้ย้อนกลับ)
 </div>
 {% endif %}
@@ -179,7 +181,7 @@
           <i class="bi bi-receipt-cutoff" style="color:#7e22ce"></i>
         </div>
         <div>
-          <div class="stat-card-label">ค่าใช้จ่าย</div>
+          <div class="stat-card-label">ค่าใช้จ่ายดำเนินงาน</div>
           <div class="stat-card-value" style="color:#7e22ce">
             {% if s.expenses is none %}—{% else %}{{ s.expenses | fmt_price }}{% endif %}
             {% if s.expense_status == 'incomplete' %}
@@ -192,13 +194,51 @@
         {% if s.expenses is none %}
         ไม่มีข้อมูลสมุดรับ-จ่ายในช่วงนี้
         {% else %}
-        รวมสมุดรับ-จ่าย (รวมค่าคอมมิชชั่นแล้ว) ช่วงนี้
+        รวมสมุดรับ-จ่าย (รวมค่าคอมมิชชั่นแล้ว) ช่วงนี้ — ไม่รวมค่าใช้จ่ายของงวดก่อน
         {% endif %}
       </div>
     </div>
   </div>
 
 </div>
+
+{# ── ค่าใช้จ่ายของงวดก่อน (ADR 0014 decision 3) ───────────────────────────── #}
+{% if s.prior_period_expenses %}
+<div class="card mb-3" id="prior-period-expense">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-calendar-minus me-2 text-accent"></i>ค่าใช้จ่ายของงวดก่อน</span>
+    <span class="fw-bold">{{ s.prior_period_expenses | fmt_price }}</span>
+  </div>
+  <div class="card-body py-2 small text-subtle">
+    จ่ายในช่วงนี้ แต่เป็นค่าใช้จ่ายของงวดก่อน จึงไม่นับรวมในค่าใช้จ่ายดำเนินงานของเดือนนี้
+    — แต่ยังหักออกจากกำไรสุทธิตามปกติ
+  </div>
+  <div class="table-responsive">
+    <table class="table mb-0">
+      <thead>
+        <tr>
+          <th>วันที่จ่าย</th>
+          <th>เป็นของงวด</th>
+          <th>หมวด</th>
+          <th>รายละเอียด</th>
+          <th class="text-end">จำนวนเงิน</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in s.prior_period_lines %}
+        <tr>
+          <td>{{ line.txn_date | thaidate }}</td>
+          <td>{{ line.belongs_to_period }}</td>
+          <td>{{ line.category or '(ไม่ระบุหมวด)' }}</td>
+          <td>{{ line.description or '—' }}</td>
+          <td class="text-end">{{ line.amount | fmt_price }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {# ── KPI Cards — row 2 ────────────────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
@@ -224,7 +264,10 @@
         {% if s.net_profit is not none %}
         <div class="ms-auto text-end text-subtle small">
           <div>= กำไรขั้นต้น {{ s.gross_profit | fmt_price }}</div>
-          <div>− ค่าใช้จ่าย (รวมค่าคอมฯ) {{ s.expenses | fmt_price }}</div>
+          <div>− ค่าใช้จ่ายดำเนินงาน (รวมค่าคอมฯ) {{ s.expenses | fmt_price }}</div>
+          {% if s.prior_period_expenses %}
+          <div>− ค่าใช้จ่ายของงวดก่อน {{ s.prior_period_expenses | fmt_price }}</div>
+          {% endif %}
         </div>
         {% elif s.expense_status == 'incomplete' %}
         <div class="ms-auto text-end text-subtle small">
@@ -312,7 +355,7 @@
 {# ── Expenses by category ──────────────────────────────────────────────────── #}
 <div class="card mb-4">
   <div class="card-header">
-    <i class="bi bi-receipt-cutoff me-2 text-accent"></i>ค่าใช้จ่ายแยกตามหมวด (สมุดรับ-จ่าย BSN+SD)
+    <i class="bi bi-receipt-cutoff me-2 text-accent"></i>ค่าใช้จ่ายดำเนินงานแยกตามหมวด (สมุดรับ-จ่าย BSN+SD)
     {% if s.expense_status == 'incomplete' %}
     <span class="text-subtle small ms-2">รายการยังไม่ครบ</span>
     {% endif %}

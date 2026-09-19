@@ -135,6 +135,14 @@ def get_accounting_summary(date_from=None, date_to=None):
                (cashbook is not company-scoped). None when the period has
                ZERO qualifying cashbook rows (pre-cashbook-era months, e.g.
                before 2026-03) so the page can't show a fake profit.
+               That population is SPLIT on `belongs_to_period` (mig 187):
+               `expenses` is ค่าใช้จ่ายดำเนินงาน (the column NULL — the cost
+               belongs to the month it was paid) and
+               `prior_period_expenses` is ค่าใช้จ่ายของงวดก่อน (a period was
+               identified, so the cost belongs to an earlier one). Both are
+               None together or neither. กำไรสุทธิ subtracts both, so the
+               split does not move it. See ADR 0014 and CONTEXT.md
+               "Internal P&L".
     Commission is NOT subtracted separately — cashbook opex already
     includes it (see module docstring).
     """
@@ -211,6 +219,11 @@ def get_accounting_summary(date_from=None, date_to=None):
     # ── Expenses (cashbook opex — replaces the dead expense_log) ──────────────
     # Count ROWS (not just sum) so a period with zero cashbook coverage is
     # distinguishable from a real month that happens to net to zero.
+    # ONE population, split in two by belongs_to_period (mig 187): NULL is
+    # ค่าใช้จ่ายดำเนินงาน, a set value is ค่าใช้จ่ายของงวดก่อน. Both queries
+    # therefore carry the SAME three filters — direction, non-transfer
+    # account, non-COGS/transfer category — and the split is deliberately NOT
+    # a reason to widen any of them (ADR 0014 decision 3 / spec #593).
     excl_placeholders = ','.join('?' * len(_NON_OPEX_CATEGORIES))
     exp_rows = conn.execute(f"""
         SELECT COALESCE(ct.category, '(ไม่ระบุหมวด)') AS category_name,
@@ -221,20 +234,53 @@ def get_accounting_summary(date_from=None, date_to=None):
            AND ca.is_transfer = 0
            AND ct.txn_date >= ? AND ct.txn_date <= ?
            AND COALESCE(ct.category, '') NOT IN ({excl_placeholders})
+           AND ct.belongs_to_period IS NULL
          GROUP BY ct.category
          ORDER BY total DESC
     """, (date_from, date_to, *_NON_OPEX_CATEGORIES)).fetchall()
 
-    has_expense_coverage = len(exp_rows) > 0
+    # Individual rows, not a category roll-up: the line is bounded by the fact
+    # that only a deliberate DB write can put a row on it (no cashbook UI —
+    # spec #593 calls that a YAGNI call, not an oversight), and Put reads it
+    # to recognise the specific cost.
+    prior_rows = conn.execute(f"""
+        SELECT ct.txn_date, ct.belongs_to_period, ct.category, ct.description,
+               ct.amount
+          FROM cashbook_transactions ct
+          JOIN cashbook_accounts ca ON ca.id = ct.account_id
+         WHERE ct.direction = 'expense'
+           AND ca.is_transfer = 0
+           AND ct.txn_date >= ? AND ct.txn_date <= ?
+           AND COALESCE(ct.category, '') NOT IN ({excl_placeholders})
+           AND ct.belongs_to_period IS NOT NULL
+         ORDER BY ct.txn_date, ct.amount DESC
+    """, (date_from, date_to, *_NON_OPEX_CATEGORIES)).fetchall()
+
+    # Coverage is judged on the COMBINED population: a month whose only
+    # qualifying rows are prior-period ones HAS been keyed, so it is covered
+    # (expenses 0.00), never 'no_coverage' — that label is reserved for the
+    # genuine pre-cashbook era. `expenses` and `prior_period_expenses` are
+    # therefore None together or neither; the template branches on that.
+    has_expense_coverage = len(exp_rows) > 0 or len(prior_rows) > 0
+    prior_period_lines = [
+        {'txn_date': r['txn_date'],
+         'belongs_to_period': r['belongs_to_period'],
+         'category': r['category'],
+         'description': r['description'],
+         'amount': float(r['amount'] or 0)}
+        for r in prior_rows
+    ]
     if has_expense_coverage:
         expenses_by_category = [
             {'category_name': r['category_name'], 'total': float(r['total'] or 0)}
             for r in exp_rows
         ]
         expenses = float(sum(c['total'] for c in expenses_by_category))
+        prior_period_expenses = float(sum(line['amount'] for line in prior_period_lines))
     else:
         expenses_by_category = []
         expenses = None
+        prior_period_expenses = None
 
     # incomplete_months must be computed UNCONDITIONALLY — a month with zero
     # opex rows of its own (nobody has keyed it yet, e.g. the first days of a
@@ -254,7 +300,19 @@ def get_accounting_summary(date_from=None, date_to=None):
         # ── Net profit — NO separate commission subtraction: cashbook opex
         # above already includes จ่ายค่าคอมมิชชั่น (design.md Q5, avoids
         # double-counting commission_payouts on top of it).
-        net_profit = gross_profit - expenses
+        # Both expense lines are subtracted, so splitting them does NOT move
+        # this number — every baht that left still lands in the bottom line
+        # (ADR 0014 decision 3, spec #593 story 10).
+        # ⚠ The parentheses are load-bearing and must not be "simplified" to
+        # `gross_profit - expenses - prior_period_expenses`: subtracting twice
+        # re-associates the float and can move the result by 1 ULP. Measured
+        # on a prod-derived copy for 2026-03: -663652.6317031696 before the
+        # split and with this form, -663652.6317031697 with two subtractions.
+        # Invisible at two decimal places, but story 10's whole claim is that
+        # this number does not move, and "it moves in the last bit" is a
+        # weaker claim than the one being made.
+        # Pinned by test_stamping_a_row_does_not_move_net_profit_by_one_bit.
+        net_profit = gross_profit - (expenses + prior_period_expenses)
 
     # ── Brand breakdown (own-brands first per CLAUDE.md priority) ────────────
     # Own-brand order: Golden Lion (sort 10) → A-SPEC (sort 20) → Sendai (sort 30)
@@ -330,6 +388,8 @@ def get_accounting_summary(date_from=None, date_to=None):
         'margin_pct': margin_pct,
         'expenses': expenses,
         'expenses_by_category': expenses_by_category,
+        'prior_period_expenses': prior_period_expenses,
+        'prior_period_lines': prior_period_lines,
         'expense_status': expense_status,
         'incomplete_months': incomplete_months,
         'net_profit': net_profit,
