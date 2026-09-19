@@ -10,9 +10,14 @@ This ticket is the checklist for the writers that still don't: #599 (กร/ถ�
 Express meaning), #601 (VAT-book book-awareness), #602 (product form /
 promotions / suggestions / price lookup), #610 (the DBF sales-order-lines
 writer, the credit-note importers, the supplier catalogue importer).
-#599 and #600 change the map's SEED DATA and run a one-time historical
-relabel migration respectively — neither touches a call site, so this
-census has no entries for them; nothing here should change when they ship.
+#600 runs a one-time historical relabel migration touching no call site, so
+this census has no entries under its name. #599 is NOT call-site-free
+(review N3 corrected this) — its own body says "Callers pass their book" —
+but the sites it would touch (import_weekly, repoint_bsn_code,
+seed_products_from_stmas) are already `through_map` below, because they
+already call bsn_units against the current default book; #599's job there
+is to make that book argument explicit, which lands as a reason-text
+update on shipping, not a status flip out of `pending`.
 
 Prior art: tests/test_revenue_filter_coverage.py (file-level ALLOWED +
 guard-token-in-file) and tests/test_last_purchase_population_coverage.py
@@ -38,20 +43,44 @@ about ("Reading code file-by-file is what missed them"). It was built by:
      cannot reach `unit_type`) were caught and explained rather than
      silently mis-declared.
   3. Tracing every real hit to its actual caller to decide `through_map`
-     vs `pending` vs `exempt` — several sites (`save_unit_conversions`,
-     `upsert_unit_conversion`) have byte-identical SQL and differ only in
-     whether their CALLER pre-translates, which no sweep can see; that
-     distinction is recorded as prose in the reason field, and the one
-     transitive claim is pinned by its own positive-control test below.
+     vs `pending` vs `exempt` — two sites (`save_unit_conversions`,
+     `upsert_unit_conversion`) have byte-identical SQL and neither calls
+     bsn_units itself; both are `pending:#602` because neither caller
+     provably pre-translates on EVERY path (review S1 found the ONE claim
+     of a proven caller guarantee here was itself wrong on a re-read of the
+     template — see `through_map_transitive`'s own section below for what
+     it would actually take to earn that status).
 
 What this census CANNOT see (say so up front, per #598's own AC):
   - a SQL string built from variables the sweep does not track (e.g. a
     column value assembled far from the query text);
-  - a dynamic `SET {clause}`/`INSERT INTO {table}` where the actual columns
-    or table are computed at import time from something other than a
-    literal in the SAME rendered string — the sweep only proves "this MIGHT
-    touch a unit column"; whether it actually can is decided by reading the
-    whitelist the dynamic clause draws from (documented per exempt entry);
+  - a dynamic `SET {clause}`/`INSERT INTO {table}`/column list where the
+    actual columns or table are computed at import time from something
+    other than a literal in the SAME rendered string — the sweep only
+    proves "this MIGHT touch a unit column"; whether it actually can is
+    decided by reading the whitelist the dynamic clause draws from
+    (documented per exempt entry, each pinned by its own test reading that
+    whitelist directly rather than trusting the sweep's silence);
+  - **that a `through_map` site's bsn_units call result is the value
+    actually WRITTEN, for most sites** (review S4): the self-check below
+    only proves the call is PRESENT somewhere in the function, which is
+    necessary but not sufficient — a mutation that keeps the call but
+    writes a DIFFERENT, untranslated variable stays green unless the
+    translated value flows through a simple, traceable local assignment.
+    Two sites (`scripts/import_express.py::_import_sales`,
+    `vat_book_builder.py::seed_products_from_stmas`) have that simple
+    shape and are additionally checked by
+    `test_through_map_translated_value_reaches_a_write` — pinning that the
+    variable assigned FROM the bsn_units call also appears inside the
+    params of a `conn.execute`-shaped call in the same function. The other
+    three (`import_weekly`'s in-place `e['unit'] = ...` dict mutation,
+    `repoint_bsn_code`'s value renamed through a list comprehension and a
+    tuple-unpack before reaching the write, `learn_acronyms_normalize`'s
+    "teach the map AND write the same literal" shape with no intermediate
+    variable at all) were checked BY READING, not mechanically — a naive
+    identifier-reuse check would either miss the mutation (learn_acronyms_
+    normalize) or FALSELY fail correct code that renames the value on the
+    way to the write (repoint_bsn_code), which is worse than not checking;
   - a huge multi-statement string mixing unrelated CREATE TABLE / CREATE
     TRIGGER bodies (`database.py`'s legacy `SCHEMA` bootstrap constant) can
     report a false co-occurrence between a write verb in one statement and
@@ -89,6 +118,7 @@ import ast
 import io
 import os
 import re
+import sqlite3
 import tokenize
 
 import pytest
@@ -122,37 +152,72 @@ TARGET_COLUMNS = {
 # `\b` on BOTH sides of UPDATE/INSERT matters: without it "UPDATE" matches
 # inside "updated_at" (a real false positive hit during development, on
 # models/products.py::get_product's `p.updated_at, ... p.unit_type` SELECT).
+# `REPLACE INTO` (bare, no leading INSERT) is SQLite shorthand for
+# `INSERT OR REPLACE INTO` — added after review found the sweep blind to it.
 _WRITE_VERB_RE = re.compile(
-    r'\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE(?:\s+OR\s+\w+)?)\b', re.I)
-# A write verb immediately followed by `{` — the table name is an f-string
-# hole (`express_registers.py::replace`'s `INSERT INTO {table.name}`,
-# `learn_acronyms_normalize`'s `UPDATE {t} SET unit=...`).
+    r'\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?)\b', re.I)
+# A write verb immediately followed by a HOLE — the table name is dynamic.
+# Three hole shapes: an f-string `{expr}` (`express_registers.py::replace`'s
+# `INSERT INTO {table.name}`, `learn_acronyms_normalize`'s `UPDATE {t} SET
+# unit=...`), or a %-format `%s`/`%(name)s` (`"UPDATE %s SET unit=?" % table`
+# renders as literal `%s` — see `_render`'s Mod handling).
 _DYNAMIC_TABLE_RE = re.compile(
-    r'\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE(?:\s+OR\s+\w+)?)\s*\{', re.I)
-# `UPDATE <literal table> SET {clause}` — the SET clause (not the table) is
-# the hole. Captured so the caller can check the table is one we care about;
-# an unrelated dynamic-SET table (ar_followup_log, customers, leave_requests,
-# label_company_block, customer_contact_review, a CRM upsert) is real code
-# but out of scope and must not appear here.
-_DYNAMIC_SET_RE = re.compile(r'\bUPDATE\s+(\w+)\s+SET\s*\{', re.I)
+    r'\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?)'
+    r'\s*(?:\{|%\(|%[a-z])', re.I)
+# `INSERT INTO <literal, in-scope table> (<hole>` — the TABLE is known but
+# the COLUMN LIST is dynamic (`f"INSERT INTO product_price_tiers ({cols})"`).
+# Different from _DYNAMIC_TABLE_RE, which fires when the TABLE ITSELF is the
+# hole; this one needs the table name resolved first, so it is applied by
+# the caller (like _DYNAMIC_SET_RE) rather than matched standalone here.
+_DYNAMIC_COLUMNS_RE = re.compile(
+    r'\bINSERT(?:\s+OR\s+\w+)?\s+INTO\s+(\w+)\s*\(\s*(?:\{|%\(|%[a-z])', re.I)
+# `UPDATE <literal table>[<alias>] SET <hole>` — the SET clause (not the
+# table) is the hole. `.*?` (DOTALL) tolerates an optional alias
+# (`UPDATE products AS p SET {..}` / `UPDATE products p SET {..}`) between
+# the table name and SET — the review found the original anchored form
+# (`\s+SET`, no alias) blind to this. Captured so the caller can check the
+# table is one we care about; an unrelated dynamic-SET table
+# (ar_followup_log, customers, leave_requests, label_company_block,
+# customer_contact_review, a CRM upsert) is real code but out of scope and
+# must not appear here.
+_DYNAMIC_SET_RE = re.compile(r'\bUPDATE\s+(\w+)\b.*?\bSET\s*(?:\{|%\(|%[a-z])', re.I | re.S)
+# Only the calls that actually TRANSLATE or WRITE a spelling count — is_known
+# (a membership check) and load_unit_map (a bulk snapshot for local lookups)
+# never return or persist a translated value, so a function calling only
+# those has NOT gone through the map (review finding N4).
 _BSN_UNITS_CALL_RE = re.compile(
-    r'\bbsn_units\.(?:normalize_unit|translate|learn|add_acronym|is_known'
-    r'|load_unit_map)\b')
+    r'\bbsn_units\.(?:normalize_unit|translate|learn|add_acronym)\b')
 
 
 def _code_only(src):
     """`src` with comments and docstrings removed — a guard call named only
     in a comment (e.g. `pass  # bsn_units.add_acronym(...) removed`) is not
     a guard. Tokenize-based, like test_revenue_filter_coverage.py's
-    `_code_only` — but joined with NO separator, not `\\n`: that file's
+    `_code_only` — but joined WITHOUT a blanket `\\n` separator: that file's
     GUARD_TOKENS are single identifiers, so `\\n`.join (one token per line)
     still leaves each one findable as a substring. This file's checks are
     DOTTED calls (`bsn_units.add_acronym`, `acr_full.get(`) spanning THREE
     tokens (NAME, OP '.', NAME) — `\\n`.join was proven to break adjacency
     between them (every through_map self-check went red against unmutated
-    code the first time this ran), so plain concatenation is what actually
-    reconstructs a dotted name. Proven correct, not assumed, by
-    test_code_only_strips_comments_but_keeps_real_calls below."""
+    code the first time this ran).
+
+    Plain `''.join` alone has its OWN gap, found while checking N4 by hand:
+    two adjacent NAME-shaped tokens glue into one run with no boundary
+    between them wherever real source had a space Python's grammar
+    requires but the token strings themselves don't carry — `return
+    bsn_units.normalize_unit(...)` collapses to `returnbsn_units...`, and
+    `\\bbsn_units\\b` cannot fire between two word characters. None of
+    today's 5 real through_map calls happen to sit right after a bare
+    keyword (all are preceded by `=`, `(`, or start-of-line, which stay
+    correctly separated even under plain concatenation), so this was
+    invisible to every real assertion in this file — until a synthetic
+    `return bsn_units.normalize_unit(...)` check surfaced it. Fixed by
+    inserting a single space wherever two emitted pieces would otherwise
+    join two word-characters into one; a `.`-adjacent dotted call stays
+    glued (`.` is not a word character), so the fix that JOINS this gap
+    does not REOPEN the one `\\n`.join left. Proven correct, not assumed,
+    by test_code_only_strips_comments_but_keeps_real_calls and
+    test_code_only_separates_adjacent_word_tokens below."""
     out = []
     try:
         for tok in tokenize.generate_tokens(io.StringIO(src).readline):
@@ -163,7 +228,26 @@ def _code_only(src):
             out.append(tok.string)
     except (tokenize.TokenError, IndentationError):
         return src          # unparseable: fall back to the raw text, never skip
-    return ''.join(out)
+    pieces = []
+    for s in out:
+        if (pieces and pieces[-1] and s
+                and (pieces[-1][-1].isalnum() or pieces[-1][-1] == '_')
+                and (s[0].isalnum() or s[0] == '_')):
+            pieces.append(' ')
+        pieces.append(s)
+    return ''.join(pieces)
+
+
+def _placeholder(node):
+    """`{source text of node}` — the same brace-hole spelling `_render` uses
+    for an f-string substitution, reused for every OTHER kind of hole
+    (a `+`-concatenated variable, a `%`-format value) so all three read as
+    one dynamic-table/dynamic-column shape to the DYNAMIC regexes instead of
+    three different blind spots."""
+    try:
+        return '{' + ast.unparse(node) + '}'
+    except Exception:
+        return '{?}'
 
 
 def _render(node):
@@ -172,25 +256,38 @@ def _render(node):
     the DYNAMIC detectors, never as if it were resolved); `.format()` is
     treated as a passthrough of its template (the call's own substitution
     args are not more query text). Mirrors
-    test_last_purchase_population_coverage.py's `_render`, plus `.format()`.
+    test_last_purchase_population_coverage.py's `_render`, plus `.format()`,
+    `%`-format, and a `+`-concatenation with a NON-string operand.
+
+    The last two were review findings (S5): `"UPDATE " + table + " SET
+    unit=?"` used to render as None THE MOMENT ANY operand failed to
+    render — `_render(BinOp)` required BOTH sides to already be strings, so
+    a bare variable anywhere in a `+`-chain made the WHOLE expression
+    invisible, not just that one hole. Now a `+` with at least one string
+    side placeholders the other; a `+`-chain of NON-string pieces (`5 + 3`)
+    still correctly renders as None (returning early keeps a `_hits_in_src`
+    that filters `_WRITE_VERB_RE` from mistaking ordinary arithmetic for a
+    dynamic query — proven by the 'plain arithmetic is not a string' shape
+    test below).
     """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
         parts = []
         for v in node.values:
-            if isinstance(v, ast.Constant):
-                parts.append(str(v.value))
-            else:
-                try:
-                    parts.append('{' + ast.unparse(v.value) + '}')
-                except Exception:
-                    parts.append('{?}')
+            parts.append(str(v.value) if isinstance(v, ast.Constant) else _placeholder(v.value))
         return ''.join(parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left, right = _render(node.left), _render(node.right)
-        if left is not None and right is not None:
-            return left + right
+        if left is None and right is None:
+            return None
+        return (left if left is not None else _placeholder(node.left)) + \
+               (right if right is not None else _placeholder(node.right))
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        # `"UPDATE %s SET unit=?" % table` — keep the literal template
+        # (its `%s`/`%(name)s` holes included) and drop the substitution
+        # values; a bare `x % y` with no string template renders as None.
+        return _render(node.left)
     if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr == 'format'):
         base = _render(node.func.value)
@@ -227,8 +324,10 @@ def _hits_in_src(src):
 
     A label is `<table>.<column>` (a literal table AND column both present
     in the same rendered string, alongside a write verb), `DYNAMIC-TABLE`
-    (the table name itself is a hole), or `DYNAMIC-SET:<table>` (a literal,
-    in-scope table with a dynamically-built SET clause).
+    (the table name itself is a hole), `DYNAMIC-COLUMNS:<table>` (a literal,
+    in-scope table with a dynamically-built INSERT column list), or
+    `DYNAMIC-SET:<table>` (a literal, in-scope table with a dynamically-
+    built SET clause).
 
     Deliberately over-inclusive, same stance as
     test_revenue_filter_coverage.py's `_SUM_NET`: a column can appear in a
@@ -252,6 +351,9 @@ def _hits_in_src(src):
                     labels.add(f'{table}.{col}')
         if _DYNAMIC_TABLE_RE.search(sql):
             labels.add('DYNAMIC-TABLE')
+        m = _DYNAMIC_COLUMNS_RE.search(sql)
+        if m and m.group(1).lower() in TARGET_COLUMNS:
+            labels.add(f'DYNAMIC-COLUMNS:{m.group(1)}')
         m = _DYNAMIC_SET_RE.search(sql)
         if m and m.group(1).lower() in TARGET_COLUMNS:
             labels.add(f'DYNAMIC-SET:{m.group(1)}')
@@ -343,16 +445,31 @@ ALLOWED = {
             'through_map, not pending.'),
     },
     'models/mapping.py::repoint_bsn_code': {
-        'DYNAMIC-TABLE': ('through_map',
-            'Calls bsn_units.normalize_unit twice (matching an incoming '
-            'bsn_unit against the ledger before repointing) before its '
-            'dynamic per-table UPDATE.'),
-        'product_code_mapping.bsn_unit': ('exempt',
-            'The bsn_unit written here is copied VERBATIM from an existing '
-            'product_code_mapping row fetched earlier in the same '
-            'function (line ~618-634) when repointing a code to a '
-            'different product — it introduces no new spelling, only '
-            'relocates one that is already stored.'),
+        # Review S2: the two labels below were SWAPPED in the previous
+        # version of this entry. Re-read line by line: the dynamic-table
+        # write (~line 674, `UPDATE {table} SET synced_to_stock=0`) never
+        # names a unit column at all — that one is exempt. The
+        # product_code_mapping write (~line 621-633) is the real
+        # through_map site: when the caller passes a bsn_unit, `norm_unit =
+        # bsn_units.normalize_unit(bsn_unit, conn=conn)` (line 515) feeds
+        # `target_unit_rows = [(norm_unit,)]`, which is what gets written.
+        # Only in the OTHER branch (no bsn_unit passed — repoint the WHOLE
+        # code) does it fall back to copying each EXISTING row's own
+        # already-stored bsn_unit verbatim — never a NEW raw spelling
+        # either way.
+        'product_code_mapping.bsn_unit': ('through_map',
+            'Calls bsn_units.normalize_unit(bsn_unit, conn=conn) (line '
+            '515) and writes ITS result (via target_unit_rows -> '
+            'unit_value) when the caller passes a bsn_unit; when no '
+            'bsn_unit is passed, it instead copies each row\'s own '
+            'EXISTING bsn_unit verbatim (never introduces a new spelling '
+            'in that branch either).'),
+        'DYNAMIC-TABLE': ('exempt',
+            'The dynamic per-table UPDATE (~line 674, "UPDATE {table} SET '
+            'synced_to_stock=0 WHERE product_id IN (...)") only ever sets '
+            'synced_to_stock — it never names a unit column. This is a '
+            'DIFFERENT statement than the product_code_mapping write '
+            'above; both live in this function but do not interact.'),
     },
     'models/bsn_sync.py::learn_acronyms_normalize': {
         'DYNAMIC-TABLE': ('through_map',
@@ -384,20 +501,23 @@ ALLOWED = {
             'the raw Express code.'),
     },
 
-    # ── through_map_transitive: caller pre-translates; see the named
-    # positive-control test below ──────────────────────────────────────
-    'models/bsn_sync.py::save_unit_conversions': {
-        'unit_conversions.bsn_unit': ('through_map_transitive',
-            'This function does not call bsn_units itself, but its ONLY '
-            'caller — blueprints/bsn.py::unit_conversions_save — runs '
-            'Pass 1 (models.learn_acronyms_normalize, which teaches the '
-            'map any acronym Put just typed) BEFORE Pass 2 builds the '
-            '`items` list this function receives, and Pass 2 substitutes '
-            '`acr_full.get((pid, acronym), acronym)` so every bsn_unit in '
-            '`items` is already a canonical word by the time this runs. '
-            'Pinned by '
-            'test_unit_conversions_save_caller_pretranslates_before_calling.'),
-    },
+    # through_map_transitive (a caller PROVABLY pre-translates on every
+    # path) currently has NO entries — see review S1: save_unit_conversions
+    # was declared through_map_transitive here on the strength of the
+    # ACRONYM path alone, but blueprints/bsn.py::unit_conversions_save's
+    # Pass-2 substitution (`acr_full.get((pid_s, bsn_unit), bsn_unit)`,
+    # bsn.py:137) only swaps a value when Put ALSO typed a name into that
+    # row's `fullunit_<pid>_<acronym>` box (unit_conversions.html:76-77) —
+    # a SEPARATE, optional input from the `ratio_<pid>_<bsn_unit>` field
+    # every row (acronym or not) always renders (unit_conversions.html:73,
+    # 100). Put can fill in a ratio while leaving the full-name box blank,
+    # and that row's raw acronym reaches save_unit_conversions untranslated.
+    # Moved to pending:#602 below, next to its structurally-identical
+    # sibling upsert_unit_conversion. The status stays a valid, testable
+    # value (test_every_through_map_transitive_entry_names_an_existing_
+    # control proves ANY future entry here must name a real control test,
+    # so a later ticket cannot "clear" a pending entry into this status
+    # without evidence) — it is simply unoccupied today.
 
     # ── pending:#602 (product form / promotions / suggestions / price
     # lookup / the /unit-conversions naming flow) ─────────────────────────
@@ -447,11 +567,27 @@ ALLOWED = {
             'No bsn_units call in this function. Its one caller — '
             'blueprints/bsn.py::mapping_save\'s \'map\' action — strips '
             'the client-posted bsn_unit and passes it straight through '
-            'with NO Pass-1/Pass-2 pre-translation step (unlike its '
-            'sibling unit_conversions_save above). Safe today only '
-            'because the client value already originated from an '
+            'with no pre-translation step at all (its ONLY guarantee, if '
+            'any, is that the client value already originated from an '
             'already-normalised sales_transactions.unit via '
-            'bsn_suggest.py — an implicit, not enforced, invariant.'),
+            'bsn_suggest.py — implicit, not enforced).'),
+    },
+    'models/bsn_sync.py::save_unit_conversions': {
+        'unit_conversions.bsn_unit': ('pending:#602',
+            'No bsn_units call in this function. Its one caller — '
+            'blueprints/bsn.py::unit_conversions_save — DOES pre-translate '
+            'the acronym path (Pass 1 learns any full name Put typed, '
+            'Pass 2 substitutes it in), but review S1 found that guarantee '
+            'is PARTIAL: Pass 2 only swaps a value when Put ALSO filled '
+            'in that row\'s optional "หน่วยเต็ม" box '
+            '(unit_conversions.html:76) — the ratio box next to it '
+            '(:73/:100) can be submitted alone, on ANY row including an '
+            'unknown acronym, and Pass 2\'s `acr_full.get((pid, unit), '
+            'unit)` then falls back to the raw, un-substituted value. So '
+            'a raw acronym CAN reach this function with a filled ratio '
+            'and a blank full-name box — same structural gap as its '
+            'sibling upsert_unit_conversion above, not a proven '
+            'transitive guarantee.'),
     },
     'models/suggestions.py::approve_pending_suggestion': {
         'unit_conversions.bsn_unit': ('pending:#602',
@@ -656,23 +792,45 @@ ALLOWED = {
         'products.unit_type': ('exempt', 'Same one-off script, dated 2026-08-17, already run against prod.'),
     },
     'scripts/2026_09_19_fix_pack_ratios_592.py::fix': {
-        'unit_conversions.bsn_unit': ('exempt', 'One-off, dated + ticketed #592, already run.'),
+        'unit_conversions.bsn_unit': ('exempt',
+            'One-off, dated + ticketed #592, already run. Structurally safe '
+            'too: the write is "UPDATE unit_conversions SET ratio=? WHERE '
+            'product_id=? AND bsn_unit=?" — bsn_unit is a WHERE key, only '
+            'ratio is SET (review N2).'),
+        'DYNAMIC-TABLE': ('exempt',
+            'Same one-off script (#592). The %-format dynamic write '
+            '("UPDATE %s SET synced_to_stock=0 WHERE product_id=?" % table) '
+            'only ever sets synced_to_stock, never a unit column.'),
     },
     'scripts/2026_09_19_gross_to_piece.py::rebase': {
         'products.unit_type': ('exempt', 'One-off, dated 2026-09-19 (the 1050/1320 gross-to-piece rebase), already run against prod.'),
         'unit_conversions.bsn_unit': ('exempt', 'Same one-off gross-to-piece rebase script, dated 2026-09-19, already run.'),
+        'DYNAMIC-TABLE': ('exempt',
+            'Same one-off script. The %-format dynamic write '
+            '("UPDATE %s SET synced_to_stock=0 WHERE product_id=?" % table) '
+            'only ever sets synced_to_stock, never a unit column.'),
     },
     'scripts/2026_09_19_rebase_689_767.py::apply_tiers': {
         'product_price_tiers.qty_label': ('exempt', 'One-off, dated 2026-09-19 (pid 689/767 rebase), already run; writes hardcoded literals only.'),
     },
     'scripts/2026_09_19_split_belco_582.py::split': {
         'unit_conversions.bsn_unit': ('exempt', 'One-off, dated + ticketed #582, already run.'),
+        'DYNAMIC-TABLE': ('exempt',
+            'Same one-off script (#582). The %-format dynamic write '
+            '("UPDATE %s SET synced_to_stock=0 WHERE product_id IN (?,?)" '
+            '% table) only ever sets synced_to_stock, never a unit column.'),
     },
     'scripts/apply_decision_ratios.py::main': {
         'unit_conversions.bsn_unit': ('exempt', 'One-off decision-application script (no date in name, but its own docstring scopes it to one specific ratio-decision batch), already run.'),
     },
     'scripts/apply_decision_remaps.py::main': {
         'DYNAMIC-TABLE': ('exempt', 'One-off "Bucket C+E" remap script (own docstring names the specific decision batch), already run; the dynamic part only reassigns product_id.'),
+        'DYNAMIC-COLUMNS:products': ('exempt',
+            'Same one-off Bucket C+E remap script — its clone-a-sibling '
+            'branch ("INSERT INTO products ({\',\'.join(cols)}) VALUES '
+            '...") copies a whole row\'s columns including unit_type '
+            'verbatim from an EXISTING product, already applied against '
+            'prod; not a new-code-path risk.'),
         'products.unit_type': ('exempt', 'Same one-off script; a "guessed" unit_type for a minimal new row, already applied against prod.'),
         'unit_conversions.bsn_unit': ('exempt', 'Same one-off Bucket C+E remap script, already applied against prod.'),
     },
@@ -805,37 +963,136 @@ def test_through_map_direct_sites_actually_call_bsn_units(site, label):
         f'{site} [{label}] is declared through_map but no longer calls bsn_units')
 
 
-def test_unit_conversions_save_caller_pretranslates_before_calling():
-    """Positive control for the ONE through_map_transitive claim
-    (models/bsn_sync.py::save_unit_conversions). The guarantee lives in the
-    CALLER, blueprints/bsn.py::unit_conversions_save — assert its two-pass
-    shape (learn first, substitute before building `items`) is still there,
-    so the transitive claim cannot silently rot when nobody is looking at
-    save_unit_conversions itself. Checked against `_code_only`, not the raw
-    source — the first draft of this test named the call in its own prose
-    ("assert 'models.learn_acronyms_normalize(learned)' in caller") and
-    stayed GREEN when the real call was replaced by `pass  # ... removed`,
-    because the commented-out line still contained the literal text."""
-    caller = _function_source(os.path.join(APP, 'blueprints', 'bsn.py'),
-                              'unit_conversions_save')
-    assert caller is not None, 'blueprints/bsn.py::unit_conversions_save not found'
-    code = _code_only(caller)
-    assert 'models.learn_acronyms_normalize(learned)' in code, (
-        'unit_conversions_save no longer teaches the map before saving — '
-        'the through_map_transitive claim on save_unit_conversions no '
-        'longer holds')
-    assert 'acr_full.get(' in code, (
-        'unit_conversions_save no longer substitutes the learned full word '
-        'before building the items list passed to save_unit_conversions')
-    # ORDER matters: the substitution must read from a dict populated by
-    # the SAME learn step, not a stale one — a crude but real proxy is that
-    # the learn call's line number precedes the substitution's.
-    learn_at = code.index('models.learn_acronyms_normalize(learned)')
-    sub_at = code.index('acr_full.get(')
-    assert learn_at < sub_at, (
-        'unit_conversions_save now substitutes BEFORE learning — an item '
-        'could reach save_unit_conversions holding the raw acronym instead '
-        'of the word Pass 1 just taught the map')
+# Review S4: "the status check proves the call is PRESENT, not that its
+# result is WRITTEN" — a mutation that keeps calling bsn_units.normalize_unit
+# but writes a DIFFERENT (untranslated) value stays green against the check
+# above. Tightened for the two sites with a simple, safely-traceable shape
+# (`x = bsn_units.normalize_unit(...)` followed directly by `x` reappearing
+# inside a conn.execute-shaped call's params, in the SAME function) — see
+# the module docstring's "cannot see" section for why the other three
+# through_map sites are checked by reading instead: their translated value
+# is renamed through an intermediate structure (a dict key, a list
+# comprehension + tuple-unpack, or never assigned to a name at all), and a
+# naive "does this identifier reappear" check would either miss a real
+# mutation or wrongly fail correct code.
+_TRANSLATE_ASSIGN_RE = re.compile(
+    r'\b(\w+)\s*=\s*bsn_units\.(?:normalize_unit|translate)\s*\(')
+
+_DIRECT_ASSIGN_THROUGH_MAP_SITES = (
+    'scripts/import_express.py::_import_sales',
+    'vat_book_builder.py::seed_products_from_stmas',
+)
+
+
+def _execute_call_param_sources(src):
+    """Source text of the params argument (2nd positional arg) for every
+    conn.execute-shaped call anywhere in `src`, ignoring scope — deliberately
+    simple: this only needs to answer "does this identifier appear inside
+    ANY write call's arguments", not which specific write."""
+    tree = ast.parse(src)
+    out = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ('execute', 'executemany') and len(node.args) > 1):
+            seg = ast.get_source_segment(src, node.args[1])
+            if seg:
+                out.append(seg)
+    return out
+
+
+@pytest.mark.parametrize('site', _DIRECT_ASSIGN_THROUGH_MAP_SITES)
+def test_through_map_translated_value_reaches_a_write(site):
+    """The tightened half of the through_map self-check (review S4):
+    proves the variable assigned FROM the bsn_units call is not just
+    computed but actually passed to a write, not silently swapped for the
+    original raw value on the way there — the exact shape S4 demonstrated
+    by editing scripts/import_express.py::_import_sales to insert `r.unit`
+    where `norm_unit` belonged."""
+    assert site in ALLOWED, f'{site}: not declared in ALLOWED at all'
+    src = _function_source(_site_path(site), site.split('::', 1)[1])
+    assert src is not None, f'{site}: function not found (renamed/moved?)'
+    code = _code_only(src)
+    translated = set(_TRANSLATE_ASSIGN_RE.findall(code))
+    assert translated, f'{site}: no `x = bsn_units.normalize_unit(...)`-style assignment found'
+    params = _execute_call_param_sources(src)
+    assert any(re.search(rf'\b{re.escape(v)}\b', p) for v in translated for p in params), (
+        f'{site}: the value assigned from bsn_units never reaches a write — '
+        f'translated identifiers {sorted(translated)} not found in any '
+        f'execute() call\'s params')
+
+
+# ── through_map_transitive: a status, not a home for hope ────────────────
+#
+# Review S1 found the one entry that used to claim this status
+# (save_unit_conversions) was wrong — its caller's pre-translation only
+# covers the acronym sub-path, not every path. S6 then asked for the status
+# itself to be un-gameable: a later ticket that wants to "clear" a pending
+# entry into through_map_transitive must ALSO register a real control test
+# here, in the SAME edit, or the census fails outright.
+
+# (site, label) -> the control test function's name proving the caller
+# pre-translates on EVERY path. Empty today (zero valid claims) — kept as
+# its own dict, not folded into ALLOWED's tuple, so a future entry cannot
+# claim the status without registering here too.
+THROUGH_MAP_TRANSITIVE_CONTROLS = {}
+
+
+def _missing_transitive_controls(allowed, control_names, existing_names):
+    """[(site, label, problem)] for every through_map_transitive entry in
+    `allowed` that has no entry in `control_names`, or whose named function
+    is not in `existing_names`. A pure function of its three arguments (not
+    tied to the real ALLOWED or this module's globals) so the checker can be
+    proven against a synthetic case below — the real ALLOWED currently has
+    ZERO through_map_transitive entries, which would make a test written
+    directly against it vacuously green (verification-discipline.md's
+    empty-collection trap: "an assertion over a collection that may be
+    EMPTY pins nothing")."""
+    problems = []
+    for site, labels in allowed.items():
+        for label, (status, _reason) in labels.items():
+            if status != 'through_map_transitive':
+                continue
+            name = control_names.get((site, label))
+            if not name:
+                problems.append((site, label, 'no control test named'))
+            elif name not in existing_names:
+                problems.append((site, label, f'named control {name!r} does not exist'))
+    return problems
+
+
+def test_every_through_map_transitive_entry_names_an_existing_control():
+    problems = _missing_transitive_controls(
+        ALLOWED, THROUGH_MAP_TRANSITIVE_CONTROLS, set(globals()))
+    assert not problems, (
+        'through_map_transitive is only valid with a real, existing control '
+        'test — a later ticket cannot "clear" a pending entry into this '
+        'status without evidence:\n  '
+        + '\n  '.join(f'{s} [{l}]: {p}' for s, l, p in problems))
+
+
+def test_missing_transitive_controls_catches_both_gaps():
+    """Break-it-once for `_missing_transitive_controls` itself, against a
+    SYNTHETIC allowed/control-map pair (see the empty-collection note
+    above for why the real ALLOWED cannot exercise this). Proves the
+    checker catches BOTH an unregistered entry and a registration naming a
+    function that does not exist, stays silent on a non-transitive entry
+    (control), and clears once a real name is given."""
+    fake_allowed = {
+        'site_a': {'col': ('through_map_transitive', 'x' * 50)},
+        'site_b': {'col': ('through_map_transitive', 'x' * 50)},
+        'site_c': {'col': ('through_map', 'x' * 50)},   # control: never flagged
+    }
+    fake_controls = {
+        ('site_a', 'col'): 'this_function_does_not_exist_anywhere',
+        # site_b: deliberately left unregistered
+    }
+    problems = _missing_transitive_controls(fake_allowed, fake_controls, {'something_else'})
+    found = {(s, l) for s, l, _p in problems}
+    assert found == {('site_a', 'col'), ('site_b', 'col')}, problems
+
+    # CONTROL: naming a REAL, existing function clears both entries.
+    fake_controls_ok = {('site_a', 'col'): 'a_real_name', ('site_b', 'col'): 'a_real_name'}
+    assert not _missing_transitive_controls(fake_allowed, fake_controls_ok, {'a_real_name'})
 
 
 def test_code_only_strips_comments_but_keeps_real_calls():
@@ -855,6 +1112,28 @@ def test_code_only_strips_comments_but_keeps_real_calls():
         'a call named only in a comment must not count as calling bsn_units')
     # the strip must not have eaten the CODE beside the comment either
     assert 'pass' in _code_only(commented_out)
+
+
+def test_code_only_separates_adjacent_word_tokens():
+    """Found by hand while checking review N4 (`_BSN_UNITS_CALL_RE` must NOT
+    match `is_known`/`load_unit_map`): a synthetic `return
+    bsn_units.normalize_unit(...)` came back UNMATCHED even though the call
+    is real, because plain `''.join` glued "return" and "bsn_units" into
+    one word with no boundary between them. None of today's 5 real
+    through_map sites happen to write the call this way (see `_code_only`'s
+    own docstring for which shapes they use instead), so this never bit a
+    real assertion — but the NEXT through_map site easily could look like
+    this. Fixed by inserting a space between two word-adjacent pieces;
+    proven here directly, and the second half is the control that the fix
+    did not reopen the ORIGINAL `\\n`.join gap (a dotted call staying
+    glued through a non-word `.`)."""
+    after_keyword = 'def f(conn, u):\n    return bsn_units.normalize_unit(u, conn=conn)\n'
+    assert _BSN_UNITS_CALL_RE.search(_code_only(after_keyword)), (
+        'a bsn_units call immediately after a bare keyword must still be seen')
+    # CONTROL: the dotted call itself must still be intact (not re-split by
+    # the space-insertion fix) — this is exactly what plain '' .join was
+    # added to fix in the first place.
+    assert 'bsn_units.normalize_unit' in _code_only(after_keyword)
 
 
 def test_naming_cascade_whitelist_still_excludes_unit_type():
@@ -906,7 +1185,6 @@ def test_transactions_unit_mode_is_a_documented_exclusion_not_an_oversight():
     code). Control: the column still exists and is still that same
     3-value enum, so the exclusion is describing real, current schema —
     not a stale claim about a column that has since changed shape."""
-    import sqlite3
     db = os.path.join(APP, 'instance', 'inventory.db')
     if not os.path.exists(db):
         pytest.skip('no local dev DB to introspect')
@@ -918,6 +1196,91 @@ def test_transactions_unit_mode_is_a_documented_exclusion_not_an_oversight():
     finally:
         conn.close()
     assert "CHECK(unit_mode IN ('unit','box','carton'))" in sql
+
+
+def _schema_sql_columns():
+    """{table: [column, ...]} for the WHOLE schema, built by loading
+    data/schema.sql into a throwaway in-memory SQLite DB and introspecting
+    THAT (review N1) — not the live dev DB `test_transactions_unit_mode_...`
+    above reads, which is absent (and skips) in a fresh worktree or CI.
+    schema.sql is a tracked file, always present, and is what a fresh
+    `git clone` + first boot actually builds from (database.py::init_db)."""
+    schema_path = os.path.join(_ROOT, 'data', 'schema.sql')
+    conn = sqlite3.connect(':memory:')
+    try:
+        with open(schema_path, encoding='utf-8') as f:
+            conn.executescript(f.read())
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+        return {t: [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")')]
+                for t in tables}
+    finally:
+        conn.close()
+
+
+# Every (table, column) confirmed by READING (never guessed from the name)
+# to hold something other than a หน่วย spelling — the exact set behind the
+# module docstring's "look-alikes" bullets, kept here as data so
+# test_target_columns_covers_every_unit_ish_column_in_schema_sql can check
+# it mechanically instead of the docstring being the only place this is
+# asserted (review N1).
+_EXCLUDED_LOOKALIKE_COLUMNS = {
+    ('commission_overrides', 'fixed_per_unit'),   # money: a commission rate
+    ('conversion_cost_log', 'unit_cost'),         # money
+    ('credit_note_imports', 'unit_price'),        # money
+    ('express_credit_note_lines', 'unit_price'),  # money
+    ('express_sales', 'unit_price'),              # money
+    ('express_sales_order_lines', 'unit_price'),  # money
+    ('marketplace_order_items', 'unit_price'),    # money
+    ('pending_product_suggestions', 'unit_conversion_ratio'),  # a ratio number
+    ('pending_product_suggestions', 'units_per_box'),     # pack-size count
+    ('pending_product_suggestions', 'units_per_carton'),  # pack-size count
+    ('platform_stock_deductions', 'units'),       # pack-size count
+    ('product_cost_ledger', 'unit_cost'),         # money
+    ('products', 'units_per_box'),                # pack-size count
+    ('products', 'units_per_carton'),             # pack-size count
+    ('purchase_order_lines', 'unit_price'),       # money
+    ('purchase_transactions', 'unit_price'),      # money
+    ('sales_transactions', 'unit_price'),         # money
+    ('transactions', 'unit_mode'),   # CHECK-enum unit/box/carton, not an Express code
+}
+
+
+def test_target_columns_covers_every_unit_ish_column_in_schema_sql():
+    """N1: guard TARGET_COLUMNS (+ the exclusion set above) against
+    data/schema.sql itself, so a NEW column with "unit" in its name added
+    to any table later — one this census has never seen — fails the suite
+    instead of silently going unswept forever. `migration_*` snapshot
+    tables are skipped: they are frozen one-time artifacts written by a
+    .sql migration, not a live table schema.sql would ever carry (already
+    documented as out of scope; verified empty today by the assert below)."""
+    cols = _schema_sql_columns()
+    migration_snapshot_tables = {t for t in cols if t.startswith('migration_')}
+    assert not migration_snapshot_tables, (
+        'schema.sql now carries a migration snapshot table — re-check '
+        'whether it needs its own exemption: ' + str(migration_snapshot_tables))
+    declared = {(t, c) for t, cs in TARGET_COLUMNS.items() for c in cs}
+    unaccounted = []
+    for table, colnames in cols.items():
+        for c in colnames:
+            if 'unit' not in c.lower() and c.lower() != 'qty_label':
+                continue
+            if (table, c) in declared or (table, c) in _EXCLUDED_LOOKALIKE_COLUMNS:
+                continue
+            unaccounted.append(f'{table}.{c}')
+    assert not unaccounted, (
+        'schema.sql has unit-ish column(s) neither in TARGET_COLUMNS nor '
+        'documented in _EXCLUDED_LOOKALIKE_COLUMNS:\n  ' + '\n  '.join(unaccounted))
+
+
+def test_excluded_lookalike_columns_still_exist_in_schema_sql():
+    """Mirror of the test above: a stale exclusion (the column was renamed
+    or dropped) is invisible to the check above, since it only complains
+    about UNACCOUNTED columns — it would happily let a typo'd or removed
+    entry sit here forever looking like coverage."""
+    cols = _schema_sql_columns()
+    stale = [f'{t}.{c}' for t, c in _EXCLUDED_LOOKALIKE_COLUMNS if c not in cols.get(t, ())]
+    assert not stale, f'stale entries in _EXCLUDED_LOOKALIKE_COLUMNS: {stale}'
 
 
 def test_the_census_survives_its_own_success():
@@ -990,6 +1353,32 @@ SHAPES = {
         'def f(conn, rows):\n'
         '    conn.executemany("INSERT INTO express_sales_order_lines "\n'
         '                     "(so_no, unit) VALUES (?, ?)", rows)\n',
+    # ── review S5: 5 more shapes the sweep was blind to ──────────────────
+    'dynamic_column_list':
+        # literal table, but the COLUMN LIST is a hole — different from
+        # dynamic_table_fstring above, where the TABLE ITSELF is the hole.
+        'def f(conn, cols, pid, u, price):\n'
+        '    conn.execute(f"INSERT INTO product_price_tiers ({cols}) "\n'
+        '                 f"VALUES (?, ?, ?)", (pid, u, price))\n',
+    'percent_format_table':
+        'def f(conn, table, item_id, u):\n'
+        '    conn.execute("UPDATE %s SET unit = ? WHERE id = ?" % table, (u, item_id))\n',
+    'plus_concat_variable_table':
+        # unlike plus_concat above (two STRING literals), one side here is
+        # a bare variable — _render used to return None for the WHOLE
+        # expression the moment any `+` operand failed to render as a
+        # string, hiding this from the sweep entirely.
+        'def f(conn, table, item_id, u):\n'
+        '    conn.execute("UPDATE " + table + " SET unit = ? WHERE id = ?", (u, item_id))\n',
+    'bare_replace_into':
+        # SQLite shorthand for INSERT OR REPLACE INTO — no leading INSERT.
+        'def f(conn, item_id, u):\n'
+        '    conn.execute("REPLACE INTO supplier_catalogue_items "\n'
+        '                 "(id, unit) VALUES (?, ?)", (item_id, u))\n',
+    'aliased_dynamic_set':
+        'def f(conn, set_clause, pid, u):\n'
+        '    conn.execute(f"UPDATE products AS p SET {set_clause} WHERE p.id = ?",\n'
+        '                 (u, pid))\n',
 }
 
 NOT_SHAPES = {
@@ -1007,6 +1396,18 @@ NOT_SHAPES = {
         'def f():\n'
         '    """This function does NOT write unit_type or bsn_unit."""\n'
         '    return 1\n',
+    'plain arithmetic is not a string':
+        # review S4/S5's `_render` fix (placeholder-substitute a `+`
+        # operand that fails to render) must not start treating ordinary
+        # non-string arithmetic as a candidate query string — proven by
+        # the ABSENCE of a crash/false-positive here, not by a value.
+        'def f(a, b):\n'
+        '    total = a + b\n'
+        '    return total\n',
+    'percent_format_no_string':
+        # a bare `%` with no string template on the left must not render.
+        'def f(a, b):\n'
+        '    return a % b\n',
 }
 
 
