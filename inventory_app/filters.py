@@ -39,6 +39,33 @@ def thaidate(v):
         return s
 
 
+def thaiperiod(v):
+    """A cashbook cost's `belongs_to_period` -> พ.ศ. for display.
+
+    'YYYY' -> 'ปี 2568'; 'YYYY-MM' -> 'ธ.ค. 2568'. The column stores Gregorian
+    (mig 187's CHECK allows only those two shapes) because every other date in
+    this DB is Gregorian; Put reads the statement in พ.ศ., and the costs on
+    that line are named for their พ.ศ. year, so a bare '2025' beside
+    "โบนัสปี 68" invites the misreading (Put, 2026-09-19).
+
+    NOT folded into `thaidate`: that one renders a Gregorian year on every page
+    in the app. Returns the raw string if it can't be parsed (never raises) -- a
+    display filter must not be what 500s the page.
+    """
+    if not v:
+        return ''
+    s = str(v)
+    try:
+        if len(s) == 4:
+            return f'ปี {int(s) + 543}'
+        y, m = s.split('-')
+        if len(y) != 4 or len(m) != 2 or not 1 <= int(m) <= 12:
+            return s
+        return f'{_TH_MONTHS[int(m)]} {int(y) + 543}'
+    except (ValueError, IndexError):
+        return s
+
+
 def from_json(v):
     """Parse a JSON string into a Python value for in-template iteration.
 
@@ -268,6 +295,7 @@ def register_filters(app):
     app.template_filter('fmt_price')(fmt_price)
     app.template_filter('fmt_qty')(fmt_qty)
     app.template_filter('thaidate')(thaidate)
+    app.template_filter('thaiperiod')(thaiperiod)
     app.template_filter('from_json')(from_json)
     app.template_filter('html_text')(html_text)
     app.template_filter('phone_entries')(phone_entries)

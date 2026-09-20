@@ -228,7 +228,7 @@
         {% for line in s.prior_period_lines %}
         <tr>
           <td>{{ line.txn_date | thaidate }}</td>
-          <td>{{ line.belongs_to_period }}</td>
+          <td>{{ line.belongs_to_period | thaiperiod }}</td>
           <td>{{ line.category or '(ไม่ระบุหมวด)' }}</td>
           <td>{{ line.description or '—' }}</td>
           <td class="text-end">{{ line.amount | fmt_price }}</td>
