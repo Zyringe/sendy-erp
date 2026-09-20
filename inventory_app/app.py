@@ -52,6 +52,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import actor
 import book_registry
 import config
 import models
@@ -117,6 +118,29 @@ csrf = CSRFProtect(app)
 def _csrf_error(e):
     flash(f'เซสชันหมดอายุ กรุณารีเฟรชหน้าและลองอีกครั้ง ({e.description})', 'danger')
     return redirect(request.referrer or url_for('dashboard'))
+
+
+# ── Who is acting (#590) ─────────────────────────────────────────────────────
+# Every DB write made during a request is attributed through actor.py: this
+# pushes the request's root frame and teardown hands it back. Registered before
+# every other request hook so it covers them too. The reset is load-bearing:
+# sync workers reuse the thread, so without it the next request, or anything
+# that runs between requests, would inherit this user.
+
+@app.before_request
+def _push_request_actor():
+    who = session.get('username')
+    real = session.get('_real_username')
+    if who and real and real != who:
+        who = f'{who} via {real}'
+    g._actor_token = actor.push_request(who, request.endpoint)
+
+
+@app.teardown_request
+def _pop_request_actor(exc=None):
+    token = g.pop('_actor_token', None)
+    if token is not None:
+        actor.pop_request(token)
 
 
 # ── Slow-request early warning ───────────────────────────────────────────────

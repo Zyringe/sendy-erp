@@ -4,7 +4,9 @@ Owns:
 - `SCHEMA` constant: the base SQL for a fresh DB (used only on first boot
   if no tables exist; otherwise the migration runner takes over)
 - `get_connection()`: returns a sqlite3.Connection with `row_factory=Row`,
-  WAL journal mode, and `foreign_keys = ON`
+  WAL journal mode, `foreign_keys = ON`, and the `sendy_actor()` SQL function
+  (actor.py, #590); `script_connection()` is the same for scripts, with the
+  script's identity bound to it
 - `init_db()`: idempotent bootstrap — runs `SCHEMA` against empty DBs,
   then applies any pending migrations from `data/migrations/NNN_*.sql`
 - `_apply_pending_migrations()`: the migration runner — filename-keyed,
@@ -27,9 +29,11 @@ Migration runner contract:
 """
 import sqlite3
 import os
+import sys
 import time
 import hashlib
 import glob
+import actor
 from config import DATABASE_PATH
 from werkzeug.security import generate_password_hash
 
@@ -356,13 +360,45 @@ CREATE TRIGGER IF NOT EXISTS after_transaction_insert
 """
 
 
-def get_connection():
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
-    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=10)
+def _prepare(conn, bound=None):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    # sendy_actor() is called from persistent triggers (#590); a build whose
+    # default is trusted_schema=OFF refuses that as "unsafe use of sendy_actor()".
+    conn.execute("PRAGMA trusted_schema = ON")
+    return actor.install(conn, bound)
+
+
+def get_connection():
+    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+    conn = sqlite3.connect(DATABASE_PATH, check_same_thread=False, timeout=10)
+    return _prepare(conn)
+
+
+def script_connection(name, *, operator, reason, db_path=None):
+    """The connection a script writes through, locally or over `railway ssh` (#590).
+
+    The script's identity is bound to THIS connection only: pass it to every
+    model call. A connection a model function opens for itself names nobody.
+    Inside the app the request already names the actor, so this refuses to run
+    there rather than let a script identity stand in for a person.
+    """
+    flask = sys.modules.get('flask')
+    if flask is not None and flask.has_app_context():
+        raise RuntimeError('script_connection is for scripts; inside the app the '
+                           'request names the actor')
+    if not (operator or '').strip():
+        raise ValueError('operator is required: who is running this script?')
+    if not (reason or '').strip():
+        raise ValueError('reason is required: why is this script writing?')
+    # A `railway ssh` shell has no TZ, so rows came out UTC while app.py stamps ICT.
+    os.environ['TZ'] = 'ICT-7'
+    time.tzset()
+    conn = sqlite3.connect(db_path or DATABASE_PATH, timeout=10)
+    return _prepare(conn, actor.Actor(
+        source='manual', who=operator.strip(), kind='script',
+        detail=f'{os.path.basename(name)}: {reason.strip()}'))
 
 
 def _list_migration_files():

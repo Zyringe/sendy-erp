@@ -49,6 +49,31 @@ if not os.path.exists(LIVE_DB):
         LIVE_DB = _WORKSPACE_LIVE_DB
 
 
+# ── Who is acting (#590) ─────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _actor_test_default(request):
+    """The lowest-precedence actor for every test: `test` / `pytest` / nodeid.
+
+    A FALLBACK, not an `acting_as` scope, on purpose: a request pushes its own
+    root frame over it, so a test that drives a route observes the route's real
+    `ui` actor instead of this default hiding it.
+    """
+    import actor
+    actor.set_fallback(actor.Actor(source='test', who='pytest', kind='test',
+                                   detail=request.node.nodeid))
+    yield
+    actor.set_fallback(None)
+
+
+def _install_actor(conn):
+    """Register `sendy_actor()` on a connection a fixture opened raw, as
+    `database.get_connection()` does for the app (#590). Declares nobody:
+    the test default above answers until a test or a request says otherwise."""
+    import actor
+    return actor.install(conn)
+
+
 # ── DB fixtures ──────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -112,6 +137,7 @@ def tmp_db_conn(tmp_db):
     conn = sqlite3.connect(tmp_db, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _install_actor(conn)
     try:
         yield conn
     finally:
@@ -129,6 +155,7 @@ def tmp_db_conn_hr_clean(tmp_db):
     conn = sqlite3.connect(tmp_db, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _install_actor(conn)
     # FK order: cashbook_transactions references payroll_items/payroll_runs
     # (salary pay-events, ADR 0006) and salary_advances (ADR 0008) — the live
     # DB carries such rows since 2026-06-30, so clear those links first, then
@@ -205,6 +232,7 @@ def empty_db_conn(empty_db):
     conn = sqlite3.connect(empty_db, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _install_actor(conn)
     try:
         yield conn
     finally:
@@ -302,9 +330,12 @@ def patch_models_conn(monkeypatch):
 
     def _patch(factory):
         import models as _m
-        monkeypatch.setattr(_m, "get_connection", factory)
+
+        def _installed(*a, **kw):
+            return _install_actor(factory(*a, **kw))
+        monkeypatch.setattr(_m, "get_connection", _installed)
         for _name in dir(_m):
             _sub = getattr(_m, _name)
             if isinstance(_sub, types.ModuleType) and hasattr(_sub, "get_connection"):
-                monkeypatch.setattr(_sub, "get_connection", factory)
+                monkeypatch.setattr(_sub, "get_connection", _installed)
     return _patch
