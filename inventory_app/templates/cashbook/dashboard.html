@@ -86,6 +86,12 @@
         — ไม่นับบัญชีพักเงิน (is_transfer) และไม่รวมหมวดเงินทุน/เงินโอน
         (<span class="fw-semibold">฿{{ "{:,.2f}".format(transfer_total) }}</span>)
       </li>
+      {% if closed_accounts %}
+      <li class="mb-1" id="cb-closed-accounts-note">
+        <span class="fw-semibold">รายรับ/รายจ่าย</span> รวมบัญชีที่ปิดใช้งานแล้วด้วย
+        ({{ closed_accounts|join(', ') }}) ซึ่งไม่แสดงในตารางรายบัญชีด้านล่าง
+      </li>
+      {% endif %}
       {% if is_all_time %}
       <li>
         <span class="fw-semibold">คงเหลือ</span> = เงินสดจริงในบัญชี (รวมเงินทุน/เงินโอนที่โอนเข้า)
