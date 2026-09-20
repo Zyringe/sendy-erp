@@ -97,6 +97,32 @@ def test_latest_purchase_returns_empty_when_only_a_return_exists(tmp_db_conn):
     assert result == {}, f'a GR-only code must have no basis, got {result}'
 
 
+def test_latest_purchase_finds_a_row_with_null_doc_base(tmp_db_conn):
+    """not_a_purchase_return_clause() is NULL-safe on purpose (#626 review):
+    a bare `doc_base NOT LIKE 'GR%'` evaluates NULL, not TRUE, for a NULL
+    doc_base, so a real purchase whose doc_base happens to be unknown would
+    be silently dropped from the window instead of just failing to be
+    recognized as GR. Explicit here, seeding doc_base=NULL directly, so a
+    future fixture change can't quietly remove this guard the way
+    test_bsn_suggest_unit_helpers.py's missing-column fixture already did
+    once (caught only by a full-suite run, not by this file's own tests)."""
+    conn = tmp_db_conn
+    _reset(conn, _BSN_CODE)
+    conn.execute(
+        "INSERT INTO purchase_transactions "
+        "(bsn_code, doc_no, doc_base, product_name_raw, unit, qty, unit_price, "
+        " net, date_iso) VALUES (?,?,NULL,?,?,?,?,?,?)",
+        (_BSN_CODE, 'RRNULL01', 'ของทดสอบ 591', 'โหล', 1, 1810.0, 1810.0, '2026-06-01'))
+    conn.commit()
+
+    import bsn_suggest
+    result = bsn_suggest._latest_purchase(conn, _BSN_CODE)
+    assert result, ('a real purchase with NULL doc_base must still be found, '
+                     f'not silently dropped: got {result}')
+    assert result['last_date'] == '2026-06-01'
+    assert result['line_net'] == pytest.approx(1810.0)
+
+
 # ── the matching window in blueprints/bsn.py::mapping ────────────────────────
 
 @pytest.fixture

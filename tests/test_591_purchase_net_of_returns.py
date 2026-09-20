@@ -177,3 +177,57 @@ def test_trade_dashboard_purchases_and_gross_profit_subtract_the_return(tmp_db_c
     gp_delta = with_fixture['gross_profit'] - without_fixture['gross_profit']
     assert gp_delta == pytest.approx(-EXPECTED_NET), (
         'gross_profit must move by exactly -net_of_returns purchases (sales unchanged)')
+
+
+# ── The totals say they are net of returns (#626 review) ─────────────────────
+#
+# Put's call: keep the sign as-is (totals net of returns, individual document
+# rows still show their face amount), but the two summary cards must SAY they
+# are net of returns — otherwise a GR document listed at its face amount
+# right next to a card that already subtracted it reads as a contradiction.
+
+_NET_OF_RETURNS_CAPTION = 'หักใบลดหนี้ซื้อ (GR) แล้ว'
+
+
+def _admin_client():
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 1
+        sess['username'] = 'admin'
+        sess['role'] = 'admin'
+    return c
+
+
+def test_purchases_page_labels_the_total_as_net_of_returns(tmp_db_conn):
+    """/purchases is NOT supplier-scoped, so its total includes whatever else
+    the cloned dev DB holds in this date range — compute the expected total
+    the same way the route does, rather than assuming it equals our fixture
+    alone (see test_get_purchases_summary_subtracts_the_return_across_all_suppliers)."""
+    conn = tmp_db_conn
+    _seed(conn)
+    import models
+    expected = models.get_purchases_summary(date_from='2026-01-01', date_to='2026-02-28')
+    c = _admin_client()
+
+    html = c.get('/purchases?date_from=2026-01-01&date_to=2026-02-28').get_data(as_text=True)
+    # CONTROL: this is really today's (netted) total, not a stale/empty page.
+    assert f"{expected['total_net']:,.2f}" in html, 'the netted total itself did not render'
+    assert _NET_OF_RETURNS_CAPTION in html, (
+        'the /purchases summary card must say it is net of returns, so a GR '
+        'row shown at its face amount in the table below is not read as a '
+        'contradiction')
+
+
+def test_supplier_page_labels_the_total_as_net_of_returns(tmp_db_conn):
+    conn = tmp_db_conn
+    _seed(conn)
+    c = _admin_client()
+
+    from urllib.parse import quote
+    html = c.get(f'/supplier/{quote(SUPPLIER)}').get_data(as_text=True)
+    # CONTROL: this is really this supplier's page, not a not-found/empty one.
+    assert f"{EXPECTED_NET:,.2f}" in html, 'the netted ยอดซื้อรวม did not render'
+    assert _NET_OF_RETURNS_CAPTION in html, (
+        'the supplier page header must say it is net of returns')

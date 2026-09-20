@@ -147,6 +147,74 @@ def test_the_purchase_surfaces_use_the_helper_at_the_expected_count():
         f'expected {MUST_USE_HELPER}, found {found}')
 
 
+# ── WHICH helper, not just how many (#626 review) ─────────────────────────────
+#
+# MUST_USE_HELPER above pins a per-function COUNT of "the helper" (either
+# kind, added together). A reviewer proved that is not "which": repointing
+# get_trade_dashboard's weekly_pur and top_suppliers from supplier_net_sql()
+# to supplier_qty_sql() leaves the function's total helper-call count at 4
+# either way, so the count-only census stays green while every purchase
+# figure on the trade dashboard silently becomes a unit count. Same failure
+# shape as #554 ("counts presence, not which") — this repo has been bitten
+# by it twice now.
+#
+# The fix pins the helper to the SQL column alias it feeds: every
+# supplier_net_sql() call must feed an alias containing "net" (total_net, or
+# weekly_pur's own bare `net`), and every supplier_qty_sql() call must feed
+# an alias containing "qty". That is the actual contract these two functions
+# exist to keep — a "net" figure must be money, a "qty" figure must be a
+# count — so pinning the alias pins the intent, not just the call count.
+_HELPER_CALL = re.compile(
+    r"\{sales_filters\.supplier_(net|qty)_sql\([^)]*\)\}[\s\d,\)]*\bAS\s+(\w+)")
+
+
+def _helper_alias_pairs(src):
+    """(function, helper_kind, alias) for every supplier_net_sql()/
+    supplier_qty_sql() call over purchase_transactions whose result feeds a
+    SELECT column alias."""
+    out = []
+    for func, sql in _queries(src):
+        if 'purchase_transactions' not in sql:
+            continue
+        for kind, alias in _HELPER_CALL.findall(sql):
+            out.append((func, kind, alias))
+    return out
+
+
+def _mismatched_helper_aliases():
+    """{'file::function: supplier_<kind>_sql() feeds alias <alias>'} for every
+    call whose alias does not name its own kind."""
+    mismatches = []
+    for rel, path in _py_files():
+        with open(path, encoding='utf-8') as f:
+            src = f.read()
+        for func, kind, alias in _helper_alias_pairs(src):
+            if kind not in alias.lower():
+                mismatches.append(f'{rel}::{func}: supplier_{kind}_sql() feeds alias {alias!r}')
+    return mismatches
+
+
+def test_each_helper_call_feeds_an_alias_of_its_own_kind():
+    mismatches = _mismatched_helper_aliases()
+    assert not mismatches, (
+        'a helper call feeds a column alias of the WRONG kind (a money '
+        "helper fed to a qty column, or vice versa):\n" + '\n'.join(mismatches))
+
+
+def test_the_alias_check_is_not_vacuous_on_a_synthetic_mismatch():
+    """CONTROL: prove _mismatched_helper_aliases() can actually fire, on a
+    synthetic source shaped exactly like the reviewer's repoint (net_sql
+    feeding a qty-named alias)."""
+    src = _src(
+        "SELECT SUM({sales_filters.supplier_qty_sql()}) AS total_net "
+        "FROM purchase_transactions WHERE supplier = ?", f_prefix='f')
+    found = []
+    for func, kind, alias in _helper_alias_pairs(src):
+        if kind not in alias.lower():
+            found.append((func, kind, alias))
+    assert found == [('report', 'qty', 'total_net')], found
+
+
 # ── The sweep's own coverage: one rogue source per shape ─────────────────────
 #
 # A sweep is only worth what its pattern can see. Every entry is a shape that
