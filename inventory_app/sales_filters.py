@@ -116,9 +116,17 @@ def not_a_purchase_return_clause(alias=''):
     """SQL predicate keeping only rows that represent a real purchase: excludes
     GR entirely. Use where a return should not appear at all (a single "latest
     purchase" row, not a sum) — `bsn_suggest._latest_purchase` and the matching
-    window in `blueprints/bsn.py::mapping`. `alias` as for not_a_sale_clause()."""
+    window in `blueprints/bsn.py::mapping`. `alias` as for not_a_sale_clause().
+
+    NULL-safe on purpose: `doc_base` is a nullable column, and a bare
+    `doc_base NOT LIKE 'GR%'` in a WHERE clause evaluates to NULL — not TRUE —
+    for a NULL doc_base, which would silently drop a real purchase with
+    unknown doc_base from the "latest purchase" window instead of just
+    failing to recognize it as GR. (supplier_net_sql()/supplier_qty_sql()'s
+    CASE below does not need this: its ELSE branch already falls through
+    correctly on NULL.)"""
     p = '{}.'.format(alias) if alias else ''
-    return "{p}doc_base NOT LIKE 'GR%'".format(p=p)
+    return "COALESCE({p}doc_base, '') NOT LIKE 'GR%'".format(p=p)
 
 
 def supplier_net_sql(alias=''):
