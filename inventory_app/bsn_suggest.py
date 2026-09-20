@@ -16,6 +16,8 @@ import re
 import sys
 from collections import Counter
 
+import sales_filters
+
 # parse_sku_names.py is in sendy_erp/scripts/, sibling of inventory_app/
 _SCRIPTS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..', 'scripts')
@@ -116,11 +118,17 @@ def _latest_purchase(conn, bsn_code: str) -> dict:
 
     Empty dict on no match. For the *unit* the BSN normally bills in, use
     _latest_bsn_unit() (which falls back to sales for sale-only codes).
+
+    Excludes GR (purchase return) rows (#591) — a return is not a purchase,
+    and its `unit_price`/`net` describe what came BACK, not a cost basis a
+    new SKU should prefill from. `blueprints/bsn.py::mapping`'s
+    suggestion_cost_basis window must stay in lockstep with this exclusion —
+    it picks the same row.
     """
     row = conn.execute(
-        """SELECT unit_price, unit, qty, net, date_iso
+        f"""SELECT unit_price, unit, qty, net, date_iso
              FROM purchase_transactions
-            WHERE bsn_code = ?
+            WHERE bsn_code = ? AND {sales_filters.not_a_purchase_return_clause()}
             ORDER BY date_iso DESC, id DESC
             LIMIT 1""",
         (bsn_code,),

@@ -37,6 +37,13 @@ hazard cashflow.py documents for its own ar_writeoffs subquery.
 A customer's purchase total (ยอดซื้อรวม) is a different question from revenue
 and has its own single definition here too: purchase_net_sql() (#494).
 
+⚠ A THIRD, unrelated question lives here too: how much WE bought from a
+SUPPLIER, off `purchase_transactions` (a different table from the two
+questions above, both of which read `sales_transactions`). GR docs
+(ใบลดหนี้ซื้อ, purchase returns/credit notes) are stored with POSITIVE
+net/qty by the same importer convention as SR — see supplier_net_sql() and
+supplier_qty_sql() (#591).
+
 Python 3.9 — no `X | None` syntax.
 """
 
@@ -91,6 +98,52 @@ def purchase_net_sql(alias=''):
     """
     p = '{}.'.format(alias) if alias else ''
     return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}net ELSE {p}net END"
+            .format(p=p))
+
+
+# ── purchase_transactions: how much WE bought from a supplier (#591) ─────────
+#
+# GR (ใบลดหนี้ซื้อ, purchase return/credit note) rows are stored with POSITIVE
+# net/qty, same importer convention as SR — the DBF adapter never signs them
+# (test_express_dbf_source.py's own docstring: "APRCPIT stores a GR credit
+# ... unsigned, like ARRCPIT's SR"). Before #591 no aggregate over
+# purchase_transactions excluded or negated GR, so a raw SUM(net) ADDED
+# returns onto purchases: prod 2026 Jan-Sep read ฿699,280.59 raw vs
+# ฿693,428.57 net of returns, and /supplier/ไพบูลย์'s header read ฿462,473 vs
+# the true ฿426,473. Put's ruling 2026-09-19: ยอดซื้อ = net of returns.
+
+def not_a_purchase_return_clause(alias=''):
+    """SQL predicate keeping only rows that represent a real purchase: excludes
+    GR entirely. Use where a return should not appear at all (a single "latest
+    purchase" row, not a sum) — `bsn_suggest._latest_purchase` and the matching
+    window in `blueprints/bsn.py::mapping`. `alias` as for not_a_sale_clause().
+
+    NULL-safe on purpose: `doc_base` is a nullable column, and a bare
+    `doc_base NOT LIKE 'GR%'` in a WHERE clause evaluates to NULL — not TRUE —
+    for a NULL doc_base, which would silently drop a real purchase with
+    unknown doc_base from the "latest purchase" window instead of just
+    failing to recognize it as GR. (supplier_net_sql()/supplier_qty_sql()'s
+    CASE below does not need this: its ELSE branch already falls through
+    correctly on NULL.)"""
+    p = '{}.'.format(alias) if alias else ''
+    return "COALESCE({p}doc_base, '') NOT LIKE 'GR%'".format(p=p)
+
+
+def supplier_net_sql(alias=''):
+    """SQL expression: one purchase_transactions line's share of ยอดซื้อ from a
+    supplier, NET of returns (#591) — a GR line is negated. Wrap in SUM()
+    yourself, same contract as purchase_net_sql(). `alias` as for
+    not_a_sale_clause()."""
+    p = '{}.'.format(alias) if alias else ''
+    return ("CASE WHEN {p}doc_base LIKE 'GR%' THEN -{p}net ELSE {p}net END"
+            .format(p=p))
+
+
+def supplier_qty_sql(alias=''):
+    """Same as supplier_net_sql() but for qty — a GR's returned quantity must
+    also net OUT of a supplier's purchased quantity, not add to it."""
+    p = '{}.'.format(alias) if alias else ''
+    return ("CASE WHEN {p}doc_base LIKE 'GR%' THEN -{p}qty ELSE {p}qty END"
             .format(p=p))
 
 
