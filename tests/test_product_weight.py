@@ -24,6 +24,7 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 import sqlite3
 
 import pytest
+from werkzeug.datastructures import MultiDict
 
 
 # --------------------------------------------------------------------------
@@ -427,6 +428,132 @@ def test_the_edit_form_renders_the_weight_box(admin_client, tmp_db_conn):
     # assert on the ELEMENT, not a bare Thai substring that the page chrome
     # could already contain
     assert 'name="weight_kg"' in html
+
+
+# --------------------------------------------------------------------------
+# #619 — the box must RENDER the stored weight, and a box posted back unchanged
+# must not rewrite it. `get_product` never selected weight_kg / weight_source,
+# so the box rendered blank for every product and weight_edit_fields (correctly,
+# per its contract) read "present + blank" as "clear": every save of the edit
+# form deleted the weight (pid 27 on prod, 2026-09-17). The render test above
+# asserts only that the box EXISTS, which is why it stayed green throughout.
+# --------------------------------------------------------------------------
+
+def _set_weight(conn, pid, kg, source):
+    conn.execute("UPDATE products SET weight_kg=?, weight_source=? WHERE id=?",
+                 (kg, source, pid))
+    conn.commit()
+
+
+def _weight_box(html):
+    """The weight input plus any ยังไม่ได้ชั่ง badge INSIDE its own column, so the
+    badge assertion cannot be satisfied by page chrome."""
+    from lxml import html as lh
+
+    doc = lh.fromstring(html)
+    boxes = doc.xpath("//input[@name='weight_kg']")
+    assert len(boxes) == 1, f'expected exactly one weight box, got {len(boxes)}'
+    cell = boxes[0].getparent()
+    while cell is not None and 'col-' not in (cell.get('class') or ''):
+        cell = cell.getparent()
+    assert cell is not None, 'weight box is not inside a layout column'
+    badges = cell.xpath(".//span[contains(@class,'badge')][contains(., 'ยังไม่ได้ชั่ง')]")
+    return boxes[0], badges
+
+
+def _rendered_edit_form(client, pid):
+    """Every input of the edit form with its RENDERED value string: what a
+    browser posts back when the user touches nothing. CSRF is off in tests."""
+    from lxml import html as lh
+
+    doc = lh.fromstring(client.get(f'/products/{pid}/edit').get_data(as_text=True))
+    form = doc.xpath("//form[.//input[@name='weight_kg']]")[0]
+    return [(i.get('name'), i.get('value') or '')
+            for i in form.xpath('.//input')
+            if i.get('name') and i.get('name') != 'csrf_token']
+
+
+def _weight_row(conn, pid):
+    return conn.execute(
+        "SELECT weight_kg, weight_source, low_stock_threshold FROM products WHERE id=?",
+        (pid,)).fetchone()
+
+
+def test_the_edit_form_renders_a_measured_weight(admin_client, tmp_db_conn):
+    pid = _pid(tmp_db_conn)
+    _set_weight(tmp_db_conn, pid, 0.432, 'measured')
+    box, badges = _weight_box(admin_client.get(f'/products/{pid}/edit').get_data(as_text=True))
+    assert box.get('value') == '0.432'
+    assert badges == [], 'a measured weight must not carry the ยังไม่ได้ชั่ง badge'
+
+
+def test_the_edit_form_renders_an_estimated_weight_with_its_badge(admin_client, tmp_db_conn):
+    pid = _pid(tmp_db_conn)
+    _set_weight(tmp_db_conn, pid, 0.127, 'estimated')
+    box, badges = _weight_box(admin_client.get(f'/products/{pid}/edit').get_data(as_text=True))
+    assert box.get('value') == '0.127'
+    assert len(badges) == 1
+
+
+def test_the_edit_form_renders_no_weight_as_a_blank_box(admin_client, tmp_db_conn):
+    """CONTROL: the blank that the two tests above must NOT see is the real one."""
+    pid = _pid(tmp_db_conn)
+    _set_weight(tmp_db_conn, pid, None, None)
+    box, badges = _weight_box(admin_client.get(f'/products/{pid}/edit').get_data(as_text=True))
+    assert box.get('value') == ''
+    assert badges == []
+
+
+def test_an_untouched_weight_box_keeps_a_measured_weight(admin_client, tmp_db_conn):
+    """THE #619 symptom: GET the page, change something else, POST it back."""
+    pid = _pid(tmp_db_conn)
+    _set_weight(tmp_db_conn, pid, 0.432, 'measured')
+    fields = _rendered_edit_form(admin_client, pid)
+    assert dict(fields)['weight_kg'] == '0.432', 'control: the box carried the stored weight'
+    fields = [(k, '77' if k == 'low_stock_threshold' else v) for k, v in fields]
+
+    resp = admin_client.post(f'/products/{pid}/edit', data=MultiDict(fields))
+    assert resp.status_code == 302, resp.data[:400]
+
+    got = _weight_row(tmp_db_conn, pid)
+    assert got[2] == 77, "route never wrote — the weight assertions would be vacuous"
+    assert got[0] == 0.432
+    assert got[1] == 'measured'
+
+
+def test_an_untouched_weight_box_keeps_an_estimated_weight_estimated(admin_client, tmp_db_conn):
+    """Posting the number back is not weighing it. Re-stamping 'measured' here
+    would erase the provenance of every estimated weight on the first unrelated
+    save, the same shape as #615's cost box."""
+    pid = _pid(tmp_db_conn)
+    _set_weight(tmp_db_conn, pid, 0.127, 'estimated')
+    fields = _rendered_edit_form(admin_client, pid)
+    assert dict(fields)['weight_kg'] == '0.127', 'control: the box carried the stored weight'
+    fields = [(k, '78' if k == 'low_stock_threshold' else v) for k, v in fields]
+
+    resp = admin_client.post(f'/products/{pid}/edit', data=MultiDict(fields))
+    assert resp.status_code == 302, resp.data[:400]
+
+    got = _weight_row(tmp_db_conn, pid)
+    assert got[2] == 78, "route never wrote — the weight assertions would be vacuous"
+    assert got[0] == 0.127
+    assert got[1] == 'estimated', 'an untouched box must not upgrade the provenance'
+
+
+def test_a_changed_weight_box_is_stamped_measured(admin_client, tmp_db_conn):
+    """CONTROL for the two above: typing a different number IS a scale reading."""
+    pid = _pid(tmp_db_conn)
+    _set_weight(tmp_db_conn, pid, 0.127, 'estimated')
+    fields = [(k, '0.2' if k == 'weight_kg' else ('79' if k == 'low_stock_threshold' else v))
+              for k, v in _rendered_edit_form(admin_client, pid)]
+
+    resp = admin_client.post(f'/products/{pid}/edit', data=MultiDict(fields))
+    assert resp.status_code == 302, resp.data[:400]
+
+    got = _weight_row(tmp_db_conn, pid)
+    assert got[2] == 79, "route never wrote — the weight assertions would be vacuous"
+    assert got[0] == 0.2
+    assert got[1] == 'measured'
 
 
 # --------------------------------------------------------------------------

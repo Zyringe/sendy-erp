@@ -274,3 +274,159 @@ def test_new_product_form_keeps_its_own_cost_label(admin_client):
 
     assert 'ต้นทุน' in text, 'control: the new-product form lost its cost box entirely'
     assert 'ต้นทุนยกมา' not in text, 'the relabel landed in the new-product branch'
+
+
+# ── #615: an untouched basis must not overwrite the live WACC ────────────────
+
+def _rendered_cost_box(client, pid):
+    resp = client.get(f'/products/{pid}/edit')
+    assert resp.status_code == 200
+    box, _cell = _cost_box_cell(resp.get_data(as_text=True))
+    return box
+
+
+def test_untouched_cost_box_preserves_live_wacc_and_basis(admin_client, monkeypatch):
+    import models
+
+    c, db = admin_client
+    pid = _seed_product(db, cost=33.0)
+    _seed_purchase(db, pid, opening_units=10, buy_qty=10, buy_net=500.0)
+    assert models.get_current_wacc(pid) == pytest.approx(41.5)
+    before = _row(db, pid)
+    rendered_cost = _rendered_cost_box(c, pid).get('value')
+
+    recalculations = []
+
+    def record_recalculation(*args, **kwargs):
+        recalculations.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(models, 'recalculate_product_wacc', record_recalculation)
+    resp = _post_cost(c, pid, rendered_cost, sell='101.25')
+    assert resp.status_code == 302
+
+    after = _row(db, pid)
+    assert after['base_sell_price'] == 101.25, 'canary: the route did not reach the write'
+    assert len(recalculations) == 0, 'an untouched basis must not recalculate WACC'
+    assert after['cost_price'] == before['cost_price']
+    assert after['opening_cost'] == before['opening_cost']
+
+
+def test_untouched_many_decimal_basis_preserves_both_costs(admin_client, monkeypatch):
+    import models
+
+    c, db = admin_client
+    opening_cost = 15.158333333333333
+    pid = _seed_product(db, cost=opening_cost)
+    _seed_purchase(db, pid, opening_units=10, buy_qty=10, buy_net=500.0)
+    assert models.get_current_wacc(pid) == pytest.approx(
+        (10 * opening_cost + 10 * 50.0) / 20
+    )
+    before = _row(db, pid)
+    rendered_cost = _rendered_cost_box(c, pid).get('value')
+    assert rendered_cost == str(before['opening_cost'])
+
+    recalculations = []
+
+    def record_recalculation(*args, **kwargs):
+        recalculations.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(models, 'recalculate_product_wacc', record_recalculation)
+    resp = _post_cost(c, pid, rendered_cost, sell='102.75')
+    assert resp.status_code == 302
+
+    after = _row(db, pid)
+    assert after['base_sell_price'] == 102.75, 'canary: the route did not reach the write'
+    assert len(recalculations) == 0, 'an untouched basis must not recalculate WACC'
+    assert after['cost_price'] == before['cost_price']
+    assert after['opening_cost'] == before['opening_cost']
+
+
+def test_untouched_blank_box_preserves_purchase_driven_wacc(admin_client, monkeypatch):
+    """The dominant prod shape: opening_cost = 0 with a live cost_price > 0.
+
+    850 of the 894 exposed active products on the 2026-09-19 15:36Z prod
+    snapshot look like this — their cost came from purchase bills only, so the
+    basis was never typed. The box renders `{{ 0.0 or '' }}` = BLANK and posts
+    back ''. Before the fix that wrote 0 to BOTH columns, zeroing a real WACC.
+    The two tests above seed opening == cost != 0 and cannot see this branch.
+    """
+    import models
+
+    c, db = admin_client
+    pid = _seed_product(db, cost=0.0)
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE products SET cost_price=41.5 WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    before = _row(db, pid)
+    # control: the two columns really diverge the way the 850 do
+    assert before['opening_cost'] == 0.0 and before['cost_price'] == 41.5
+
+    box = _rendered_cost_box(c, pid)
+    assert box.get('value') == '', 'control: a zero basis renders as a blank box'
+
+    recalculations = []
+
+    def record_recalculation(*args, **kwargs):
+        recalculations.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(models, 'recalculate_product_wacc', record_recalculation)
+    resp = _post_cost(c, pid, '', sell='104.25')
+    assert resp.status_code == 302
+
+    after = _row(db, pid)
+    assert after['base_sell_price'] == 104.25, 'canary: the route did not reach the write'
+    assert len(recalculations) == 0, 'a blank, untouched basis must not recalculate WACC'
+    assert after['cost_price'] == 41.5, 'the blank box zeroed the live WACC'
+    assert after['opening_cost'] == 0.0
+
+
+def test_edit_form_accepts_its_rendered_many_decimal_basis(admin_client):
+    c, db = admin_client
+    opening_cost = 15.158333333333333
+    pid = _seed_product(db, cost=opening_cost)
+
+    box = _rendered_cost_box(c, pid)
+
+    assert box.get('value') == str(opening_cost)
+    assert box.get('step') == 'any', (
+        'the browser must allow the raw many-decimal basis rendered by the form'
+    )
+
+
+def test_changed_cost_box_still_rebases_and_recalculates_wacc(admin_client, monkeypatch):
+    import models
+
+    c, db = admin_client
+    pid = _seed_product(db, cost=33.0)
+    _seed_purchase(db, pid, opening_units=10, buy_qty=10, buy_net=500.0)
+    assert models.get_current_wacc(pid) == pytest.approx(41.5)
+    rendered_cost = _rendered_cost_box(c, pid).get('value')
+    assert rendered_cost == '33.0'
+
+    real_recalculate = models.recalculate_product_wacc
+    recalculations = []
+
+    def record_recalculation(product_id):
+        recalculations.append(product_id)
+        return real_recalculate(product_id)
+
+    monkeypatch.setattr(models, 'recalculate_product_wacc', record_recalculation)
+    resp = _post_cost(c, pid, '48.50', sell='103.50')
+    assert resp.status_code == 302
+
+    row = _row(db, pid)
+    assert row['base_sell_price'] == 103.50, 'canary: the route did not reach the write'
+    assert len(recalculations) == 1
+    assert recalculations[0] == pid
+    assert row['opening_cost'] == 48.50
+    assert row['cost_price'] == pytest.approx(49.25)
+
+    with c.session_transaction() as session:
+        flashes = session.get('_flashes', [])
+    assert len(flashes) == 1
+    assert flashes[0][0] == 'success'
+    assert 'ต้นทุน (WACC) ฿49.25' in flashes[0][1]
