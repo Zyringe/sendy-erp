@@ -24,6 +24,7 @@ from typing import Optional
 
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for)
+from markupsafe import Markup
 
 import access_control
 import database
@@ -63,7 +64,7 @@ ADVANCE_CATEGORY = "เงินเดือน (เบิกล่วงหน�
 #   - SALARY_CATEGORY: ALWAYS blocked — sourced in HR payroll (ADR 0006);
 #     "จ่ายแล้ว" already auto-posts a locked row via hr.post_salary_payment.
 #   - COMMISSION_CATEGORY: HYBRID blocked — only for an "in-engine" recipient
-#     (see `_is_in_engine_commission_recipient`); an off-system rep (not in
+#     (see `_in_engine_commission_rep`); an off-system rep (not in
 #     `salespersons`) keeps the cashbook as its manual home (ADR 0008).
 SALARY_CATEGORY = "เงินเดือน"
 COMMISSION_CATEGORY = "จ่ายค่าคอมมิชชั่น"
@@ -905,7 +906,7 @@ def _resolve_person_tags(conn, to_insert):
     flash, in first-seen order.
 
     ⚠ Caller must run this AFTER `_apply_policy_blocks` — the in-engine
-    commission double-book guard (`_is_in_engine_commission_recipient`) must
+    commission double-book guard (`_in_engine_commission_rep`) must
     see the RAW typed tag, not an already-resolved employee nickname, or an
     employee whose name happens to collide with a salesperson's real-name
     alias would silently defeat the guard (issue #532 review)."""
@@ -1049,37 +1050,82 @@ def _salespersons_with_real_name(conn, where_sql):
         ).fetchall()
 
 
-def _is_in_engine_commission_recipient(conn, recipient):
-    """True if `recipient` (a ผู้ใช้ tag, trimmed) matches an in-engine
-    salesperson's code, name, or real_name alias (plan.md D3 gate — the
-    hard-confirmed double-book risk: เจียรนัย=ต๋อ/06(-L), ทวีเกียรติ=ท/03).
-    Active salespersons are the practical in-engine set. Off-system reps
-    (อัคเรศ, แต, บ่าว, ...) match nothing here and stay manual (hybrid)."""
+def _in_engine_commission_rep(conn, recipient):
+    """The in-engine salesperson row (code, name, real_name) that `recipient`
+    (a ผู้ใช้ tag, trimmed) matches by code, name, or real_name alias, else
+    None (plan.md D3 gate — the hard-confirmed double-book risk:
+    เจียรนัย=ต๋อ/06(-L), ทวีเกียรติ=ท/03). Active salespersons are the practical
+    in-engine set. Off-system reps (อัคเรศ, แต, บ่าว, ...) match nothing here
+    and stay manual (hybrid). An alias shared by two codes resolves to the
+    lower code (เจียรนัย → 06)."""
     recipient = (recipient or "").strip()
     if not recipient:
-        return False
-    rows = _salespersons_with_real_name(conn, "WHERE is_active = 1")
+        return None
+    rows = _salespersons_with_real_name(conn, "WHERE is_active = 1 ORDER BY code")
     for r in rows:
         idents = {r["code"], r["name"]}
         if r["real_name"]:
             idents.add(r["real_name"])
         if recipient in idents:
-            return True
-    return False
+            return r
+    return None
+
+
+def _commission_page_link(rep):
+    """<a> to the rep's /commission/sp/<code> page, where the tick-to-pay form
+    records the payout AND its locked cashbook row (#589: the block used to say
+    "go to the commission page" without saying where)."""
+    label = f'{rep["real_name"]} ({rep["name"]})' if rep["real_name"] else rep["name"]
+    return Markup('<a href="{}">ไปจ่ายที่หน้าคอมมิชชั่นของ {}</a>').format(
+        url_for("commission.commission_drilldown", sp_code=rep["code"]), label)
 
 
 def _policy_blocked_reason(conn, item):
-    """Thai block-reason string for `item` (a `to_insert` row dict), or None
-    if it's allowed. ONE "linked & locked" concept covering both hard-blocked
+    """Thai block-reason for `item` (a `to_insert` row dict), or None if it's
+    allowed. ONE "linked & locked" concept covering both hard-blocked
     families (finding #6) — salary is unconditional; commission is hybrid
-    (only an in-engine recipient blocks)."""
+    (only an in-engine recipient blocks). The commission reason is Markup: it
+    carries a link to the rep's commission page, so every caller that
+    re-wraps it must keep it Markup (see the bulk summary flash)."""
     if item["category"] == SALARY_CATEGORY:
         return "เงินเดือนบันทึกที่หน้าเงินเดือน (HR) เท่านั้น"
-    if item["category"] == COMMISSION_CATEGORY and _is_in_engine_commission_recipient(
-        conn, item.get("user_category") or ""
-    ):
-        return "คอมมิชชั่นของเซลส์ในระบบบันทึกที่หน้าคอมมิชชั่นเท่านั้น"
+    if item["category"] == COMMISSION_CATEGORY:
+        rep = _in_engine_commission_rep(conn, item.get("user_category") or "")
+        if rep is not None:
+            return Markup("คอมมิชชั่นของเซลส์ในระบบบันทึกที่หน้าคอมมิชชั่นเท่านั้น — {}").format(
+                _commission_page_link(rep))
     return None
+
+
+# Commission wording in a free-text description/note. Deliberately narrow:
+# "คอม" alone is a computer in Thai (prod row 306 'ค่าซ่อมคอม' is a repair), so
+# only คอมมิช…/คอมมิส…, ค่าคอม not followed by พ (ค่าคอมพิวเตอร์), or the
+# English word. Pinned by tests/test_589_cashbook_commission_bypass.py.
+_COMMISSION_WORDING_RE = re.compile(r"คอมมิ[ชส]|ค่าคอม(?!พ)|commission", re.IGNORECASE)
+
+
+def _names_a_commission(text):
+    return bool(_COMMISSION_WORDING_RE.search(text or ""))
+
+
+def _commission_filed_elsewhere(conn, to_insert):
+    """[(row index, rep)] for expense rows that look like an in-engine rep's
+    commission keyed under ANOTHER category — how prod row 845 (฿400 to
+    ทวีเกียรติ, 'คอมมิชชั่น', under อื่นๆ) got around the block (#589). A
+    warning, not a block: the keyer confirms and the row saves as keyed.
+
+    ⚠ Reads the RAW ผู้ใช้ tag, so call it before `_resolve_person_tags`
+    (same ordering rule as `_apply_policy_blocks`)."""
+    hits = []
+    for item in to_insert:
+        if item["category"] == COMMISSION_CATEGORY or item["direction"] != "expense":
+            continue
+        if not _names_a_commission(f'{item.get("description") or ""} {item.get("note") or ""}'):
+            continue
+        rep = _in_engine_commission_rep(conn, item.get("user_category") or "")
+        if rep is not None:
+            hits.append((item["index"], rep))
+    return hits
 
 
 def _apply_policy_blocks(conn, rows, to_insert):
@@ -1111,7 +1157,7 @@ def _commission_reps_for_picker(conn):
     Put recognizes an in-engine rep instead of typing them as free-text
     off-system — which would double-book against the /commission auto-post.
     `value` is what actually gets submitted as the ผู้ใช้ tag on selection, so
-    it MUST be one of the identifiers `_is_in_engine_commission_recipient`
+    it MUST be one of the identifiers `_in_engine_commission_rep`
     matches against (the real_name alias if set, else the salesperson's own
     `name`); `label` is the human-readable alias shown in the dropdown.
     `code`/`name`/`real_name` are also returned (raw) so the template's JS can
@@ -1216,12 +1262,13 @@ def _default_account_id_for_user(conn, user_id):
 
 def _new_form_ctx(conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
                    confirm_duplicates=False, confirm_advance_cap=False,
-                   confirm_new_categories=False, **extra):
+                   confirm_new_categories=False, confirm_commission_elsewhere=False,
+                   **extra):
     """Shared render context for every `cashbook/new.html` re-render inside
     `new_transaction()` (issue #532 review: was 5 near-identical
     render_template calls, each hand-copying the same 3 helper queries).
 
-    Also carries the CURRENT request's three confirm flags into the
+    Also carries the CURRENT request's four confirm flags into the
     template unconditionally — even the ones NOT being confirmed on this
     particular render — so the page can echo them back as hidden fields.
     Without this, tripping two confirm gates in one submission (e.g. a
@@ -1241,6 +1288,7 @@ def _new_form_ctx(conn, accounts, txn_date, account_id_raw, bulk_mode, rows, emp
         confirm_duplicates=confirm_duplicates,
         confirm_advance_cap=confirm_advance_cap,
         confirm_new_categories=confirm_new_categories,
+        confirm_commission_elsewhere=confirm_commission_elsewhere,
     )
     ctx.update(extra)
     return ctx
@@ -1264,6 +1312,7 @@ def new_transaction():
             confirm_duplicates = request.form.get("confirm_duplicates") == "1"
             confirm_advance_cap = request.form.get("confirm_advance_cap") == "1"
             confirm_new_categories = request.form.get("confirm_new_categories") == "1"
+            confirm_commission_elsewhere = request.form.get("confirm_commission_elsewhere") == "1"
 
             rows = _parse_batch_rows(request.form)
             to_insert = _validate_batch(rows, txn_date)
@@ -1292,6 +1341,7 @@ def new_transaction():
                 return render_template("cashbook/new.html", **_new_form_ctx(
                     conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
                     confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                    confirm_commission_elsewhere,
                 ))
 
             # Policy blocks (plan.md C1-C3, D1, findings #1/#3/#6): manual
@@ -1318,13 +1368,21 @@ def new_transaction():
                 return render_template("cashbook/new.html", **_new_form_ctx(
                     conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
                     confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                    confirm_commission_elsewhere,
                 ))
             if policy_blocked:
                 # Bulk mode with at least one valid row left (decision D1):
                 # skip the blocked rows + summarize, still save the rest.
+                # Markup.format, not an f-string: a commission reason carries
+                # a link, and an f-string would flatten it to escaped text.
                 from collections import Counter
                 for reason, n in Counter(b["reason"] for b in policy_blocked).items():
-                    flash(f"ข้าม {n} แถว: {reason}", "warning")
+                    flash(Markup("ข้าม {} แถว: {}").format(n, reason), "warning")
+
+            # Commission keyed under another category (#589, prod row 845).
+            # Measured HERE, on the raw ผู้ใช้ tag, before tag resolution below
+            # rewrites it; acted on with the other confirm gates further down.
+            commission_elsewhere = _commission_filed_elsewhere(conn, to_insert)
 
             # ผู้ใช้ tag normalization (issue #532 §2): map a typed real name
             # to the employee's system name BEFORE duplicate detection and
@@ -1336,6 +1394,25 @@ def new_transaction():
             tag_notices = _resolve_person_tags(conn, to_insert)
             for notice in tag_notices:
                 flash(notice, "info")
+
+            # Commission filed under another category (#589): warn-then-
+            # confirm, same shape as the gates below. A warning, not a block —
+            # a rep can be paid something that is not commission — but the
+            # keyer is shown where commission goes before anything saves.
+            if commission_elsewhere and not confirm_commission_elsewhere:
+                rows_by_index = {r["index"]: r for r in rows}
+                for idx, rep in commission_elsewhere:
+                    rows_by_index[idx]["errors"].append(Markup(
+                        "ดูเหมือนค่าคอมมิชชั่นของเซลส์ในระบบ — {}").format(_commission_page_link(rep)))
+                flash(f"มี {len(commission_elsewhere)} แถวที่ดูเหมือนค่าคอมมิชชั่นของเซลส์ในระบบแต่ลงหมวดอื่น"
+                      " — ค่าคอมของเซลส์ในระบบต้องจ่ายที่หน้าคอมมิชชั่น (ลิงก์อยู่ที่แถวที่ไฮไลต์)"
+                      " ถ้าไม่ใช่ค่าคอม ติ๊กยืนยันด้านล่างแล้วบันทึกอีกครั้ง", "warning")
+                return render_template("cashbook/new.html", **_new_form_ctx(
+                    conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+                    confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                    confirm_commission_elsewhere,
+                    show_commission_elsewhere_confirm=True,
+                ))
 
             # New-category confirmation (issue #532 §1): a category that does
             # not exist yet needs explicit confirmation before it's created —
@@ -1352,6 +1429,7 @@ def new_transaction():
                     return render_template("cashbook/new.html", **_new_form_ctx(
                         conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
                         confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                        confirm_commission_elsewhere,
                         show_new_category_confirm=True, new_categories=new_cats,
                     ))
 
@@ -1367,6 +1445,7 @@ def new_transaction():
                     return render_template("cashbook/new.html", **_new_form_ctx(
                         conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
                         confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                        confirm_commission_elsewhere,
                         show_duplicate_confirm=True,
                     ))
 
@@ -1409,6 +1488,7 @@ def new_transaction():
                     return render_template("cashbook/new.html", **_new_form_ctx(
                         conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
                         confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+                        confirm_commission_elsewhere,
                         show_advance_cap_confirm=True,
                     ))
 
