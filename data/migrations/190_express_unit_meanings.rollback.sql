@@ -37,10 +37,14 @@ DROP TABLE _mig190_rb_changed;
 
 DELETE FROM unit_conversions WHERE id IN (SELECT id FROM migration_190_uc_inserted);
 
+-- MAX(id): a forward run after a rollback appends a SECOND snapshot row per
+-- map entry, so pick the value the LAST forward run actually overwrote rather
+-- than letting SQLite choose between them.
 UPDATE unit_map
    SET word = (SELECT s.old_value FROM migration_190_snapshot s
                 WHERE s.table_name = 'unit_map' AND s.column_name = 'word'
-                  AND s.row_id = unit_map.id)
+                  AND s.row_id = unit_map.id
+                ORDER BY s.id DESC LIMIT 1)
  WHERE id IN (SELECT row_id FROM migration_190_snapshot
                WHERE table_name = 'unit_map' AND column_name = 'word');
 
