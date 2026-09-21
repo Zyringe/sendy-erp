@@ -18,6 +18,11 @@ leg must NOT add stock. Keep `SUM(ledger <= 2026-03-03)` unchanged: the leg
 goes 0.5 -> 6 and the plug goes 5.5 -> 0 in the same transaction. Stock stays
 0, which is what the count says, and cost lands on 356.25 / 6 = ฿59.375.
 
+⚠ After this runs, do NOT upload a BSN5657 history file exported BEFORE the
+team's re-key (2026-09-19 15:42 or earlier) that covers June 2024: the importer
+would see `ปน` again, rewrite the line to 0.5 ปื้น, and with the plug gone
+stock would read -5.5. A fresh export is a no-op (same line, same unit).
+
 The Sendy spelling is NOT hardcoded here: Express's `หล` is translated through
 the app's own unit map (`bsn_units`, ADR 0018), the same call the importer
 makes. `tests/test_unit_writer_census.py` declares this script through it.
@@ -240,6 +245,16 @@ def assert_invariants(conn, before, new_unit, delta, others_before):
     if [r[0] for r in new_rows] != ['cost_price']:
         bad.append("price-history rows written: %r, expected one cost_price row" % (new_rows,))
 
+    # WACC must run AFTER the plug is gone: run before it, cost still lands on
+    # 59.375 (first-purchase branch) but the ledger row reads stock_after 11.5.
+    purch = conn.execute(
+        "SELECT qty_change, stock_after, wacc_after FROM product_cost_ledger WHERE product_id=? "
+        "AND event_type='PURCHASE' AND reference_no=?", (PID, DOC_NO)).fetchall()
+    want = (QTY * EXPECT_RATIO, QTY * EXPECT_RATIO, EXPECT_COST_AFTER)
+    if len(purch) != 1 or any(abs(a - b) > 1e-9 for a, b in zip(tuple(purch[0]), want)):
+        bad.append("cost-ledger purchase row %r, expected qty/stock_after/wacc %r"
+                   % ([tuple(r) for r in purch], want))
+
     low = min_running_balance(conn)
     if low < min(0, before['low']):
         bad.append("running balance now dips to %g" % low)
@@ -292,13 +307,14 @@ def main(argv=None):
     if app_dir not in sys.path:
         sys.path.insert(0, app_dir)
     import bsn_units
+    import database
     from models import bsn_sync, wacc
 
-    conn = sqlite3.connect(a.db, timeout=15)
-    # as models.database.get_connection: the replay indexes rows by NAME
-    conn.row_factory = sqlite3.Row
+    # The app's script channel (#590): ICT timestamps even over `railway ssh`
+    # (which has no TZ), Row rows for the replay, and this script named as the
+    # connection's actor.
+    conn = database.script_connection(__file__, operator=ACTOR, reason=REASON, db_path=a.db)
     conn.execute("PRAGMA busy_timeout=15000")
-    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("BEGIN IMMEDIATE")
     try:
         # Sendy's spelling for Express's code comes from the map, never from

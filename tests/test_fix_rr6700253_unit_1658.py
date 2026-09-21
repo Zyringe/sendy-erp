@@ -364,3 +364,22 @@ def test_break_it_once_invariants_catch_a_wrong_fix(db, capsys, iid, mutation, r
     else:
         assert rc == rc_want and 'ROLLED BACK' in out and fragment in out, out
     assert _state(db) == before
+
+
+def test_break_it_once_wacc_must_run_after_the_plug_is_gone(db, capsys):
+    """Moving WACC above the plug change still lands cost on 59.375 (the
+    first-purchase branch) but costs the purchase over 11.5 in stock. Only the
+    cost-ledger invariant can see that."""
+    src = _src()
+    call = "    wacc.recalculate_product_wacc(PID, conn)\n    return new_unit, delta\n"
+    anchor = "    delta = pinned - _ledger_sum(conn, CUTOFF)\n"
+    assert src.count(call) == 1 and src.count(anchor) == 1
+    mutant = src.replace(call, "    return new_unit, delta\n").replace(
+        anchor, "    wacc.recalculate_product_wacc(PID, conn)\n" + anchor)
+    assert mutant.index("wacc.recalculate_product_wacc") < mutant.index(anchor), "the move did not land"
+    before = _state(db)
+    rc = _run(db, '--apply', mod=_load(mutant))
+    out = capsys.readouterr().out
+    assert rc == 1 and 'ROLLED BACK' in out and 'cost-ledger purchase row' in out, out
+    assert '11.5' in out, out
+    assert _state(db) == before

@@ -1000,6 +1000,7 @@ _TRANSLATE_ASSIGN_RE = re.compile(
     r'\b(\w+)\s*=\s*bsn_units\.(?:normalize_unit|translate)\s*\(')
 
 _DIRECT_ASSIGN_THROUGH_MAP_SITES = (
+    'scripts/2026_09_21_fix_rr6700253_unit_1658.py::fix',
     'scripts/import_express.py::_import_sales',
     'vat_book_builder.py::seed_products_from_stmas',
 )
