@@ -188,3 +188,96 @@ def unratioed_line_sql(st='st', p='p', uc='uc'):
             "AND COALESCE({st}.unit, '') <> '' "
             "AND COALESCE({st}.unit, '') <> COALESCE({p}.unit_type, '') "
             "THEN 1 ELSE 0 END".format(st=st, p=p, uc=uc))
+
+
+# ── COGS: WHICH cost, as well as how much of it ──────────────────────────────
+# `products.cost_price` is the product's cost RIGHT NOW, so costing a sales
+# line with it makes a closed month a live re-derivation: measured 2026-09-18,
+# a closed nine-month ต้นทุนขาย moved ฿289.46 between two reads on one morning
+# with no sale and no purchase involved. From COGS_HISTORICAL_FROM a line is
+# costed at the carrying amount on its own sale date instead, read from
+# `product_cost_ledger`'s running `wacc_after` (ADR 0015).
+#
+# ⚠ This does NOT make a closed month immutable, and the page must not say it
+# does. It makes it immune to `cost_price` drift, which is what actually moved
+# it. The ledger is DELETEd and rebuilt per product by `wacc.py`, so a change
+# to historical `transactions` (a re-import, a unit rebase) or to the walk
+# itself still moves history — which is ADR 0015 decision 3's disclosed
+# correction, not the silent drift this replaces. Measured 2026-09-20 on a
+# copy of prod: rebuilding all 1,755 products moved closed-month COGS by
+# ฿0.00, with 1,748 reproducing exactly and 7 differing by <= ฿0.000021 of
+# float re-accumulation noise.
+
+# Must equal models.wacc._WACC_INITIAL_DATE — the ledger's `INITIAL` rows reset
+# every product's cost on exactly this date, which is why the basis before it
+# is unreachable. Pinned by tests/test_accounting_cogs_basis.py; importing
+# models.wacc here would make sales_filters depend on the whole model layer.
+COGS_HISTORICAL_FROM = '2026-03-03'
+
+
+def cogs_unit_cost_sql(st='st', p='p'):
+    """SQL expression: the cost per BASE unit to charge one sales line.
+
+    Two clauses in the subquery are not obvious and both are load-bearing.
+
+    `event_date >= COGS_HISTORICAL_FROM` floors the lookup at the cutover.
+    `wacc.py` writes an `INITIAL` row only when `opening_cost > 0`, so 871
+    products on prod have none and a post-cutover sale would otherwise resolve
+    straight back to a 2024 `PURCHASE` row — the basis ADR 0015 says it
+    discarded. 51 lines on prod, worth ฿0.67.
+
+    `wacc_after > 0` skips the negative-stock sentinel. When stock goes
+    negative the walk freezes the running average at 0 and the write guard at
+    `wacc.py` (`if current_wacc and current_wacc > 0`) deliberately leaves
+    `cost_price` alone, so for that class the ledger is the WORSE source (prod
+    pid 714: ledger 0.0 against `cost_price` 7.0; 182 pre-cutover rows carry
+    0). Put ruled 2026-09-20 that the recorded cost wins, because goods that
+    left the warehouse had a cost. Worth ฿336.00.
+
+    Returns NULL only when there is no cost anywhere, so `IS NULL` on this
+    expression is the page's `no_cost_lines` and `= 0` is `zero_cost_lines`.
+    Pair it with no_ledger_line_sql() to disclose the fallbacks.
+
+    The ORDER BY is byte-identical to `wacc.get_current_wacc`'s, on purpose:
+    ids are assigned in walk order within a product, so the last row of a date
+    is that day's closing WACC after all of that day's INs, which is the same
+    INs-before-OUTs convention the walk itself uses.
+    """
+    return ("CASE WHEN {st}.date_iso >= '{cut}' THEN COALESCE(("
+            "SELECT pcl.wacc_after FROM product_cost_ledger pcl"
+            " WHERE pcl.product_id = {st}.product_id"
+            " AND pcl.event_date <= {st}.date_iso"
+            " AND pcl.event_date >= '{cut}'"
+            " AND pcl.wacc_after > 0"
+            " ORDER BY pcl.event_date DESC, pcl.id DESC LIMIT 1"
+            "), {p}.cost_price) ELSE {p}.cost_price END"
+            .format(st=st, p=p, cut=COGS_HISTORICAL_FROM))
+
+
+def no_ledger_line_sql(st='st', p='p'):
+    """SQL expression: 1 when a MAPPED post-cutover line found no usable ledger
+    row and fell back to `cost_price`, so the page can disclose it.
+
+    Guarded on `{p}.id IS NOT NULL` the way unratioed_line_sql() is: an
+    unmapped line has no product to have a ledger for, and counting it here as
+    well as in `no_cost_lines` shows two counts for one line.
+
+    ⚠ ADR 0015 says these lines' "cost is ฿0 regardless". That is measurably
+    false — they carry ฿3,080 of real cost on prod — and the ADR now carries a
+    correction. Costing them at zero would trade a ฿1,876 problem for a ฿3,080
+    one, so they keep `cost_price` and are counted instead.
+
+    ⚠ This count can shrink without anyone touching cost data: `wacc.py`'s
+    `get_current_wacc` and `get_cost_history` rebuild a missing ledger and
+    commit, and both are reachable from a product page view. Measured
+    2026-09-20 on a copy of prod: recalculating all 12 exposed products moved
+    closed-month COGS by ฿0.00, because they have no qualifying IN rows and
+    `cost_price = 0`, so they cannot acquire a ledger this way today.
+    """
+    return ("CASE WHEN {p}.id IS NOT NULL AND {st}.date_iso >= '{cut}'"
+            " AND NOT EXISTS (SELECT 1 FROM product_cost_ledger pcl"
+            " WHERE pcl.product_id = {st}.product_id"
+            " AND pcl.event_date <= {st}.date_iso"
+            " AND pcl.event_date >= '{cut}'"
+            " AND pcl.wacc_after > 0) THEN 1 ELSE 0 END"
+            .format(st=st, p=p, cut=COGS_HISTORICAL_FROM))
