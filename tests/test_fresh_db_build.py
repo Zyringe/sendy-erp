@@ -188,7 +188,10 @@ def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, mo
 
     database.init_db()
     first = _unit_map_rows(db_path)
-    assert len(first) == 44                          # control: schema.sql's rows landed
+    # 44 BSN5657 (mig 185) + 29 xp5 (mig 191: หอ/ดว plus the 27 codes it
+    # shares an Express meaning with BSN5657 for) — see test_migration_191_
+    # unit_map_xp5.py for the derivation.
+    assert len(first) == 73                          # control: schema.sql's rows landed
     database.init_db()
     assert _unit_map_rows(db_path) == first          # idempotent
 
@@ -200,7 +203,7 @@ def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, mo
     finally:
         conn.close()
     learned = _unit_map_rows(db_path)
-    assert len(learned) == 45 and learned != first   # control: the edits landed
+    assert len(learned) == 74 and learned != first   # control: the edits landed
 
     database.init_db()
     assert _unit_map_rows(db_path) == learned
