@@ -1,6 +1,6 @@
 """Every writer of cost must be a decision on the record (#590, design §7).
 
-Two censuses, each shaped so a NEW unsigned writer goes red:
+Three censuses, each shaped so a NEW unsigned writer goes red:
 
 1. SCHEMA: every column in `data/schema.sql` whose name says cost or WACC is
    either guarded — shown by an unsigned write being REFUSED and a signed one
@@ -11,6 +11,9 @@ Two censuses, each shaped so a NEW unsigned writer goes red:
    `inventory_app/` and `scripts/` is pinned per file, verb and table, with how
    it is signed. A file-level allowlist would answer the wrong question ("this
    file is known") — a new write inside a known file must go red too.
+3. ENGINE CALLERS: every script that reaches the cost engine (a WACC recalc,
+   an importer, the gross_to_piece rebase) without cost SQL of its own is
+   either signed through `database.script_connection` or a dated one-off.
 
 ⛔ WHAT THE WRITER SWEEP CANNOT SEE, so nobody reads it as proof:
     · SQL assembled at runtime from pieces that are never adjacent literals,
@@ -275,6 +278,82 @@ def test_scripts_recorded_as_signed_really_open_a_script_connection():
         with open(os.path.join(REPO, name), encoding='utf-8') as f:
             body = normalise(f.read())
         assert 'script_connection(' in body, f'{name}: recorded as signed, but it is not'
+
+
+# ── 3. scripts that reach the cost engine without writing cost SQL themselves ──
+# The writer sweep cannot see these: #603's rebase script writes cost only through
+# the gross_to_piece engine it loads. Each is signed ('script') or a dated one-off
+# accepted to abort if re-run unsigned ('dated', the mig 173 precedent).
+_ENGINE_CALL = re.compile(
+    r'\b(?:_?recalculate_product_wacc|recalculate_waccs_for_products|get_current_wacc'
+    r'|get_cost_history|repoint_bsn_code|run_conversion|import_weekly'
+    r'|update_unit_conversion_ratio|commit_express_dbf|update_product)\s*\(|\.rebase\s*\(')
+
+ENGINE_CALLERS = {
+    'scripts/2026_09_20_rebase_gross_603.py': ('script',
+        'LIVE until 1187/1188 are rebased (Put, 2026-09-19); drives the gross_to_piece '
+        'engine on database.script_connection with --operator/--reason'),
+    'scripts/merge_product.py': ('script',
+        'LIVE tool: recalculates WACC for both products on its script_connection'),
+    'scripts/remap_bsn_code.py': ('script',
+        'LIVE tool: repoint_bsn_code on its script_connection, which preflights the actor'),
+    'scripts/2026_09_19_rebase_689_767.py': ('dated',
+        'dated one-off applied on prod 2026-09-19 through the gross_to_piece engine'),
+    'scripts/2026_09_19_fix_pack_ratios_592.py': ('dated',
+        'dated one-off applied 2026-09-19; its WACC recalc aborts if re-run unsigned'),
+    'scripts/2026_09_19_split_belco_582.py': ('dated',
+        'dated one-off applied 2026-09-19; its WACC recalc aborts if re-run unsigned'),
+    'scripts/backfill_opening_cost_20260617.py': ('dated',
+        'dated one-off 2026-06-17; its WACC recalc aborts if re-run unsigned'),
+    'scripts/cleanup_split_mapping_stubs.py': ('dated',
+        'DEPRECATED 2026-05-20 one-off; its WACC recalc aborts if re-run unsigned'),
+    'scripts/force_stock_targets.py': ('dated',
+        'DEPRECATED 2026-05-18 one-off; its WACC recalc aborts if re-run unsigned'),
+    'scripts/hammer_bundle_datafix.py': ('dated',
+        'dated Phase 1 datafix of the 2026-08-14 hammer bundle plan; aborts if re-run'),
+    'scripts/phase_c_dedup_replay_20260530.py': ('dated',
+        'dated 2026-05-30 replay one-off; its WACC recalc aborts if re-run unsigned'),
+    'scripts/phase_c_replay_apply_20260530.py': ('dated',
+        'dated 2026-05-30 replay one-off; its WACC recalc aborts if re-run unsigned'),
+    'scripts/rebuild_opening_balance_from_csv.py': ('dated',
+        'DEPRECATED 2026-05-18 one-off; its WACC recalc aborts if re-run unsigned'),
+    'scripts/rebuild_opening_balance_v2.py': ('dated',
+        'DEPRECATED 2026-05-18 one-off; its WACC recalc aborts if re-run unsigned'),
+}
+
+
+def _engine_callers(root, prefix=''):
+    found = set()
+    for dp, _, files in os.walk(root):
+        for name in files:
+            if name.endswith('.py'):
+                path = os.path.join(dp, name)
+                with open(path, encoding='utf-8') as f:
+                    if _ENGINE_CALL.search(normalise(f.read())):
+                        found.add(prefix + os.path.relpath(path, root))
+    return found
+
+
+def test_every_script_reaching_the_cost_engine_is_on_the_record():
+    found = _engine_callers(SCRIPTS, prefix='scripts/')
+    assert 'scripts/2026_09_20_rebase_gross_603.py' in found, 'control: #603 must appear'
+    assert found == set(ENGINE_CALLERS), (
+        'a script reaching the cost engine appeared or vanished; classify it in ENGINE_CALLERS')
+    for name, (kind, reason) in ENGINE_CALLERS.items():
+        assert kind in ('script', 'dated') and len(reason.split()) >= 8, name
+        with open(os.path.join(REPO, name), encoding='utf-8') as f:
+            signed = 'script_connection(' in normalise(f.read())
+        assert signed == (kind == 'script'), f'{name}: recorded {kind!r}, signed={signed}'
+
+
+@pytest.mark.parametrize('src', ['models.recalculate_product_wacc(pid, conn)',
+                                 'eng.rebase(conn, pid)', 'import_weekly(path, "x.csv")'])
+def test_the_engine_sweep_sees_each_call_shape(src, tmp_path):
+    (tmp_path / 'rogue.py').write_text(f'{src}\n', encoding='utf-8')
+    (tmp_path / 'prose.py').write_text(f'# {src}\n', encoding='utf-8')
+    found = _engine_callers(str(tmp_path))
+    assert 'rogue.py' in found                                            # control
+    assert 'prose.py' not in found
 
 
 # One rogue source per SQL shape. Each must be SEEN; the last must not be.
