@@ -253,7 +253,8 @@ def _all(path, sql, *args):
 
 
 def _run(path, pids, *extra, mod=None, mode='rehearse'):
-    return (mod or _load()).main(['--db', path, '--pids', pids, '--mode', mode, *extra])
+    return (mod or _load()).main(['--db', path, '--pids', pids, '--mode', mode,
+                                  '--operator', 'pytest', '--reason', 'test rebase', *extra])
 
 
 def _state(path):
