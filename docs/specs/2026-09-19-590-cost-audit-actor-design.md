@@ -352,8 +352,13 @@ Draft text:
 Each of these was found while building or break-testing PR 2. The design intent holds in
 every case.
 
-- **Migration number 190.** 188 is claimed by `fix/594-unflag-904` and 189 by
-  `fix/589-commission-03-engine`, both on origin. Re-derive the number at rebase.
+- **Migration number 191.** 188 (#617) and 189 (#623) are on main; 190 is claimed by
+  #628 (`feat/599-express-meanings`), still open on 2026-09-21. Re-derive the number at
+  rebase. The runner applies by filename, so if #628 merges after this PR its 190 runs
+  after 191 on prod. That is harmless: the runner's connection is signed.
+- **Scripts that reach the cost engine without cost SQL of their own** (#603's rebase
+  script, which drives the gross_to_piece engine) are invisible to the writer sweep. A
+  third census pins each one as signed or dated (`test_cost_writer_census.py` §3).
 - **The recalc-event row is written after the walk, not before the DELETE.** It is still
   in the same transaction, just before the ledger INSERTs, which is the first point where
   old→new is known. Moving the DELETE would have reordered a money path for no gain in
