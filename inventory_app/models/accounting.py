@@ -115,6 +115,80 @@ def _incomplete_months(conn, date_from, date_to):
     return incomplete_months
 
 
+def _cogs_basis_months(conn, date_from, date_to):
+    """Which basis each month's ต้นทุนขาย was read on, and the split.
+
+    Derived from the month's OWN cost-bearing lines rather than the calendar,
+    so a window whose March lines all sit at or after the cutover reads
+    `historical` instead of carrying a warning about a mixture it does not
+    contain. "Cost-bearing" is the COGS population itself, the same rows the
+    headline sums.
+
+    Only 2026-03 can be `mixed` in practice, and on prod it genuinely is: 11
+    lines worth ฿6,450.30 of revenue fall on 2026-03-02. Labelling that month
+    either way is the silent rewrite ADR 0015 cites พ.ร.บ.การบัญชี ม.39
+    against, so it says `mixed` AND comes apart into its two numbers — story
+    15's point is that a chart must not compare two things silently, and a
+    mixed month's single figure IS two things.
+
+    ⚠ The label is a property of the WINDOW, not of the month: '2026-03-01' to
+    '2026-03-31' reads `mixed` while '2026-03-03' to '2026-03-31' reads
+    `historical`. Both are true of what was summed.
+    """
+    rows = conn.execute("""
+        SELECT strftime('%Y-%m', st.date_iso) AS ym,
+               SUM(CASE WHEN st.date_iso >= '{cut}' THEN 1 ELSE 0 END) AS post_lines,
+               SUM(CASE WHEN st.date_iso <  '{cut}' THEN 1 ELSE 0 END) AS pre_lines,
+               COALESCE(SUM(CASE WHEN st.date_iso >= '{cut}'
+                                 THEN {base_qty} * COALESCE({unit_cost}, 0)
+                                 ELSE 0 END), 0) AS cogs_historical,
+               COALESCE(SUM(CASE WHEN st.date_iso <  '{cut}'
+                                 THEN {base_qty} * COALESCE({unit_cost}, 0)
+                                 ELSE 0 END), 0) AS cogs_current
+          FROM sales_transactions st
+          LEFT JOIN products p ON p.id = st.product_id
+          {uc_join}
+         WHERE st.date_iso >= ? AND st.date_iso <= ?
+           AND st.doc_no NOT LIKE 'SR%'
+         GROUP BY ym
+         ORDER BY ym
+    """.format(cut=sales_filters.COGS_HISTORICAL_FROM,
+               base_qty=sales_filters.base_qty_sql(),
+               unit_cost=sales_filters.cogs_unit_cost_sql(),
+               uc_join=sales_filters.unit_conversion_join()),
+       (date_from, date_to)).fetchall()
+
+    months = []
+    for r in rows:
+        if r['pre_lines'] and r['post_lines']:
+            basis = 'mixed'
+        elif r['post_lines']:
+            basis = 'historical'
+        else:
+            basis = 'current'
+        hist, cur = float(r['cogs_historical']), float(r['cogs_current'])
+        months.append({'ym': r['ym'], 'basis': basis, 'cogs': hist + cur,
+                       'cogs_historical': hist, 'cogs_current': cur})
+    return months
+
+
+def _period_basis(months):
+    """One label for the whole selected period, or None when it holds no sales.
+
+    None is explicit rather than incidental: "every line is at or after the
+    cutover" and "every line is before it" are BOTH vacuously true on an empty
+    set, so without this branch the answer would be decided by whichever `if`
+    happened to be written first. A custom range with no sales is one click
+    away in the period selector.
+    """
+    kinds = {m['basis'] for m in months}
+    if not kinds:
+        return None
+    if len(kinds) == 1:
+        return kinds.pop()
+    return 'mixed'
+
+
 def get_accounting_summary(date_from=None, date_to=None):
     """
     Aggregate profit / cost / expenses for the /accounting page.
@@ -124,12 +198,22 @@ def get_accounting_summary(date_from=None, date_to=None):
 
     Revenue  = Σnet from sales_transactions, SR (return) rows netted out —
                pre-VAT, post-doc-discount.
-    COGS     = SUM(qty-in-BASE-units * cost_price) — current cost_price (WACC
-               basis), with the bill's unit converted by sales_filters
-               .base_qty_sql() first (a โหล line costs 12 pieces).
-               Lines where product has no cost_price are counted separately
-               (no_cost_lines); lines whose bill unit has no ratio, and so
-               fell back to 1, are counted in unknown_ratio_lines.
+    COGS     = SUM(qty-in-BASE-units * the cost that stood on the sale date),
+               with the bill's unit converted by sales_filters.base_qty_sql()
+               first (a โหล line costs 12 pieces). The per-line cost is
+               sales_filters.cogs_unit_cost_sql(): ทุน ณ วันขาย from
+               COGS_HISTORICAL_FROM, ทุนเฉลี่ยวันนี้ before it, so a closed
+               month stops tracking `cost_price`. ADR 0015 and the expression's
+               own docstring carry the clamp and zero-sentinel reasoning.
+               Three counts disclose what the figure could not measure, all
+               read off the RESOLVED cost: no_cost_lines (no cost anywhere),
+               zero_cost_lines (the cost really is 0), no_ledger_lines (a
+               post-cutover line that fell back to `cost_price`). Lines whose
+               bill unit has no ratio, and so fell back to 1, stay counted in
+               unknown_ratio_lines.
+               `cogs_basis` / `cogs_basis_months` say which basis was used, per
+               month and for the period, because two bases coexist in 2026 by
+               design and an unlabelled chart would compare two things.
     Expenses = cashbook_transactions opex (direction='expense', non-transfer
                account, category not in COGS/transfer categories) — BSN+SD
                (cashbook is not company-scoped). None when the period has
@@ -186,11 +270,17 @@ def get_accounting_summary(date_from=None, date_to=None):
     """.format(not_a_sale=sales_filters.not_a_sale_clause()), (date_from, date_to)).fetchone()
     sales_net = float(s['total_net'])
 
-    # ── COGS (current cost_price × qty in BASE units; see sales_filters) ─────
+    # ── COGS (ทุน ณ วันขาย from the cutover, ทุนเฉลี่ยวันนี้ before it — the
+    # basis, the clamp and the zero-sentinel all live in sales_filters) ──────
+    # The three disclosure counts read the RESOLVED cost, not `cost_price`:
+    # once the basis moves, "no cost" and "zero cost" are properties of the
+    # number actually charged, and `no_ledger_lines` names the lines that fell
+    # back. `unknown_ratio_lines` is untouched (spec #593 story 5).
     cogs_row = conn.execute("""
-        SELECT COALESCE(SUM({base_qty} * COALESCE(p.cost_price, 0)), 0) AS cogs,
-               COUNT(CASE WHEN p.cost_price IS NULL THEN 1 END)     AS no_cost_lines,
-               COUNT(CASE WHEN p.cost_price = 0    THEN 1 END)      AS zero_cost_lines,
+        SELECT COALESCE(SUM({base_qty} * COALESCE({unit_cost}, 0)), 0) AS cogs,
+               COUNT(CASE WHEN {unit_cost} IS NULL THEN 1 END)      AS no_cost_lines,
+               COUNT(CASE WHEN {unit_cost} = 0    THEN 1 END)       AS zero_cost_lines,
+               COALESCE(SUM({no_ledger}), 0)                        AS no_ledger_lines,
                COALESCE(SUM({unratioed}), 0)                        AS unknown_ratio_lines
           FROM sales_transactions st
           LEFT JOIN products p ON p.id = st.product_id
@@ -204,13 +294,18 @@ def get_accounting_summary(date_from=None, date_to=None):
            -- left the warehouse, and HS posts its COGS to the same 51-01 GL
            -- account IV uses (#514).
     """.format(base_qty=sales_filters.base_qty_sql(),
+               unit_cost=sales_filters.cogs_unit_cost_sql(),
+               no_ledger=sales_filters.no_ledger_line_sql(),
                unratioed=sales_filters.unratioed_line_sql(),
                uc_join=sales_filters.unit_conversion_join()),
        (date_from, date_to)).fetchone()
     cogs = float(cogs_row['cogs'])
     no_cost_lines = cogs_row['no_cost_lines'] or 0
     zero_cost_lines = cogs_row['zero_cost_lines'] or 0
+    no_ledger_lines = cogs_row['no_ledger_lines'] or 0
     unknown_ratio_lines = cogs_row['unknown_ratio_lines'] or 0
+    cogs_basis_months = _cogs_basis_months(conn, date_from, date_to)
+    cogs_basis = _period_basis(cogs_basis_months)
 
     # ── Gross profit ──────────────────────────────────────────────────────────
     gross_profit = sales_net - cogs
@@ -326,10 +421,12 @@ def get_accounting_summary(date_from=None, date_to=None):
           COALESCE(b.sort_order, 9999)                    AS sort_ord,
           ROUND(SUM(st.net), 2)                           AS sales_net,
           ROUND(SUM(""" + sales_filters.base_qty_sql() + """
-                    * COALESCE(p.cost_price, 0)), 2)      AS cogs_approx,
+                    * COALESCE(""" + sales_filters.cogs_unit_cost_sql() + """, 0)), 2)
+                                                          AS cogs_approx,
           COUNT(st.id)                                    AS line_count,
-          COUNT(CASE WHEN p.cost_price IS NULL OR p.cost_price = 0 THEN 1 END)
-                                                          AS no_cost_lines
+          COUNT(CASE WHEN """ + sales_filters.cogs_unit_cost_sql() + """ IS NULL
+                       OR """ + sales_filters.cogs_unit_cost_sql() + """ = 0
+                     THEN 1 END)                          AS no_cost_lines
         FROM sales_transactions st
         LEFT JOIN products  p ON p.id = st.product_id
         LEFT JOIN brands    b ON b.id = p.brand_id
@@ -381,8 +478,11 @@ def get_accounting_summary(date_from=None, date_to=None):
         'doc_count': s['doc_count'],
         'line_count': s['line_count'],
         'cogs': cogs,
+        'cogs_basis': cogs_basis,
+        'cogs_basis_months': cogs_basis_months,
         'no_cost_lines': no_cost_lines,
         'zero_cost_lines': zero_cost_lines,
+        'no_ledger_lines': no_ledger_lines,
         'unknown_ratio_lines': unknown_ratio_lines,
         'gross_profit': gross_profit,
         'margin_pct': margin_pct,

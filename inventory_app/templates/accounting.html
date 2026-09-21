@@ -22,7 +22,7 @@
   <strong>รายได้ / COGS = BSN</strong> &nbsp;·&nbsp;
   <strong>ค่าใช้จ่าย = สมุดรับ-จ่าย (BSN+SD รวมกัน)</strong> &nbsp;·&nbsp;
   รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount, หักยอดคืน SR แล้ว) &nbsp;·&nbsp;
-  COGS = qty (แปลงเป็นหน่วยสินค้าแล้ว) × cost_price ปัจจุบัน (<strong>ประมาณการ</strong>) &nbsp;·&nbsp;
+  ต้นทุนขาย = qty (แปลงเป็นหน่วยสินค้าแล้ว) × ทุน ณ วันขาย ตั้งแต่ 3 มี.ค. 2569 &nbsp;·&nbsp;
   ไม่รวม VAT &nbsp;·&nbsp;
   กำไรสุทธิโดยประมาณ = กำไรขั้นต้น − ค่าใช้จ่ายดำเนินงาน − ค่าใช้จ่ายของงวดก่อน
   (ค่าใช้จ่ายรวมค่าคอมมิชชั่นแล้ว ไม่หักซ้ำ)
@@ -138,7 +138,14 @@
         </div>
       </div>
       <div class="mt-2 text-subtle small">
-        ประมาณการ qty × cost_price ปัจจุบัน (แปลง โหล/กล่อง เป็นหน่วยสินค้าก่อน)
+        {% if s.cogs_basis == 'historical' %}ทุน ณ วันขาย (แปลง โหล/กล่อง เป็นหน่วยสินค้าก่อน)
+        {% elif s.cogs_basis == 'current' %}<span class="text-danger">ทุนเฉลี่ยวันนี้</span> — เดือนนี้อยู่ก่อน 3 มี.ค. 2569 สมุดต้นทุนย้อนไปไม่ถึง
+        {% elif s.cogs_basis == 'mixed' %}<span class="text-danger">ใช้ 2 เกณฑ์ปนกัน</span> — เทียบข้ามเดือนตรงๆ ไม่ได้
+        {% else %}ไม่มีรายการขายในช่วงนี้{% endif %}
+        {% if s.no_ledger_lines > 0 %}
+        <span class="text-danger" title="สินค้าไม่มีแถวในสมุดต้นทุน ณ วันที่ขาย จึงใช้ทุนที่บันทึกไว้แทน แล้วนับไว้ตรงนี้ ไม่ได้คิดเป็นศูนย์">
+          · {{ s.no_ledger_lines }} รายการใช้ทุนที่บันทึกไว้แทน</span>
+        {% endif %}
         {% if s.no_cost_lines > 0 %}
         <span class="text-danger">· {{ s.no_cost_lines }} รายการไม่มีต้นทุน</span>
         {% endif %}
@@ -277,8 +284,36 @@
       </div>
       <div class="mt-2">
         <span class="badge bg-warning text-dark">ประมาณการ</span>
-        <span class="text-subtle small ms-2">COGS ใช้ cost_price ปัจจุบัน แปลงหน่วยบิลเป็นหน่วยสินค้าแล้ว · ไม่รวม VAT · รายได้/COGS = BSN, ค่าใช้จ่าย = BSN+SD</span>
+        <span class="text-subtle small ms-2">ต้นทุนขายอ่านที่ทุน ณ วันขาย ตั้งแต่ 3 มี.ค. 2569 แปลงหน่วยบิลเป็นหน่วยสินค้าแล้ว · ไม่รวม VAT · รายได้/ต้นทุนขาย = BSN, ค่าใช้จ่าย = BSN+SD</span>
       </div>
+      {% if s.cogs_basis == 'mixed' %}
+      {# story 15: a chart across these months would compare two measurements,
+         so each month names its basis and a mixed month comes apart. #}
+      <div class="mt-2 small" id="cogs-basis-by-month">
+        <div class="text-danger mb-1">ต้นทุนขายในช่วงนี้ใช้ 2 เกณฑ์ปนกัน แยกรายเดือนดังนี้</div>
+        <table class="table table-sm mb-0" style="max-width:34rem">
+          <tbody>
+          {% for m in s.cogs_basis_months %}
+            <tr>
+              <td class="text-subtle">{{ m.ym }}</td>
+              <td>
+                {% if m.basis == 'historical' %}ทุน ณ วันขาย
+                {% elif m.basis == 'current' %}ทุนเฉลี่ยวันนี้
+                {% else %}ปนกัน{% endif %}
+              </td>
+              <td class="text-end">{{ m.cogs | fmt_price }}</td>
+              <td class="text-end text-subtle">
+                {% if m.basis == 'mixed' %}
+                  ทุน ณ วันขาย {{ m.cogs_historical | fmt_price }} ·
+                  ทุนเฉลี่ยวันนี้ {{ m.cogs_current | fmt_price }}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
     </div>
   </div>
 
@@ -311,7 +346,7 @@
             {% endif %}
             {{ row.brand_label }}
             {% if row.no_cost_lines > 0 %}
-            <span class="badge bg-warning text-dark ms-1" title="{{ row.no_cost_lines }} รายการไม่มี cost_price">
+            <span class="badge bg-warning text-dark ms-1" title="{{ row.no_cost_lines }} รายการที่หาต้นทุนไม่ได้ หรือต้นทุนเป็นศูนย์">
               {{ row.no_cost_lines }} ไม่มีต้นทุน
             </span>
             {% endif %}
@@ -404,11 +439,16 @@
     <strong>ข้อสมมติฐาน:</strong>
     รายได้ใช้ <code>net</code> (pre-VAT, post-discount) จาก <code>sales_transactions</code>
     หักยอดคืน (SR, เก็บเป็นบวกในระบบตามปกติ — หักออกเฉพาะตอนแสดงผล) ·
-    COGS = qty × <code>products.cost_price</code> ปัจจุบัน (ไม่ใช่ WACC ณ วันขาย — ค่าประมาณ) ·
-    qty บนบิลเป็นหน่วยที่ขาย (โหล/กล่อง/ซอง) แต่ <code>cost_price</code> เป็นต่อ
+    ต้นทุนขาย = qty × <strong>ทุน ณ วันขาย</strong> ตั้งแต่ 3 มี.ค. 2569 (อ่านจากสมุดต้นทุน
+    <code>product_cost_ledger</code>) ก่อนหน้านั้นใช้ <code>products.cost_price</code> ปัจจุบัน
+    เพราะสมุดต้นทุนตั้งต้นใหม่ทุกตัวในวันนั้น ย้อนกลับไปไม่ได้ ·
+    เดือนที่ปิดแล้วจึง<strong>ไม่ขยับตามการแก้ต้นทุนสินค้า</strong>อีก แต่ยัง<strong>ไม่ใช่ว่าแก้ไม่ได้เลย</strong> —
+    ถ้าประวัติการซื้อ-ขายเองเปลี่ยน ตัวเลขเดือนเก่าก็ขยับได้ และต้องแจ้งเป็นการแก้ไขที่มองเห็น ·
+    qty บนบิลเป็นหน่วยที่ขาย (โหล/กล่อง/ซอง) แต่ทุนเป็นต่อ
     <code>unit_type</code> จึงแปลงด้วย <code>unit_conversions</code> ก่อนคูณ — แบบเดียวกับที่
     สมุดสต็อกตัดของ · หน่วยที่ยังไม่มีอัตราแปลง คิดเป็น 1 (understate) และนับไว้ข้างยอด COGS ·
-    สินค้าที่ยังไม่มี <code>cost_price</code> นับ COGS = 0 (understate) ·
+    รายการที่สมุดต้นทุนตอบไม่ได้ (สินค้าไม่มีแถวก่อนวันขาย หรือแถวนั้นเป็น 0 เพราะสต็อกเคยติดลบ)
+    ใช้ทุนที่บันทึกไว้แทนแล้วนับไว้ ไม่ได้คิดเป็นศูนย์ · สินค้าที่ไม่มีทุนเลยจริงๆ นับเป็น 0 (ต่ำกว่าจริง) ·
     ค่าใช้จ่าย = <code>cashbook_transactions</code> (ไม่รวมหมวด เงินทุน/เงินโอน และ ซื้อสินค้า ที่นับใน COGS แล้ว)
     — ค่าคอมมิชชั่นรวมอยู่ในค่าใช้จ่ายนี้แล้ว ไม่หักซ้ำ ·
     ไม่รวม VAT ทั้งด้านรายได้และต้นทุน ·

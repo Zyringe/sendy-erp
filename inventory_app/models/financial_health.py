@@ -146,14 +146,22 @@ def _trailing_margin(conn, as_of):
     line's qty converted to the product's base unit first (sales_filters
     .base_qty_sql() — cost_price is per piece, the bill is in โหล).
     Returns None when there is no trailing revenue (can't divide, and 0%
-    would misleadingly read as "sells at cost" rather than "no data")."""
+    would misleadingly read as "sells at cost" rather than "no data").
+
+    Costed on the SAME basis as the internal P&L (sales_filters
+    .cogs_unit_cost_sql(), ADR 0015). The three months this averages are
+    COMPLETE ones, so on the old basis this panel and `/accounting` would
+    report different margins for the same closed months, one of them still
+    drifting with `cost_price` — two tabs of one page disagreeing. The
+    populations still differ deliberately: this one applies revenue_filter()
+    and so excludes the giveaway invoices the P&L's COGS keeps."""
     months = _trailing_month_starts(as_of, 3)
     d_from = _month_bounds(*months[0])[0]
     d_to = _month_bounds(*months[-1])[1]
     row = conn.execute(
         """SELECT COALESCE(SUM(st.net), 0) AS rev,
                   COALESCE(SUM(""" + sales_filters.base_qty_sql() + """
-                               * COALESCE(p.cost_price, 0)), 0) AS cogs
+                               * COALESCE(""" + sales_filters.cogs_unit_cost_sql() + """, 0)), 0) AS cogs
              FROM sales_transactions st
              LEFT JOIN products p ON p.id = st.product_id
              """ + sales_filters.unit_conversion_join() + """

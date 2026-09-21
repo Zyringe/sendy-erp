@@ -66,6 +66,43 @@ not buying accuracy. We are buying a number that stops changing.
 - **Mark Jan–Feb unreadable** (reuse the incomplete-month mechanism) — rejected as heavier than the
   problem: those months are readable, just on a declared different basis.
 
+## Correction, 2026-09-21 (implementation, #593 stories 1-7)
+
+Two statements above are measurably wrong. This ADR's own decision 3 requires a closed figure to
+change only as a **disclosed correction**, and the standard it cites requires an error to be
+restated rather than quietly overwritten, so they are corrected here rather than edited away.
+
+**1. "their cost is ฿0 regardless" is false.** The lines sitting on products with no ledger row
+carry **฿3,080** of real cost over 2026-03-03 → 09-30 (measured on prod 2026-09-20). That
+parenthetical is the sentence that made story 4 look like pure disclosure; following it would mean
+costing real shipments at zero, which trades a ฿1,876 problem for a ฿3,080 one. Those lines keep
+`products.cost_price` and are counted in the new `no_ledger_lines`.
+
+**2. The +฿1,876.02 was measured with a lookup this ADR's own decision forbids.** "The cost as it
+stood on date D" was taken as the last ledger row at or before D, with no floor. But `wacc.py`
+writes an `INITIAL` row only when `opening_cost > 0`, so **871 products have none** and 51
+post-cutover lines resolve straight back to a pre-2026-03-03 `PURCHASE` row — exactly the basis the
+Considered-options section rejects as an artefact. Flooring the lookup at the cutover costs ฿0.67.
+
+Separately, `wacc_after = 0` is a **sentinel, not a cost**: the walk freezes the running average at
+0 when stock goes negative and the write guard deliberately leaves `cost_price` alone, so for that
+class the ledger is the worse source (prod pid 714 carries ledger `0.0` against `cost_price` 7.0;
+182 pre-cutover rows carry 0). Put ruled 2026-09-20 that the recorded cost wins, because goods that
+left the warehouse had one. That costs ฿336.00.
+
+**The implemented movement is therefore +฿2,212.69 over Jan–Sep 2026, not +฿1,876.02**, measured on
+prod 2026-09-21 by running the shipped expression itself. The +0.15% framing is unchanged and so is
+everything the Decision section says. What changed is that the number now matches the decision.
+
+**What "a closed month is fixed" does and does not mean.** Decision 1 above says a closed month's
+figure "is therefore fixed". Narrow that: it becomes immune to `cost_price` drift, which is what
+actually moved it. `product_cost_ledger` is DELETEd and rebuilt per product by `wacc.py`, so a
+change to historical `transactions` — a re-import, a unit rebase — or to the walk itself still moves
+history, as decision 3's disclosed-correction case. Measured on a copy of prod 2026-09-20:
+rebuilding all 1,755 products moved closed-month ต้นทุนขาย by **฿0.00**, with 1,748 products
+reproducing exactly and 7 differing by at most ฿0.000021 of float re-accumulation noise. The page
+states the narrower claim.
+
 ## Consequences
 
 - Jan–Sep 2026 ต้นทุนขาย rises ~฿1,876 (+0.15%). Per-month movement is smaller still.
