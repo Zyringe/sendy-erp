@@ -493,6 +493,32 @@ def test_approve_pending_suggestion_stores_the_conversion_word(empty_db):
     assert [r['bsn_unit'] for r in rows] == ['โหล']
 
 
+def test_approve_translates_a_suggestion_staged_before_the_map_knew_it(empty_db):
+    """The approve-side guard on its own. The test above cannot see it: it
+    stages through `save_pending_suggestion`, which already translated, so
+    approve's own call is a no-op there (caught by break-it-once — deleting
+    it left that test green). A row staged BEFORE the map learnt the
+    spelling is the real case, and it is inserted here directly."""
+    import models
+    _seed_map(empty_db)
+    _seed_user(empty_db)
+    conn = sqlite3.connect(empty_db)
+    sid = conn.execute(
+        "INSERT INTO pending_product_suggestions "
+        "  (bsn_code, bsn_name, suggested_name, suggested_unit_type, "
+        "   bsn_unit, unit_conversion_ratio, suggested_by_user_id, status) "
+        "VALUES ('ZZ997', 'ของเก่า', 'ของเก่า', 'ตัว', 'หล', 12.0, 1, 'pending')"
+    ).lastrowid
+    conn.commit()
+    conn.close()
+
+    new_pid = models.approve_pending_suggestion(sid, {}, reviewer_id=1)
+
+    rows = _col(empty_db, "SELECT bsn_unit FROM unit_conversions WHERE product_id=?",
+                (new_pid,))
+    assert [r['bsn_unit'] for r in rows] == ['โหล']
+
+
 def test_bsn_suggest_counts_a_unit_once_per_word(empty_db):
     """AC: a product billed in `หล` and `โหล` is ONE unit, not two — the
     length of this list is what flags a split-unit code."""
@@ -573,6 +599,30 @@ def test_price_lookup_finds_a_word_tier_when_asked_by_code(empty_db):
 
     assert out['answer']['unit'] == 'กิโลกรัม'
     assert out['answer']['price_per_unit'] == 250.0
+
+
+def test_price_lookup_finds_a_variant_tier_when_asked_by_the_word(empty_db):
+    """The TIER side of the same coin, and the half the ask-normalisation
+    alone does NOT cover: the tier is still labelled with a variant and the
+    ask is the หน่วย word. This is the state #600/#610 clean up — a tier
+    label written before the map knew the spelling — and it is the only
+    thing `_find_matching_tier`'s map fallback exists for. (Caught by
+    break-it-once: deleting that fallback left every other price test
+    green, because those all normalise the ASK onto a tier already stored
+    as the word.)"""
+    _seed_map(empty_db)
+    pid = _seed_product(empty_db, name='สินค้าเทียร์โค้ด', unit_type='ตัว',
+                        sku='SK-602-TIERCODE', base=10.0, cost=5.0)
+    conn = sqlite3.connect(empty_db)
+    conn.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) "
+                 "VALUES (?, '1 หล', 100.0)", (pid,))
+    conn.commit()
+    conn.close()
+
+    out = _resolve(empty_db, product_id=pid, unit='โหล')
+
+    assert out['answer']['price_per_unit'] == 100.0, out['answer']
+    assert out['list']['list_source'] == 'tier', out['list']
 
 
 def test_price_lookup_still_refuses_a_unit_nothing_can_answer(empty_db):
