@@ -7,6 +7,7 @@ them; each call site keeps its own dict keys so no template variable is
 renamed (only the *values* are unified — see plan `mapping-suggest-clone`
 PR1, decision Q10).
 """
+import bsn_units
 from sku_code_utils import CONDITION_SHORT, PACKAGING_SHORT, _EXP_DATE
 
 
@@ -43,13 +44,25 @@ def packaging():
 
 
 def units(conn):
-    """Unit types already in use on `products`, most-common first.
+    """Unit หน่วย WORDS already in use on `products`, most-common first.
 
-    Free-text suggestion source (any value allowed) — not a closed list."""
-    return [r[0] for r in conn.execute(
-        "SELECT unit_type FROM products WHERE unit_type IS NOT NULL AND unit_type <> '' "
-        "GROUP BY unit_type ORDER BY COUNT(*) DESC"
-    ).fetchall()]
+    Free-text suggestion source (any value allowed) — not a closed list.
+
+    Every stored spelling is translated through the unit map before it is
+    offered, and the counts of spellings that mean the same หน่วย are added
+    together (#602 / ADR 0018: "the suggestion list offers words only", so a
+    leftover Express code on some product can never be copied onto a new
+    one). A spelling the map does not know is still offered as itself —
+    that is a real unit somebody typed, just not one the map has learnt.
+    """
+    counts = {}
+    for spelling, n in conn.execute(
+        "SELECT unit_type, COUNT(*) FROM products "
+        "WHERE unit_type IS NOT NULL AND unit_type <> '' GROUP BY unit_type"
+    ).fetchall():
+        word = bsn_units.normalize_unit(spelling, conn=conn)
+        counts[word] = counts.get(word, 0) + n
+    return [w for w, _n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
 def conditions(conn, *, drop_dated=False):

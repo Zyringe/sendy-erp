@@ -211,6 +211,7 @@ def test_mapping_page_unit_options_contain_no_codes(empty_db):
     """Render test on the ELEMENT itself: mapping.html builds the combo's
     option list as `units: [...]` inside its own <script>. Asserted on that
     array, not on the whole page, with a control."""
+    import json
     import re
     import app as app_module
     _seed_map(empty_db)
@@ -227,9 +228,12 @@ def test_mapping_page_unit_options_contain_no_codes(empty_db):
     m = re.search(r'\n\s*units:\s*\[(.*?)\],\n', html, re.S)
     assert m, 'the units option array did not render at all'
     arr = m.group(1)
-    assert 'ตัว' in arr, arr                 # CONTROL: the array has content
-    assert '"กก"' not in arr, arr
-    assert 'กิโลกรัม' in arr, arr
+    # `|tojson` \u-escapes Thai, so compare the way the BROWSER reads it.
+    def js(x):
+        return json.dumps(x)
+    assert js('ตัว') in arr, arr             # CONTROL: the array has content
+    assert js('กก') not in arr, arr
+    assert js('กิโลกรัม') in arr, arr
 
 
 # ── 3. promotion bundle unit ─────────────────────────────────────────────

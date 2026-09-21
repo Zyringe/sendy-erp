@@ -4,6 +4,7 @@ overall file-split rationale. No behavior changes.
 """
 import math
 
+import bsn_units
 import config
 from database import get_connection
 import name_builder
@@ -124,6 +125,10 @@ def get_product(product_id, conn=None):
 
 def create_product(data: dict) -> int:
     conn = get_connection()
+    # ADR 0018: a variant typed anywhere becomes its หน่วย word on save; a
+    # word the map does not know is still stored as typed.
+    data = dict(data, unit_type=normalize_unit_type(bsn_units.normalize_unit(
+        (data.get('unit_type') or '').strip(), conn=conn)))
     cur = conn.execute("""
         INSERT INTO products (product_name, units_per_carton, units_per_box,
             unit_type, hard_to_sell, cost_price, opening_cost, base_sell_price, low_stock_threshold)
@@ -148,7 +153,14 @@ SINGLETON_FAMILY_NOTE = 'auto-singleton-from-photo-import-2026-05-25'
 def normalize_unit_type(unit_type):
     """The single rule for what a product's `unit_type` becomes.
 
-    Strip, then fall back to 'ตัว'. Used by BOTH the INSERT below and
+    Strip, then fall back to 'ตัว'. Every WRITE path wraps its raw value in
+    `bsn_units.normalize_unit(...)` first (#602 / ADR 0018), so what reaches
+    here is already the หน่วย word when the map knows the spelling and the
+    operator's own word when it does not — this function decides only what a
+    BLANK becomes. It is deliberately left translation-free so the costing
+    reader below can normalise a stored value without a DB round-trip.
+
+    Used by BOTH the INSERT below and
     `models.suggestions._effective_ratio`, because a unit that is normalised
     for COSTING but persisted verbatim is a silent divergence: '  ' is truthy,
     so the old `d.get('unit_type') or 'ตัว'` stored two spaces while the cost
@@ -362,7 +374,8 @@ def create_structured_product(fields: dict, created_via: str, conn=None) -> int:
             d.get('product_name') or '',
             d.get('units_per_carton') or 1,
             d.get('units_per_box') or 1,
-            normalize_unit_type(d.get('unit_type')),
+            normalize_unit_type(bsn_units.normalize_unit(
+                (d.get('unit_type') or '').strip(), conn=conn)),
             1 if d.get('hard_to_sell') else 0,
             cost_price,
             cost_price,
@@ -517,6 +530,12 @@ def update_product(product_id: int, data: dict, source=None):
     conn = get_connection()
     if {'cost_price', 'opening_cost'} & set(fields):
         require_actor_or_alert(conn, 'cost_edit', extra={'product_id': product_id})   # #590 A2
+    if 'unit_type' in fields:
+        # Same ADR-0018 rule as create: /products/<id>/edit hands its raw
+        # form value straight to this dynamic SET, so the translation has to
+        # happen HERE, at the column, not at one of the callers.
+        fields['unit_type'] = normalize_unit_type(bsn_units.normalize_unit(
+            (fields['unit_type'] or '').strip(), conn=conn))
     # set source BEFORE the UPDATE so the price-history trigger can stamp it;
     # reset to NULL AFTER so a later write on this connection defaults to NULL.
     _set_price_change_source(conn, source)

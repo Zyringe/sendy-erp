@@ -121,6 +121,14 @@ def unit_conversions_save():
         # persist to the unit_map table (#596) + normalise the whole ledger
         models.learn_acronyms_normalize(learned)
 
+    # The pending list renders ONE row per หน่วย (#602), so a posted
+    # `ratio_<pid>_<word>` can stand for several raw ledger spellings. Read
+    # the groups back from the server rather than trusting a hidden field:
+    # the ratio has to reach EVERY spelling behind the group, or the rows
+    # spelled the other way stay unsynced with nothing on screen saying so.
+    group_spellings = {(str(g['product_id']), g['bsn_unit']): g['spellings']
+                       for g in models.get_pending_unit_conversions()}
+
     items = []
     for key, val in request.form.items():
         # key format: "ratio_<product_id>_<bsn_unit>"
@@ -137,8 +145,9 @@ def unit_conversions_save():
                         # if Put named this acronym, store conv under the
                         # FULL unit (ledger was just normalised to match)
                         bsn_unit = acr_full.get((pid_s, bsn_unit), bsn_unit)
-                        items.append({'product_id': int(pid_s),
-                                      'bsn_unit': bsn_unit, 'ratio': ratio})
+                        for u in group_spellings.get((pid_s, bsn_unit), [bsn_unit]):
+                            items.append({'product_id': int(pid_s),
+                                          'bsn_unit': u, 'ratio': ratio})
                 except (ValueError, IndexError):
                     pass
     if items:
@@ -176,8 +185,16 @@ def unit_conversions_dismiss():
     product_id = request.form.get('product_id', type=int)
     bsn_unit   = request.form.get('bsn_unit', '').strip()
     if product_id and bsn_unit:
-        deleted = models.dismiss_pending_unit_conversion(
-            product_id, bsn_unit, actor=session.get('username'))
+        # Same grouping as the save route: the button posts the หน่วย word,
+        # which can cover more than one raw ledger spelling. Each spelling
+        # keeps its own all-or-nothing protected-row check (a group holding
+        # one billable line must not have its other spellings swept along
+        # silently), so this dismisses per spelling and reports the total.
+        spellings = {(str(g['product_id']), g['bsn_unit']): g['spellings']
+                     for g in models.get_pending_unit_conversions()
+                     }.get((str(product_id), bsn_unit), [bsn_unit])
+        deleted = sum(models.dismiss_pending_unit_conversion(
+            product_id, u, actor=session.get('username')) for u in spellings)
         if deleted:
             flash(f'ยกเลิก {deleted} แถวที่ยังไม่ sync ออกแล้ว (หน่วย "{bsn_unit}")', 'success')
         else:

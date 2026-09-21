@@ -412,14 +412,42 @@ def get_pending_unit_conversions(search=None):
         params += [f"%{search}%", f"%{search}%"]
     sql += " GROUP BY t.product_id, t.bsn_unit ORDER BY p.product_name"
     rows = conn.execute(sql, params).fetchall()
-    # Flag rows whose bsn_unit is still an UNKNOWN acronym (import already
-    # normalises known ones) so the UI can ask Put for the full unit name.
-    out = []
+    # ONE GROUP PER หน่วย (#602 / ADR 0018), not one per raw spelling: two
+    # spellings of the same unit on one product used to render as two rows,
+    # so naming or rationing one silently left the other pending. The group
+    # is keyed on the WORD and shown under it; `spellings` names every raw
+    # spelling behind it, because the ratio the operator types has to reach
+    # each of them (see `conversion_unit_key` — a conversion is matched
+    # against the ledger row's own spelling, character for character).
+    #
+    # The SQL above still filters on the RAW spelling on purpose: grouping
+    # first and filtering the word against `unit_type` would make a row
+    # whose word EQUALS the product's unit_type vanish from this page
+    # entirely, and it would then never get the conversion it is waiting
+    # for. Group after filtering, never before.
+    groups = {}
     for r in rows:
-        d = dict(r)
-        d['is_acronym'] = not bsn_units.is_known(d['bsn_unit'], conn=conn)
-        d['hazard'] = cross_unit_hazard(conn, d['product_id'], d['bsn_unit'])
-        out.append(d)
+        raw = r['bsn_unit']
+        word = bsn_units.normalize_unit(raw, conn=conn)
+        key = (r['product_id'], word)
+        g = groups.get(key)
+        if g is None:
+            g = dict(r, bsn_unit=word, row_count=0, spellings=[])
+            groups[key] = g
+        g['row_count'] += r['row_count']
+        if raw not in g['spellings']:
+            g['spellings'].append(raw)
+    out = []
+    for g in groups.values():
+        # An UNKNOWN spelling is what the UI asks Put to name. A group that
+        # contains one is flagged: the known twins in it are already
+        # translated, the unknown one is not.
+        g['is_acronym'] = any(not bsn_units.is_known(u, conn=conn)
+                              for u in g['spellings'])
+        g['hazard'] = next(
+            (h for h in (cross_unit_hazard(conn, g['product_id'], u)
+                         for u in g['spellings']) if h is not None), None)
+        out.append(g)
     conn.close()
     return out
 
@@ -451,11 +479,59 @@ def learn_acronyms_normalize(pairs: dict):
     conn.close()
 
 
+def conversion_unit_key(conn, raw, word, *, product_id=None, bsn_code=None):
+    """Which spelling a `unit_conversions` row must be keyed on.
+
+    ADR 0018 says Sendy stores the หน่วย word, and every writer here
+    translates before writing. There is ONE exception, and it is not a
+    preference: `_get_base_qty` matches `unit_conversions.bsn_unit` against
+    the ledger row's OWN `unit`, character for character. While a ledger row
+    still carries the raw spelling — today only `กร`, which #597
+    deliberately left for #599/#600 — a conversion stored under the word
+    would never be found for it, and the row would sit unsynced forever
+    without so much as a flash message.
+
+    So: the word, unless the ledger still holds `raw` for this product (or
+    for this BSN code, before the product exists), in which case the
+    conversion follows the ledger. #600 relabels those rows and #610 the
+    rest; after that this branch stops firing and every key is a word. This
+    is the same "old conversion rows stay while any ledger row still uses
+    them" rule #599 states for its own migration, applied at the edge.
+    """
+    if not raw or word == raw:
+        return word
+    if product_id is None and not bsn_code:
+        return word
+    where, params = [], [raw]
+    if product_id is not None:
+        where.append("product_id = ?")
+        params.append(product_id)
+    if bsn_code:
+        where.append("bsn_code = ?")
+        params.append(bsn_code)
+    cond = " AND ".join(where)
+    for table in ('sales_transactions', 'purchase_transactions'):
+        if conn.execute(
+            f"SELECT 1 FROM {table} WHERE unit = ? AND {cond} LIMIT 1",
+            params
+        ).fetchone():
+            return raw
+    return word
+
+
 def save_unit_conversions(items: list):
     conn = get_connection()
     saved = 0
     blocked = []
     for item in items:
+        # ADR 0018: what gets STORED is the หน่วย word, not whatever
+        # spelling the pending row happened to be posted under — the hazard
+        # check below runs on the same value, so it judges what is written.
+        item = dict(item, bsn_unit=conversion_unit_key(
+            conn,
+            (item['bsn_unit'] or '').strip(),
+            bsn_units.normalize_unit((item['bsn_unit'] or '').strip(), conn=conn),
+            product_id=item['product_id']))
         # alert_on_caller_conn: from iteration 2 this connection holds the write
         # lock taken by the INSERT below, and keeps it until the single commit
         # after the loop — a fresh connection could not file the alert (#389).
@@ -751,6 +827,13 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float):
     if not bsn_unit or not ratio or float(ratio) <= 0:
         return False
     conn = get_connection()
+    # ADR 0018 — same rule as save_unit_conversions above. /mapping/save
+    # posts this value from the page's JS with no translation step of its
+    # own, so the map is applied here, before the hazard check judges it.
+    bsn_unit = conversion_unit_key(
+        conn, bsn_unit.strip(),
+        bsn_units.normalize_unit(bsn_unit.strip(), conn=conn),
+        product_id=product_id)
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(ratio) != 1):
         conn.close()
