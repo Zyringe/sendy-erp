@@ -5,11 +5,13 @@ Why this exists (#595 · #598): the ADR-0018 spec says a unit's meaning comes
 from the Express book it came from and its spelling is Sendy's choice, kept
 in ONE database table (`unit_map`, read via `inventory_app/bsn_units.py`).
 That rule holds only if EVERY place that writes a unit column honours it.
-#596 built the map; #597 cleaned up the codes the importer already knows.
-This ticket is the checklist for the writers that still don't: #599 (กร/ถง/บล
-Express meaning), #601 (VAT-book book-awareness), #602 (product form /
-promotions / suggestions / price lookup), #610 (the DBF sales-order-lines
-writer, the credit-note importers, the supplier catalogue importer).
+#596 built the map; #597 cleaned up the codes the importer already knows;
+**#602 cleared its own nine entries** (product form, promotions, the two
+unit_conversions edge writers, both suggestion writers, and — transitively —
+the catalog-pricing importer). This file is the checklist for the writers
+that still don't: #599 (กร/ถง/บล Express meaning), #601 (VAT-book
+book-awareness), #610 (the DBF sales-order-lines writer, the credit-note
+importers, the supplier catalogue importer).
 #600 shipped as a one-off script, not a migration: its forward write is
 `through_map` (it translates each Express code itself, next to the write) and
 its undo is `exempt` (it restores the value audit_log recorded). #599 is NOT call-site-free
@@ -53,12 +55,12 @@ about ("Reading code file-by-file is what missed them"). It was built by:
      silently mis-declared.
   3. Tracing every real hit to its actual caller to decide `through_map`
      vs `pending` vs `exempt` — two sites (`save_unit_conversions`,
-     `upsert_unit_conversion`) have byte-identical SQL and neither calls
-     bsn_units itself; both are `pending:#602` because neither caller
-     provably pre-translates on EVERY path (review S1 found the ONE claim
-     of a proven caller guarantee here was itself wrong on a re-read of the
-     template — see `through_map_transitive`'s own section below for what
-     it would actually take to earn that status).
+     `upsert_unit_conversion`) have byte-identical SQL and neither used to
+     call bsn_units itself. Review S1 found the ONE claim of a proven
+     caller guarantee here was wrong on a re-read of the template, so both
+     went `pending:#602`; #602 then put the bsn_units call INSIDE each
+     function rather than trying to fix the caller, which is why they are
+     `through_map` today and not `through_map_transitive`.
 
 What this census CANNOT see (say so up front, per #598's own AC):
   - a SQL string built from variables the sweep does not track (e.g. a
@@ -76,6 +78,13 @@ What this census CANNOT see (say so up front, per #598's own AC):
     necessary but not sufficient — a mutation that keeps the call but
     writes a DIFFERENT, untranslated variable stays green unless the
     translated value flows through a simple, traceable local assignment.
+    The nine sites #602 cleared are NOT of that shape (the translated
+    value is an inline argument, a rebuilt dict entry, or an argument to
+    `conversion_unit_key`), so each one instead names, in its own reason
+    field, the BEHAVIOURAL test in `tests/test_602_units_through_map.py`
+    that asserts the stored row holds the word — which is what #595's
+    testing decisions ask for and is strictly stronger than an
+    identifier-reuse check.
     Two sites (`scripts/import_express.py::_import_sales`,
     `vat_book_builder.py::seed_products_from_stmas`) have that simple
     shape and are additionally checked by
@@ -128,6 +137,7 @@ import io
 import os
 import re
 import sqlite3
+import sys
 import tokenize
 
 import pytest
@@ -436,6 +446,21 @@ def _function_source(path, qualname):
 # 'through_map_transitive' (caller pre-translates; see the dedicated
 # positive-control test), 'pending:#NNN', or 'exempt'.
 
+# The shared half of the reason for every unit_conversions writer #602
+# touched — four entries say it, so it is written once. It is the ONE place
+# ADR 0018's "store the word" has a documented exception, and the exception
+# is load-bearing, not cosmetic.
+_KEY = (
+    "The spelling it stores is `conversion_unit_key(conn, raw, "
+    "bsn_units.normalize_unit(raw, conn=conn), ...)`: the หน่วย word, EXCEPT "
+    "while the ledger still carries the raw spelling for that product, in "
+    "which case the conversion follows the ledger. That exception is not a "
+    "preference — `_get_base_qty` matches unit_conversions.bsn_unit against "
+    "the ledger row's own `unit` character for character, so storing the "
+    "word for a row still spelled `กร` would leave it unsynced forever with "
+    "nothing on screen saying so. #600 relabels those rows and #610 the "
+    "rest; after that every key is a word. ")
+
 ALLOWED = {
     # ── through_map: the function's OWN source calls bsn_units ───────────
     # _import_weekly: the body of import_weekly, which since #590 only declares
@@ -554,88 +579,119 @@ ALLOWED = {
     # every row (acronym or not) always renders (unit_conversions.html:73,
     # 100). Put can fill in a ratio while leaving the full-name box blank,
     # and that row's raw acronym reaches save_unit_conversions untranslated.
-    # Moved to pending:#602 below, next to its structurally-identical
-    # sibling upsert_unit_conversion. The status stays a valid, testable
-    # value (test_every_through_map_transitive_entry_names_an_existing_
-    # control proves ANY future entry here must name a real control test,
-    # so a later ticket cannot "clear" a pending entry into this status
-    # without evidence) — it is simply unoccupied today.
+    # It went pending:#602 instead, and #602 then closed it by translating
+    # INSIDE save_unit_conversions rather than at that caller — see its
+    # entry below. The status itself is occupied today by ONE site,
+    # scripts/import_catalog_pricing.py::_execute_ops, where translating
+    # at the write is actively wrong (it would break the importer's own
+    # tier reconciliation) and the caller genuinely does it on every path.
+    # test_every_through_map_transitive_entry_names_an_existing_control
+    # proves every entry here names a real control test, so a later ticket
+    # cannot "clear" a pending entry into this status without evidence.
 
-    # ── pending:#602 (product form / promotions / suggestions / price
+    # ── cleared by #602 (product form / promotions / suggestions / price
     # lookup / the /unit-conversions naming flow) ─────────────────────────
     'models/products.py::create_product': {
-        'products.unit_type': ('pending:#602',
-            'Writes unit_type verbatim from the caller\'s dict with no '
-            'normalisation at all (not even the local strip-only '
-            'normalize_unit_type). No live caller today (create_structured '
-            'product is the canonical path both /products/new and '
-            'Smart-Suggest approve use) — kept honest as pending rather '
-            'than exempt in case it is ever revived.'),
+        'products.unit_type': ('through_map',
+            'Rebuilds its `data` dict with unit_type = normalize_unit_type('
+            'bsn_units.normalize_unit(raw.strip(), conn=conn)) before the '
+            'INSERT binds it by name (#602). Still no live caller today '
+            '(create_structured_product is the canonical path both '
+            '/products/new and Smart-Suggest approve use), but a revived '
+            'caller can no longer reintroduce a variant. Behaviour pinned '
+            'by test_602_units_through_map.py::'
+            'test_legacy_create_product_also_stores_the_word.'),
     },
     'models/products.py::create_structured_product': {
-        'products.unit_type': ('pending:#602',
-            'Calls normalize_unit_type(d.get("unit_type")) — strip, then '
-            'fall back to \'ตัว\' — never bsn_units. Both real create '
-            'entry points route through here (/products/new\'s hand form '
-            'and Smart-Suggest approval), so this is THE choke point #602 '
-            'should fix.'),
+        'products.unit_type': ('through_map',
+            'The INSERT binds normalize_unit_type(bsn_units.normalize_unit('
+            '(d.get("unit_type") or "").strip(), conn=conn)) — the map '
+            'first, on the STRIPPED spelling because the map is keyed on '
+            'the exact one, then the strip-and-default-to-ตัว rule. THE '
+            'choke point for both real create entry points '
+            '(/products/new\'s hand form and Smart-Suggest approval). '
+            'Behaviour pinned by test_602_units_through_map.py::'
+            'test_create_product_stores_the_word and its three siblings '
+            '(unknown word survives, blank still defaults to ตัว, a '
+            'padded variant still translates).'),
     },
     'models/products.py::update_product': {
-        'DYNAMIC-SET:products': ('pending:#602',
-            '_UPDATABLE_PRODUCT_COLUMNS includes unit_type (verified: '
-            'models/products.py, the tuple literally names it), and this '
-            'is the LIVE write path behind /products/<id>/edit '
-            '(blueprints/products.py::product_edit inlines its own raw '
-            '`f.get("unit_type", "ตัว").strip() or "ตัว"` and hands it '
-            'straight to this dynamic SET). No bsn_units call anywhere on '
-            'this path.'),
+        'DYNAMIC-SET:products': ('through_map',
+            '_UPDATABLE_PRODUCT_COLUMNS includes unit_type, and this is '
+            'the LIVE write path behind /products/<id>/edit. The '
+            'translation sits HERE, at the column — `if "unit_type" in '
+            'fields: fields["unit_type"] = normalize_unit_type('
+            'bsn_units.normalize_unit(...))` — rather than at the caller, '
+            'because product_edit still hands its raw '
+            '`f.get("unit_type", "ตัว").strip() or "ตัว"` straight to this '
+            'dynamic SET, and a future caller would too. Behaviour pinned '
+            'by test_602_units_through_map.py::'
+            'test_update_product_stores_the_word and, on the real route, '
+            'test_product_edit_route_stores_the_word.'),
     },
     'models/promotions.py::create_promotion': {
-        'promotions.bundle_unit': ('pending:#602',
-            'Writes data.get("bundle_unit") verbatim. Exported via '
-            'models/__init__.py but has NO live caller today (grepped: '
-            'only its own definition and the re-export) — kept pending, '
-            'not exempt, for the same reason as create_product above.'),
+        'promotions.bundle_unit': ('through_map',
+            'Builds its `full` dict with bundle_unit = '
+            'bsn_units.normalize_unit((data.get("bundle_unit") or "")'
+            '.strip(), conn=conn) or None, and that dict is what the '
+            'INSERT binds by name (#602). Still no live caller today, for '
+            'the same reason as create_product above. Behaviour pinned by '
+            'test_602_units_through_map.py::'
+            'test_create_promotion_stores_the_bundle_unit_word.'),
     },
     'models/promotions.py::replace_promotion': {
-        'promotions.bundle_unit': ('pending:#602',
-            'Writes data.get("bundle_unit") verbatim. This IS the live '
-            'path: blueprints/products.py\'s promotion-save route builds '
+        'promotions.bundle_unit': ('through_map',
+            'Same bsn_units.normalize_unit(...) in its own `full` dict as '
+            'create_promotion above, and this IS the live path: '
+            'blueprints/products.py\'s promotion-save route still builds '
             '`bundle_unit: _opt_str(f.get("bundle_unit"))` raw from the '
-            'form and calls this.'),
+            'form, so the translation belongs here rather than there. '
+            'Behaviour pinned by test_602_units_through_map.py::'
+            'test_replace_promotion_stores_the_bundle_unit_word, with '
+            'test_promotion_bundle_unit_unknown_word_survives as the '
+            'control that an unknown word is still stored as typed.'),
     },
     'models/bsn_sync.py::upsert_unit_conversion': {
-        'unit_conversions.bsn_unit': ('pending:#602',
-            'No bsn_units call in this function. Its one caller — '
-            'blueprints/bsn.py::mapping_save\'s \'map\' action — strips '
-            'the client-posted bsn_unit and passes it straight through '
-            'with no pre-translation step at all (its ONLY guarantee, if '
-            'any, is that the client value already originated from an '
-            'already-normalised sales_transactions.unit via '
-            'bsn_suggest.py — implicit, not enforced).'),
+        'unit_conversions.bsn_unit': ('through_map',
+            'Calls bsn_units.normalize_unit(bsn_unit.strip(), conn=conn) '
+            'at the top, BEFORE cross_unit_hazard, so the hazard check '
+            'judges the value that is actually written. ' + _KEY +
+            'This closes the gap review S1 named: its one caller '
+            '(blueprints/bsn.py::mapping_save\'s \'map\' action) still '
+            'passes the client-posted value straight through, so the '
+            'translation had to land here. Behaviour pinned by '
+            'test_602_units_through_map.py::'
+            'test_upsert_unit_conversion_stores_the_word, with '
+            'test_upsert_unit_conversion_unknown_code_survives as the '
+            'control.'),
     },
     'models/bsn_sync.py::save_unit_conversions': {
-        'unit_conversions.bsn_unit': ('pending:#602',
-            'No bsn_units call in this function. Its one caller — '
-            'blueprints/bsn.py::unit_conversions_save — DOES pre-translate '
-            'the acronym path (Pass 1 learns any full name Put typed, '
-            'Pass 2 substitutes it in), but review S1 found that guarantee '
-            'is PARTIAL: Pass 2 only swaps a value when Put ALSO filled '
-            'in that row\'s optional "หน่วยเต็ม" box '
-            '(unit_conversions.html:76) — the ratio box next to it '
-            '(:73/:100) can be submitted alone, on ANY row including an '
-            'unknown acronym, and Pass 2\'s `acr_full.get((pid, unit), '
-            'unit)` then falls back to the raw, un-substituted value. So '
-            'a raw acronym CAN reach this function with a filled ratio '
-            'and a blank full-name box — same structural gap as its '
-            'sibling upsert_unit_conversion above, not a proven '
-            'transitive guarantee.'),
+        'unit_conversions.bsn_unit': ('through_map',
+            'Rebuilds each item with bsn_units.normalize_unit((item['
+            '"bsn_unit"] or "").strip(), conn=conn) at the top of the '
+            'loop, before cross_unit_hazard sees it. ' + _KEY +
+            'This closes review S1\'s gap directly: its caller '
+            '(blueprints/bsn.py::unit_conversions_save) pre-translates '
+            'only the acronym sub-path — Pass 2 swaps a value only when '
+            'Put ALSO filled the optional "หน่วยเต็ม" box, while the '
+            'ratio box next to it can be submitted alone on any row — so '
+            'the guarantee had to move into this function. Behaviour '
+            'pinned by test_602_units_through_map.py::'
+            'test_save_unit_conversions_stores_the_word and '
+            'test_save_unit_conversions_keeps_the_spelling_the_ledger_'
+            'still_uses (which asserts the ledger row actually syncs).'),
     },
     'models/suggestions.py::approve_pending_suggestion': {
-        'unit_conversions.bsn_unit': ('pending:#602',
-            'Writes d.get("bsn_unit") (the suggestion\'s stored/edited '
-            'value) straight into a new unit_conversions row with no '
-            'bsn_units call on this path.'),
+        'unit_conversions.bsn_unit': ('through_map',
+            'Calls bsn_units.normalize_unit on the suggestion\'s stored '
+            'bsn_unit (and separately on suggested_unit_type, which feeds '
+            'the product-unit comparison) before the unit_conversions '
+            'INSERT. ' + _KEY + 'Keyed by BSN CODE rather than product id '
+            'here: the product was created seconds earlier in this same '
+            'transaction and its ledger rows are only linked afterwards, '
+            'by resolve_pending_mappings. Behaviour pinned by '
+            'test_602_units_through_map.py::'
+            'test_approve_pending_suggestion_stores_the_conversion_word.'),
         'product_code_mapping.bsn_unit': ('exempt',
             'Both the UPDATE (WHERE bsn_unit=\'\') and the fallback INSERT '
             '(bsn_unit column literal \'\') in this function always use '
@@ -643,35 +699,47 @@ ALLOWED = {
             'same shape as vat_book_builder\'s mapping insert above.'),
     },
     'models/suggestions.py::save_pending_suggestion': {
-        'pending_product_suggestions.bsn_unit': ('pending:#602',
-            'Writes data.get("bsn_unit") straight through with no '
-            'normalisation in this function (confirmed: it only '
-            'defaults missing extras to None, never translates). The '
-            'value is client-payload-sourced (blueprints/bsn.py::'
-            '_build_suggestion_payload reads item.get("bsn_unit") from '
-            'the mapping page\'s JS, which the operator can edit before '
-            'staging) — unlike the transitive-safe sites above, there is '
-            'no explicit re-translation step guaranteeing this is always '
-            'already-normalised, so it is pending, not through_map.'),
-        'pending_product_suggestions.suggested_unit_type': ('pending:#602',
-            'Same function, same client-payload provenance, same absence '
-            'of a translate step, as bsn_unit above.'),
+        'pending_product_suggestions.bsn_unit': ('through_map',
+            'Rebuilds `data` with bsn_unit through '
+            'bsn_units.normalize_unit + conversion_unit_key before the '
+            'INSERT binds it by name. The value is client-payload-sourced '
+            '(blueprints/bsn.py::_build_suggestion_payload reads '
+            'item.get("bsn_unit") from the mapping page\'s JS, which the '
+            'operator can edit before staging), which is exactly why the '
+            'translation is here and not at that caller. ' + _KEY +
+            'Keyed by BSN CODE, as in approve_pending_suggestion: no '
+            'product exists yet at staging time. Behaviour pinned by '
+            'test_602_units_through_map.py::'
+            'test_save_pending_suggestion_stores_words.'),
+        'pending_product_suggestions.suggested_unit_type': ('through_map',
+            'Same rebuild, same function: suggested_unit_type goes '
+            'through bsn_units.normalize_unit alone — it becomes the new '
+            'product\'s own unit_type, which is not a conversion key, so '
+            'the ledger-follows exception above does not apply to it. '
+            'Pinned by the same test.'),
     },
     'scripts/import_catalog_pricing.py::_execute_ops': {
-        'product_price_tiers.qty_label': ('pending:#602',
-            'Writes tier qty_label verbatim from a hand-curated catalog '
-            'CSV (normalize_base_price.py\'s sendy_unit_type column — a '
-            'person-typed spelling, not an Express code). NOT literally '
-            'named in #602\'s body (which lists product form / promotions '
-            '/ suggestions / price lookup / the /unit-conversions pending '
-            'list) — flagged in the PR body as a scope gap; #602 is the '
-            'closest fit because the fix is the same shape ("a variant '
-            'typed at data-entry becomes its word on save").'),
-        'promotions.bundle_unit': ('pending:#602',
-            'The SAME function also opens/reopens promotions from the '
-            'catalog CSV and writes row.get("bundle_unit", "").strip() '
-            'raw — same reasoning and same scope-gap flag as the tier '
-            'write above.'),
+        'product_price_tiers.qty_label': ('through_map_transitive',
+            'This function still writes `ql` verbatim, and that is '
+            'deliberate: its caller `_build_ops` translates EVERY '
+            'unit-carrying CSV column (`_translate_units`) BEFORE the row '
+            'is planned. It has to happen there, not here, because '
+            '`_reconcile_tiers` matches the CSV label against the labels '
+            'already stored and `_assert_invariants` re-reads by that '
+            'same label — translating at the write would make the '
+            'importer compare `1 หล` against a stored `1 โหล`, see a tier '
+            'it does not have, and INSERT a duplicate against '
+            'UNIQUE(product_id, qty_label). `_build_ops` is the ONLY '
+            'caller (verified by grep) and its translation is '
+            'unconditional, at the top of the per-row loop, with no '
+            'branch that skips it. Control: '
+            'test_catalog_pricing_build_ops_translates_before_execute_ops.'),
+        'promotions.bundle_unit': ('through_map_transitive',
+            'Same function, same caller, same unconditional '
+            '`_translate_units` call: the promo intent `_build_ops` hands '
+            'to this function already carries the หน่วย word for '
+            'bundle_unit. Same control test, which asserts BOTH columns '
+            'in one run.'),
     },
 
     # ── pending:#610 (the DBF sales-order-lines writer, the credit-note
@@ -843,6 +911,28 @@ ALLOWED = {
             'Same one-off script (#592). The %-format dynamic write '
             '("UPDATE %s SET synced_to_stock=0 WHERE product_id=?" % table) '
             'only ever sets synced_to_stock, never a unit column.'),
+    },
+    'scripts/2026_09_20_rebase_gross_603.py::_add_gross_row': {
+        'unit_conversions.bsn_unit': ('exempt',
+            'One-off, dated 2026-09-20 and ticketed #603 (the four '
+            'สันดาปsandpaper gross-to-piece rebases). Landed on main in '
+            'b9bcd60, AFTER #598 built this census and BEFORE it merged, '
+            'so it arrived undeclared and the census has been red on main '
+            'since — declared here as part of #602 rather than left '
+            'broken. Same shape as the 2026_09_19 one-offs below.'),
+    },
+    'scripts/2026_09_20_rebase_gross_603.py::_restore_kept_ratios': {
+        'unit_conversions.bsn_unit': ('exempt',
+            'Same one-off #603 rebase script: this helper re-inserts the '
+            'conversions the rebase deliberately kept, from values it '
+            'read out of the same DB moments earlier — never a new '
+            'spelling.'),
+    },
+    'scripts/2026_09_20_rebase_gross_603.py::main': {
+        'products.unit_type': ('exempt',
+            'Same one-off #603 rebase script: it rewrites the four '
+            'products\' own unit_type as part of the gross-to-piece '
+            'rebase, from literals in the script, already run.'),
     },
     'scripts/2026_09_19_gross_to_piece.py::rebase': {
         'products.unit_type': ('exempt', 'One-off, dated 2026-09-19 (the 1050/1320 gross-to-piece rebase), already run against prod.'),
@@ -1084,10 +1174,83 @@ def test_through_map_translated_value_reaches_a_write(site):
 # here, in the SAME edit, or the census fails outright.
 
 # (site, label) -> the control test function's name proving the caller
-# pre-translates on EVERY path. Empty today (zero valid claims) — kept as
-# its own dict, not folded into ALLOWED's tuple, so a future entry cannot
-# claim the status without registering here too.
-THROUGH_MAP_TRANSITIVE_CONTROLS = {}
+# pre-translates on EVERY path. Kept as its own dict, not folded into
+# ALLOWED's tuple, so an entry cannot claim the status without registering
+# here too.
+_ICP = 'scripts/import_catalog_pricing.py::_execute_ops'
+THROUGH_MAP_TRANSITIVE_CONTROLS = {
+    (_ICP, 'product_price_tiers.qty_label'):
+        'test_catalog_pricing_build_ops_translates_before_execute_ops',
+    (_ICP, 'promotions.bundle_unit'):
+        'test_catalog_pricing_build_ops_translates_before_execute_ops',
+}
+
+
+def test_catalog_pricing_build_ops_translates_before_execute_ops(empty_db):
+    """Control for the ONE through_map_transitive claim in this census.
+
+    `_execute_ops` writes `qty_label` and `bundle_unit` verbatim; the claim
+    is that its only caller, `_build_ops`, has already translated both.
+    Proven by BEHAVIOUR, not by reading: feed `_build_ops` a CSV row whose
+    tier label and bundle unit are Express codes and assert the plan it
+    hands to `_execute_ops` carries the หน่วย words.
+
+    Two things make this a real control rather than a shape check:
+      * the UNKNOWN spelling in the same row must survive untranslated —
+        otherwise a mutation that blanked or constant-ed the column would
+        satisfy the positive half;
+      * `_build_ops` is asserted to be the only caller of `_execute_ops`,
+        because a second, un-translating caller would make the transitive
+        claim false while this test stayed green.
+    """
+    import sqlite3 as _s
+    # scripts/ goes on sys.path LAST, never insert(0) — #489: a scripts/
+    # module sharing a name with an inventory_app one must not shadow it.
+    if SCRIPTS not in sys.path:
+        sys.path.append(SCRIPTS)
+    import import_catalog_pricing as icp
+
+    conn = _s.connect(empty_db)
+    conn.row_factory = _s.Row
+    try:
+        conn.executemany(
+            "INSERT INTO unit_map (book, spelling, word) VALUES (?, ?, ?)",
+            [('BSN5657', 'หล', 'โหล'), ('BSN5657', 'บล', 'แผง')])
+        pid = conn.execute(
+            "INSERT INTO products(product_name, units_per_carton, "
+            "  units_per_box, unit_type, hard_to_sell, cost_price, "
+            "  opening_cost, base_sell_price, low_stock_threshold, sku_code) "
+            "VALUES ('census control', 1, 1, 'ตัว', 0, 1, 1, 2, 10, "
+            "        'SK-CENSUS-CTRL')").lastrowid
+        conn.commit()
+        ops, _meta = icp._build_ops(conn, [{
+            'product_id': str(pid), 'base_sell_price': '',
+            'tier1_qty_label': '1 หล', 'tier1_price': '100', 'tier1_note': '',
+            'tier2_qty_label': '1 ห่วงพิเศษ', 'tier2_price': '5', 'tier2_note': '',
+            'promo_type': 'bundle', 'promo_value': '',
+            'bundle_buy': '10', 'bundle_free': '1', 'bundle_unit': 'บล',
+        }], '2026-09-21', None)
+    finally:
+        conn.close()
+
+    labels = [t[3] for t in ops['tiers']]
+    assert '1 โหล' in labels, labels
+    assert '1 ห่วงพิเศษ' in labels, labels   # CONTROL: unknown survives
+    assert [pr[1]['bundle_unit'] for pr in ops['promo_insert']] == ['แผง']
+
+    # and `_build_ops` really is the only caller of `_execute_ops`
+    src = open(os.path.join(SCRIPTS, 'import_catalog_pricing.py')).read()
+    callers = {n.name for n in ast.walk(ast.parse(src))
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and any(isinstance(c, ast.Call) and getattr(c.func, 'id', None) == '_execute_ops'
+                       for c in ast.walk(n))}
+    assert callers == {'run_import'}, callers
+    run_src = _function_source(
+        os.path.join(SCRIPTS, 'import_catalog_pricing.py'), 'run_import')
+    assert '_build_ops(' in _code_only(run_src), (
+        'run_import no longer builds its ops through _build_ops — the '
+        'transitive claim above rests on that being the only way an ops '
+        'dict reaches _execute_ops')
 
 
 def _missing_transitive_controls(allowed, control_names, existing):

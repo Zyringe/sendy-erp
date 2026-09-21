@@ -21,9 +21,20 @@ with `กก` / `หล` / `บล`, which ARE. #602's own acceptance criterion 
 `test_a_word_the_map_does_not_know_is_stored_as_typed` pins today's
 behaviour for it (stored as typed, never dropped).
 """
+import os
 import sqlite3
+import sys
 
 import pytest
+
+# `scripts/` is not on pytest.ini's pythonpath. APPEND it, never insert(0) —
+# #489: a scripts/ module sharing a name with an inventory_app one must not
+# shadow it. (Without this the catalog-pricing tests below pass only when
+# some earlier test happens to have put scripts/ on the path first.)
+_SCRIPTS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
+if _SCRIPTS not in sys.path:
+    sys.path.append(_SCRIPTS)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
