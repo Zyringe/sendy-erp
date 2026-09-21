@@ -51,6 +51,7 @@ import statistics
 from collections import defaultdict
 from datetime import date, timedelta
 
+import bsn_units
 import sales_filters
 from filters import thaidate
 from models import promotions as promo_models
@@ -95,23 +96,68 @@ _UNIT_REBASE_SOURCES = (
 # tests/test_554_population_split.py).
 _WRITEOFF_SUBQUERY = "SELECT doc_no FROM ar_writeoffs"
 
-# R1 unit normalization — only these three free-text forms collapse to the
-# canonical 'โหล'. Everything else (unit_type, 'แผง', 'ลัง', ...) passes
-# through unchanged; there is no general unit_map lookup here yet (YAGNI —
-# the brief names exactly these three forms; #595's "price lookup's
-# hand-coded alias list is replaced by the map" is a later ticket's work).
-_UNIT_ALIASES = {'โหล': 'โหล', '1 โหล': 'โหล', 'หล': 'โหล'}
+# R1 unit normalization — the ONE unit map (#602 / ADR 0018), replacing the
+# three hand-coded forms ('โหล' / '1 โหล' / 'หล') this module used to carry.
+# Both sides of every unit comparison below go through it, so a price asked
+# in any spelling finds the same tier, the same conversion and the same
+# last-paid bill as the หน่วย word — and so does a bill or a tier still
+# stored under a spelling the one-time clean-ups (#600, #610) have not
+# reached yet.
 
-# A tier's qty_label carries a leading count ('1 โหล', '1กิโล') that isn't
-# part of the unit identity. Stripped before comparing to a normalized ask
-# unit. Deliberately exact-match after stripping: '1 โหล (special)' and
-# '1 โหลคู่' must NOT collapse onto 'โหล' — they are different SKUs of tier
-# (a hand-set special price, and dozen-PAIRS respectively).
-_TIER_QTY_PREFIX_RE = re.compile(r'^\d+\s*')
+
+def _unit_word(conn, spelling):
+    """The หน่วย word for `spelling`, or `spelling` itself when the map does
+    not know it (a real unit somebody typed, just not one the map learnt)."""
+    if not spelling:
+        return spelling
+    return bsn_units.normalize_unit(spelling, conn=conn)
 
 
 def _strip_tier_qty(qty_label):
-    return _TIER_QTY_PREFIX_RE.sub('', qty_label or '').strip()
+    """A tier's unit part — its leading count ('1 ', '200 ') removed.
+
+    Deliberately exact after the split: '1 โหล (special)' and '1 โหลคู่' must
+    NOT collapse onto 'โหล' — they are different tiers (a hand-set special
+    price, and dozen-PAIRS). Shared with the catalog-pricing importer
+    through `bsn_units.split_tier_label` so the label this module MATCHES
+    and the label that importer WRITES can never drift apart.
+    """
+    return bsn_units.split_tier_label(qty_label)[1]
+
+
+def _tier_unit_word(conn, qty_label):
+    """`_strip_tier_qty` through the map — what a tier's unit MEANS."""
+    return _unit_word(conn, _strip_tier_qty(qty_label))
+
+
+def _conversion_ratio(conn, product_id, unit):
+    """This product's `unit_conversions` ratio for `unit`, or None.
+
+    EXACT spelling first, the map only as a fallback. That ordering is what
+    makes this change strictly additive on a money path: wherever a row for
+    the literal spelling exists, the answer is byte-for-byte what it was
+    before the map was consulted at all, and the map only resolves asks that
+    previously found nothing. It also keeps a ledger row spelled `หล`
+    reading its OWN `หล` ratio rather than a `โหล` twin's, for as long as
+    both exist (#600 merges them).
+
+    `ORDER BY id` on the fallback so a product carrying two spellings of one
+    หน่วย answers deterministically — the oldest row, not whatever the table
+    scan happens to hand back first.
+    """
+    row = conn.execute(
+        "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
+        (product_id, unit)
+    ).fetchone()
+    if row is not None:
+        return float(row['ratio'])
+    for r in conn.execute(
+        "SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id = ? ORDER BY id",
+        (product_id,)
+    ).fetchall():
+        if _unit_word(conn, r['bsn_unit']) == unit:
+            return float(r['ratio'])
+    return None
 
 
 def _real_sale_lines(alias):
@@ -208,6 +254,12 @@ def _find_matching_tier(conn, product_id, unit):
     for r in rows:
         if _strip_tier_qty(r['qty_label']) == unit:
             return r
+    # then through the map — a tier still labelled with a variant answers an
+    # ask in the word, and a tier already relabelled to the word answers an
+    # ask in the variant. Exact first, for the reason in `_conversion_ratio`.
+    for r in rows:
+        if _tier_unit_word(conn, r['qty_label']) == unit:
+            return r
     return None
 
 
@@ -223,10 +275,19 @@ def _first_tier(conn, product_id):
     ).fetchone()
 
 
-def _normalize_unit(unit, unit_type):
-    if unit is None:
-        return unit_type
-    return _UNIT_ALIASES.get(unit, unit)
+def _normalize_unit(conn, unit, unit_type):
+    """The หน่วย word this question is about: the caller's `unit` through
+    the map, or the product's own unit (also through the map) when none was
+    asked for.
+
+    An ASK may arrive carrying a tier's leading count — `'1 โหล'` is what a
+    human copies off a tier label, and it is one of the three forms the
+    hand-coded alias list used to collapse. The count is not part of the
+    หน่วย, so it is stripped here (and only here: a STORED spelling is
+    looked up as written, see `_conversion_ratio`).
+    """
+    raw = unit_type if unit is None else unit
+    return _unit_word(conn, bsn_units.split_tier_label(raw)[1] or raw)
 
 
 def _known_ratio_units(conn, product_id):
@@ -237,15 +298,21 @@ def _known_ratio_units(conn, product_id):
     message must list tier-only units too, e.g. a box tier with no
     unit_conversions row, so a human reading the error knows 'กล่อง' is a
     real, answerable ask even though its piece-equivalent isn't known)."""
-    units = [r['bsn_unit'] for r in conn.execute(
+    units = []
+    for r in conn.execute(
         "SELECT DISTINCT bsn_unit FROM unit_conversions WHERE product_id = ?",
         (product_id,)
-    ).fetchall()]
-    tier_units = [_strip_tier_qty(r['qty_label']) for r in conn.execute(
+    ).fetchall():
+        # named by their WORD: the message tells a human which asks resolve,
+        # and an ask in the variant resolves through the same map.
+        u = _unit_word(conn, r['bsn_unit'])
+        if u not in units:
+            units.append(u)
+    for r in conn.execute(
         "SELECT qty_label FROM product_price_tiers WHERE product_id = ?",
         (product_id,)
-    ).fetchall()]
-    for u in tier_units:
+    ).fetchall():
+        u = _tier_unit_word(conn, r['qty_label'])
         if u not in units:
             units.append(u)
     return units
@@ -293,15 +360,12 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     """
     tier = _find_matching_tier(conn, product_id, unit)
 
-    row = conn.execute(
-        "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
-        (product_id, unit)
-    ).fetchone()
-    if row is not None:
-        return float(row['ratio']), 'unit_conversions', tier
+    ratio = _conversion_ratio(conn, product_id, unit)
+    if ratio is not None:
+        return ratio, 'unit_conversions', tier
     if tier is not None and unit == 'โหล':
         return 12.0, 'tier-implied', tier
-    if unit == unit_type:
+    if unit == _unit_word(conn, unit_type):
         return 1.0, 'none', tier
     if tier is not None:
         return None, 'unknown', tier
@@ -326,13 +390,10 @@ def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
     step). Best-effort 1.0 when no row exists: this is an internal
     margin-gating computation, not a user-facing ask, so it degrades
     rather than raising."""
-    if not bundle_unit or bundle_unit == unit_type:
+    if not bundle_unit or _unit_word(conn, bundle_unit) == _unit_word(conn, unit_type):
         return 1.0
-    row = conn.execute(
-        "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
-        (product_id, bundle_unit)
-    ).fetchone()
-    return float(row['ratio']) if row is not None else 1.0
+    ratio = _conversion_ratio(conn, product_id, _unit_word(conn, bundle_unit))
+    return ratio if ratio is not None else 1.0
 
 
 def _bill_ratio(conn, product_id, unit_type, bill_unit, cache):
@@ -341,15 +402,16 @@ def _bill_ratio(conn, product_id, unit_type, bill_unit, cache):
     unit_conversions row — the caller must skip the row, never assume 1
     (R4: 'a bill whose unit has no ratio is skipped and counted in
     window.n_unratioed')."""
-    if not bill_unit or bill_unit == unit_type:
+    if not bill_unit or _unit_word(conn, bill_unit) == _unit_word(conn, unit_type):
         return 1.0
     if bill_unit in cache:
         return cache[bill_unit]
-    row = conn.execute(
-        "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
-        (product_id, bill_unit)
-    ).fetchone()
-    val = float(row['ratio']) if row is not None else None
+    # keyed on the bill's OWN spelling, and `_conversion_ratio` tries that
+    # spelling before the map — a bill still stored as `หล` keeps reading
+    # its own `หล` ratio while that row exists (#600 merges the twins).
+    val = _conversion_ratio(conn, product_id, bill_unit)
+    if val is None:
+        val = _conversion_ratio(conn, product_id, _unit_word(conn, bill_unit))
     cache[bill_unit] = val
     return val
 
@@ -374,10 +436,10 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
     if tier is not None:
         list_for_unit = round(float(tier['price']), 2)
         list_source = 'tier'
-    elif base == 0 and asked_unit == unit_type:
+    elif base == 0 and asked_unit == _unit_word(conn, unit_type):
         fallback = _first_tier(conn, product_id)
         if fallback is not None:
-            fb_unit = _strip_tier_qty(fallback['qty_label'])
+            fb_unit = _tier_unit_word(conn, fallback['qty_label'])
             ratio, ratio_source, _fb_tier = _resolve_unit(conn, product_id, fb_unit, unit_type, strict=False)
             answer_unit = fb_unit
             list_for_unit = round(float(fallback['price']), 2)
@@ -541,7 +603,7 @@ def _tier_price_events(conn, product_id, unit):
         (product_id,)
     ).fetchall():
         cf = json.loads(row['changed_fields']) if row['changed_fields'] else {}
-        if _strip_tier_qty(cf.get('qty_label')) != unit:
+        if _tier_unit_word(conn, cf.get('qty_label')) != unit:
             continue
         events.append({'at': row['created_at'], 'id': row['id'],
                         'action': row['action'], 'price': cf.get('price')})
@@ -778,8 +840,10 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     if prod is None:
         return None
     today = today or date.today().isoformat()
-    unit_type = prod['unit_type']
-    target_unit = unit or unit_type
+    # ADR 0018: compare หน่วย by WORD, so a bill spelled one way and an ask
+    # spelled another are the same unit here too.
+    unit_type = _unit_word(conn, prod['unit_type'])
+    target_unit = _unit_word(conn, unit) if unit else unit_type
     ratio, _source, _tier = _resolve_unit(conn, product_id, target_unit, unit_type, strict=False)
 
     rows = conn.execute(f"""
@@ -1030,12 +1094,14 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     if prod is None:
         raise ValueError(f"product_id {product_id} not found")
 
-    unit_type = prod['unit_type']
+    # ADR 0018: one word per หน่วย, everywhere this function compares or
+    # reports a unit — including `product.unit_type` in the answer.
+    unit_type = _unit_word(conn, prod['unit_type'])
     base = float(prod['base_sell_price'])
     cost = float(prod['cost_price'])
     own_brand = bool(prod['is_own_brand'])
 
-    asked_unit = _normalize_unit(unit, unit_type)
+    asked_unit = _normalize_unit(conn, unit, unit_type)
     list_info = _resolve_list(conn, product_id, unit_type, base, asked_unit)
     ratio = list_info['ratio']
     answer_unit = list_info['answer_unit']

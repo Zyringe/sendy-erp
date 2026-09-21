@@ -592,10 +592,13 @@ def test_price_lookup_resolves_a_conversion_stored_under_a_code(empty_db):
     assert out['unit']['ratio_source'] == 'unit_conversions'
 
 
-def test_price_lookup_prefers_an_exact_conversion_over_a_translated_twin(empty_db):
-    """Twin rows (`หล` 12 and `โหล` 6) exist on prod until #600 merges them.
-    The answer must be deterministic and must be the row the ask literally
-    names, never whichever the table hands back first."""
+def test_price_lookup_answers_twin_conversions_the_same_either_way(empty_db):
+    """Twin rows (`หล` 12 and `โหล` 6) exist until #600 merges them. Asking
+    in EITHER spelling must give the SAME answer — one หน่วย, one price —
+    and it must be the WORD row's ratio, deterministically, never whichever
+    row the table scan hands back first. (`หล` already resolved to the
+    `โหล` row before this change, through the hand-coded alias list; this
+    pins that it still does.)"""
     _seed_map(empty_db)
     pid = _seed_product(empty_db, name='สินค้าคู่แฝด', sku='SK-602-TWIN',
                         base=10.0, cost=5.0)
@@ -606,7 +609,7 @@ def test_price_lookup_prefers_an_exact_conversion_over_a_translated_twin(empty_d
     conn.close()
 
     assert _resolve(empty_db, product_id=pid, unit='โหล')['unit']['ratio'] == 6.0
-    assert _resolve(empty_db, product_id=pid, unit='หล')['unit']['ratio'] == 12.0
+    assert _resolve(empty_db, product_id=pid, unit='หล')['unit']['ratio'] == 6.0
 
 
 def test_price_lookup_last_paid_matches_a_bill_spelled_differently(empty_db):
@@ -617,9 +620,13 @@ def test_price_lookup_last_paid_matches_a_bill_spelled_differently(empty_db):
     conn = sqlite3.connect(empty_db)
     conn.execute("INSERT INTO customers (code, name) VALUES ('C602', 'ลูกค้าทดสอบ')")
     conn.execute(
-        "INSERT INTO sales_transactions (date_iso, doc_no, customer_code, bsn_code, "
-        "  unit, qty, net, vat_type, product_id) "
-        "VALUES (date('now','-30 days'), 'IV602', 'C602', 'X1', 'หล', 2, 180.0, 0, ?)",
+        # `customer` (the NAME) is load-bearing: price_evidence_filter's
+        # marketplace exclusion is `customer NOT LIKE 'หน้าร้าน%'`, and NULL
+        # NOT LIKE ... is NULL, so a row without it is silently dropped.
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, "
+        "  customer_code, bsn_code, unit, qty, net, vat_type, product_id) "
+        "VALUES (date('now','-30 days'), 'IV602-1', 'IV602', 'ลูกค้าทดสอบ', "
+        "        'C602', 'X1', 'หล', 2, 180.0, 0, ?)",
         (pid,))
     conn.commit()
     conn.close()
