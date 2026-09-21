@@ -857,6 +857,15 @@ ALLOWED = {
     'scripts/import_listing_mapping_csv.py::create_stub_product': {
         'products.unit_type': ('exempt', 'Own docstring: "One-shot import for listing_mapping_cleaned_20260427.csv."'),
     },
+    'scripts/2026_09_20_rebase_gross_603.py::_add_gross_row': {
+        'unit_conversions.bsn_unit': ('exempt', 'The #603 gross-to-piece rebase (PR #624), dated in its own filename and already run on prod for 1047/1048/1049/1052. The word it inserts is the module constant GROSS = กุรุส, which is the unit map\'s own word for BSN5657 กร; the script asserts that before touching 1187/1188 (scripts/2026_09_20_rebase_gross_603.py:182 calls bsn_units.translate). It refuses a product it has already rebased.'),
+    },
+    'scripts/2026_09_20_rebase_gross_603.py::_restore_kept_ratios': {
+        'unit_conversions.bsn_unit': ('exempt', 'Same #603 one-off. It writes unit_conversions.ratio only (a real โหล is 12 pieces, not the gross RATIO the engine sets); bsn_unit appears in the WHERE clause, never in a SET.'),
+    },
+    'scripts/2026_09_20_rebase_gross_603.py::main': {
+        'products.unit_type': ('exempt', 'Same #603 one-off. It names the product\'s CURRENT base by its true word (GROSS = กุรุส) inside the rebase transaction, so the engine re-denominates กุรุส to the piece unit Put ruled; the piece word itself comes from PLAN, which is Put\'s per-product ruling recorded on issue #603.'),
+    },
     'scripts/apply_platform_overview_mapping.py::create_stub_product': {
         'products.unit_type': ('exempt', 'Own docstring: "DEPRECATED: one-off from 2026-05-17. Kept for audit trail. Do not re-run."'),
     },
