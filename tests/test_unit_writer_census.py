@@ -912,28 +912,6 @@ ALLOWED = {
             '("UPDATE %s SET synced_to_stock=0 WHERE product_id=?" % table) '
             'only ever sets synced_to_stock, never a unit column.'),
     },
-    'scripts/2026_09_20_rebase_gross_603.py::_add_gross_row': {
-        'unit_conversions.bsn_unit': ('exempt',
-            'One-off, dated 2026-09-20 and ticketed #603 (the four '
-            'สันดาปsandpaper gross-to-piece rebases). Landed on main in '
-            'b9bcd60, AFTER #598 built this census and BEFORE it merged, '
-            'so it arrived undeclared and the census has been red on main '
-            'since — declared here as part of #602 rather than left '
-            'broken. Same shape as the 2026_09_19 one-offs below.'),
-    },
-    'scripts/2026_09_20_rebase_gross_603.py::_restore_kept_ratios': {
-        'unit_conversions.bsn_unit': ('exempt',
-            'Same one-off #603 rebase script: this helper re-inserts the '
-            'conversions the rebase deliberately kept, from values it '
-            'read out of the same DB moments earlier — never a new '
-            'spelling.'),
-    },
-    'scripts/2026_09_20_rebase_gross_603.py::main': {
-        'products.unit_type': ('exempt',
-            'Same one-off #603 rebase script: it rewrites the four '
-            'products\' own unit_type as part of the gross-to-piece '
-            'rebase, from literals in the script, already run.'),
-    },
     'scripts/2026_09_19_gross_to_piece.py::rebase': {
         'products.unit_type': ('exempt', 'One-off, dated 2026-09-19 (the 1050/1320 gross-to-piece rebase), already run against prod.'),
         'unit_conversions.bsn_unit': ('exempt', 'Same one-off gross-to-piece rebase script, dated 2026-09-19, already run.'),
@@ -1066,6 +1044,25 @@ def test_no_stale_declarations():
         'update or remove them:\n  '
         + '\n  '.join(f'{s}: declared {v}, found {sorted(found.get(s, ()))}'
                        for s, v in sorted(stale.items())))
+
+
+def test_allowed_has_no_duplicate_site_keys():
+    """ALLOWED is a dict LITERAL, so a site declared twice is not an error:
+    the later entry silently replaces the earlier one, and every other test
+    here then reads only the survivor. It happened on the first rebase of
+    #602 — #630 and #602 both declared the three #603 rebase-script sites,
+    git merged the two blocks without a conflict, and the whole census
+    stayed green. Read the literal's KEYS from source, where the duplicate
+    is still visible."""
+    src = open(os.path.abspath(__file__), encoding='utf-8').read()
+    keys = None
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, 'id', None) == 'ALLOWED' for t in node.targets):
+            keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
+    assert keys, 'ALLOWED literal not found — this check read nothing'
+    dups = sorted({k for k in keys if keys.count(k) > 1})
+    assert not dups, f'site declared more than once in ALLOWED: {dups}'
 
 
 @pytest.mark.parametrize('site', sorted(ALLOWED))
