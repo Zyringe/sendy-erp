@@ -131,14 +131,14 @@ def preview_import(entries: list, file_type: str) -> dict:
 
 
 def import_weekly(entries: list, file_type: str, filename: str,
-                  apply_removals: bool = True) -> dict:
+                  apply_removals: bool = True, book: str = None) -> dict:
     """An importer run (#590): every cost row it causes is recorded as
     `import`, with the file named in the reason. See _import_weekly."""
     with actor.acting_as(source='import', detail=f'import:{filename}'):
-        return _import_weekly(entries, file_type, filename, apply_removals)
+        return _import_weekly(entries, file_type, filename, apply_removals, book)
 
 
-def _import_weekly(entries, file_type, filename, apply_removals=True):
+def _import_weekly(entries, file_type, filename, apply_removals=True, book=None):
     """
     Insert sales or purchase entries; skip duplicates by doc_no.
 
@@ -148,8 +148,17 @@ def _import_weekly(entries, file_type, filename, apply_removals=True):
     FILTERED Express export yields partial invoices, and blindly reversing the
     filtered-out lines would mass-delete real stock. Detection always runs so we
     can report the count either way.
+
+    book: which Express book each entry's raw `unit` code is read against
+    (#601, ADR 0018) — None defaults to bsn_units.DEFAULT_BOOK (BSN5657),
+    today's behaviour for every caller that doesn't pass one.
+    import_router.commit_express_dbf passes this through from its own `book`
+    argument, which vat_book_builder sets to bsn_units.BOOK_XP5 — the VAT
+    book's ARTRN/APTRN/STCRD rows carry xp5's own unit codes, and xp5's ISTAB
+    disagrees with BSN5657 on `หอ` (หลอด, not ห่อ).
     Returns stats dict.
     """
+    book = book or bsn_units.DEFAULT_BOOK
     assert file_type in ('sales', 'purchase')
     table = 'sales_transactions' if file_type == 'sales' else 'purchase_transactions'
     party_col = 'customer' if file_type == 'sales' else 'supplier'
@@ -217,9 +226,12 @@ def _import_weekly(entries, file_type, filename, apply_removals=True):
         # multiple lines of one product in one document. Re-uploading an identical
         # line is a true no-op (counted as `unchanged`) → idempotent.
         for e in entries:
-            # Auto-normalise the BSN unit acronym → full Thai so it matches the
-            # (already-normalised) unit_conversions table → far fewer pending.
-            e['unit'] = bsn_units.normalize_unit(e.get('unit'), conn=conn)
+            # Auto-normalise the Express unit acronym → full Thai so it matches
+            # the (already-normalised) unit_conversions table → far fewer
+            # pending. #601: read against THIS import's book (BSN5657 for the
+            # main weekly/DBF import, xp5 for the VAT-book build) — the two
+            # books disagree on `หอ`.
+            e['unit'] = bsn_units.normalize_unit(e.get('unit'), book, conn=conn)
             doc_no   = e['doc_no']
             doc_base = doc_no.rsplit('-', 1)[0] if '-' in doc_no else doc_no
             line_seq = e.get('line_seq', 1)

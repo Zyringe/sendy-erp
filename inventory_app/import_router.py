@@ -297,7 +297,7 @@ DRIFT_SCAN_RESERVE_SECONDS = 12
 
 def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
                        snapshot_date=None, export_at=None, detect_drift=False,
-                       started_at=None):
+                       started_at=None, book=None):
     """Import all 8 Express DBF transactional types for one dataset
     directory into Sendy — the DBF branch parallel to the text-report path
     above (Phase 1 slices A+B — payments/credit-notes join sales/purchase
@@ -340,10 +340,20 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     dataset, and the shipped baseline describes BSN5657's documents. Silently
     scanning the other book would report its entire history as drift.
 
+    book: which Express book's unit list `entries[i]['unit']` (Express's raw
+    code) is read against (#601) — passed straight to models.import_weekly,
+    which is the one place a sales/purchase line's unit gets translated.
+    None defaults to bsn_units.DEFAULT_BOOK (BSN5657, today's behaviour for
+    every caller that doesn't pass one). vat_book_builder passes
+    bsn_units.BOOK_XP5: xp5's own ISTAB disagrees with BSN5657 on `หอ`
+    (หลอด, not ห่อ), so reading its lines against the wrong book stored every
+    VAT-book tube as ห่อ.
+
     Called by the web route (blueprints/bsn.py::express_dbf_upload).
     Returns a summary dict.
     """
     import datetime
+    import bsn_units
     import config
     import models
     import express_dbf_source as eds
@@ -358,6 +368,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     _probe = actor.install(_sqlite3.connect(db_path))
     require_actor_or_alert(_probe, 'import:express_dbf')    # closes it on refusal
     _probe.close()
+    book = book or bsn_units.DEFAULT_BOOK
     cutoff = (datetime.date.today() - datetime.timedelta(days=since_days)
               if since_days is not None else None)
     snapshot_date = snapshot_date or datetime.date.today().isoformat()
@@ -382,8 +393,8 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     credit_notes_ap_records = eds.build_credit_notes_ap_records(aptrn, stcrd, apmas, cutoff=cutoff)
 
     label = f"express_dbf:{os.path.basename(os.path.normpath(dataset_dir))}"
-    sales_stats = models.import_weekly(sales_entries, "sales", label)
-    purchase_stats = models.import_weekly(purchase_entries, "purchase", label)
+    sales_stats = models.import_weekly(sales_entries, "sales", label, book=book)
+    purchase_stats = models.import_weekly(purchase_entries, "purchase", label, book=book)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
     # The daily DBF read IS the authoritative complete allocation set: `cutoff`
     # filters RECEIPTS, never lines within one, so every receipt it includes

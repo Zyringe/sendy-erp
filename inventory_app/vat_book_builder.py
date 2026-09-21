@@ -78,7 +78,11 @@ def seed_products_from_stmas(conn, stmas_rows):
         if not code or code in code_to_pid:
             continue
         name = str(r.get('STKDES') or '').strip() or code
-        unit = bsn_units.normalize_unit(str(r.get('QUCOD') or '').strip(), conn=conn) or 'ตัว'
+        # #601: this is the VAT book — STMAS.QUCOD is an xp5 unit code, and
+        # xp5's own ISTAB disagrees with BSN5657 on `หอ` (หลอด, not ห่อ).
+        # Reading it against the default (BSN5657) book was the bug.
+        unit = bsn_units.normalize_unit(
+            str(r.get('QUCOD') or '').strip(), bsn_units.BOOK_XP5, conn=conn) or 'ตัว'
         cost = _stmas_cost(r)
         cur = conn.execute(
             "INSERT INTO products (product_name, unit_type, cost_price) VALUES (?, ?, ?)",
@@ -346,7 +350,7 @@ def _build(source_dir, snapshot_date=None, main_db_path=None):
         code_to_pid = seed_products_from_stmas(conn, stmas)
         per_type = import_router.commit_express_dbf(
             source_dir, db_path=db_path, since_days=None,
-            snapshot_date=snapshot_date)
+            snapshot_date=snapshot_date, book=bsn_units.BOOK_XP5)
         _require_snapshots_ok(per_type)
         overwrite_stock_from_stmas(conn, stmas, stloc, code_to_pid)
         isvat_n = dump_isvat(conn, isvat)
