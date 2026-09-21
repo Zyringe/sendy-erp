@@ -153,10 +153,15 @@ def test_init_db_from_empty_seeds_unit_map(tmp_path, monkeypatch):
             "SELECT COUNT(*) FROM unit_map WHERE book = 'BSN5657'"
         ).fetchone()[0]
         assert n == 44, f"expected the 44 real seed rows, found {n}"
-        word = conn.execute(
-            "SELECT word FROM unit_map WHERE book = 'BSN5657' AND spelling = 'กร'"
-        ).fetchone()
-        assert word == ('ตัว',), "a fresh build must carry migration 185's REAL data, not a placeholder"
+        # #599 (migration 190) gave these three Express's own meaning. A fresh
+        # build runs no migration, so it only carries them if data/schema.sql
+        # was regenerated after 190 — which is what this line pins.
+        words = dict(conn.execute(
+            "SELECT spelling, word FROM unit_map WHERE book = 'BSN5657' "
+            "AND spelling IN ('กร', 'ถง', 'บล')"
+        ))
+        assert words == {'กร': 'กุรุส', 'ถง': 'ถัง', 'บล': 'บล็อก'}, \
+            "a fresh build must carry the map's REAL data, as of the latest migration"
     finally:
         conn.close()
 
