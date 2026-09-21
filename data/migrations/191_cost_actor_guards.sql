@@ -1,4 +1,4 @@
--- 190 — every cost write carries who made it (#590, PR 2 of 2).
+-- 191 — every cost write carries who made it (#590, PR 2 of 2).
 --
 -- Design: docs/specs/2026-09-19-590-cost-audit-actor-design.md §A3, §A4, §A5
 -- (branch feat/590-cost-audit-actor, revision 2). PR 1 (#621) registered the
@@ -32,7 +32,7 @@
 -- sendy_actor"). That is the guard working, not a regression. Scripts use
 -- database.script_connection(__file__, operator=..., reason=...).
 --
--- ⚠ ROLLBACK ORDER: run 190_cost_actor_guards.rollback.sql BEFORE reverting any
+-- ⚠ ROLLBACK ORDER: run 191_cost_actor_guards.rollback.sql BEFORE reverting any
 -- code, and never revert PR 1 (#621) while these triggers exist — every cost
 -- write would then fail compilation. The rollback restores audit_products_update
 -- byte-identically (mig 159's text) and drops written_by.

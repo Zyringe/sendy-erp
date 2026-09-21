@@ -1,4 +1,4 @@
--- 190 rollback — run BEFORE reverting any code (see the forward file's header).
+-- 191 rollback — run BEFORE reverting any code (see the forward file's header).
 -- Restores audit_products_update byte-identically (mig 159's text) and drops
 -- written_by. Never revert PR 1 (#621) while the forward triggers exist.
 

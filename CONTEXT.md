@@ -694,7 +694,7 @@
   request (the logged-in user and the page) or from a declared scope (a script, a
   migration, the VAT-book build). A cost write with no actor is **refused**. _Avoid_:
   reading `audit_log.user` NULL on an older cost row as "the system did it": before
-  migration 190 no cost row carried a person at all.
+  migration 191 no cost row carried a person at all.
 
 - **`change_source`** — the mig-173 vocabulary, kept: **`manual`** (a person, through a
   page or a script they declared), **`import`** (an importer run: `/import-data`, the

@@ -1,6 +1,6 @@
 """Run a DATED one-off script's test in the world that script ran in (#590).
 
-Migration 190 refuses a cost write unless someone is declared, and a raw
+Migration 191 refuses a cost write unless someone is declared, and a raw
 `sqlite3.connect()` cannot even compile one (`no such function: sendy_actor`).
 That is the point, and every LIVE writer now declares: merge_product.py and
 remap_bsn_code.py were FIXED (script_connection), not exempted. But some test

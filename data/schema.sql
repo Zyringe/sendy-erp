@@ -486,7 +486,7 @@ CREATE TABLE express_ap_outstanding (
     created_at          TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE express_ar_outstanding (
+CREATE TABLE "express_ar_outstanding" (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id            INTEGER NOT NULL REFERENCES express_import_log(id) ON DELETE CASCADE,
     snapshot_date_iso   TEXT    NOT NULL,              -- 2026-04-30
@@ -503,7 +503,7 @@ CREATE TABLE express_ar_outstanding (
     outstanding_amount  REAL    NOT NULL DEFAULT 0,
     has_warning         INTEGER NOT NULL DEFAULT 0,    -- *** marker
     created_at          TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-, entity TEXT NOT NULL DEFAULT 'SD', due_date_iso TEXT, pay_terms    INTEGER, bill_no      TEXT);
+, entity TEXT NOT NULL DEFAULT 'SD', due_date_iso TEXT, pay_terms INTEGER, bill_no TEXT);
 
 CREATE TABLE express_bank_cheques (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -648,7 +648,7 @@ CREATE TABLE express_import_watermark (
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE express_invoice_refs (
+CREATE TABLE "express_invoice_refs" (
     doc_base   TEXT PRIMARY KEY,
     youref     TEXT,
     remark     TEXT,
@@ -1817,8 +1817,7 @@ CREATE INDEX idx_ar_followup_log_date       ON ar_followup_log(log_date DESC);
 CREATE INDEX idx_ar_followup_next_action    ON ar_followup_log(next_action_date)
     WHERE next_action_date IS NOT NULL;
 
-CREATE INDEX idx_ar_outstanding_due
-    ON express_ar_outstanding(entity, snapshot_date_iso, due_date_iso);
+CREATE INDEX idx_ar_outstanding_due  ON express_ar_outstanding(entity, snapshot_date_iso, due_date_iso);
 
 CREATE INDEX idx_ar_writeoffs_customer ON ar_writeoffs(customer_code);
 
@@ -1948,10 +1947,9 @@ CREATE INDEX idx_express_ap_supplier
 
 CREATE INDEX idx_express_ar_customer ON express_ar_outstanding(customer_id);
 
-CREATE INDEX idx_express_ar_doc ON express_ar_outstanding(doc_no);
+CREATE INDEX idx_express_ar_doc      ON express_ar_outstanding(doc_no);
 
-CREATE INDEX idx_express_ar_entity_snapshot
-    ON express_ar_outstanding(entity, snapshot_date_iso);
+CREATE INDEX idx_express_ar_entity_snapshot ON express_ar_outstanding(entity, snapshot_date_iso);
 
 CREATE INDEX idx_express_ar_snapshot ON express_ar_outstanding(snapshot_date_iso, customer_code);
 

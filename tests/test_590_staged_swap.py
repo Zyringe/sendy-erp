@@ -19,7 +19,7 @@ import db_backup
 
 ADMIN = dict(kind='ui', who='admin', source='manual', detail='admin.upload_db')
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-ROLLBACK_190 = os.path.join(REPO, 'data', 'migrations', '190_cost_actor_guards.rollback.sql')
+ROLLBACK_191 = os.path.join(REPO, 'data', 'migrations', '191_cost_actor_guards.rollback.sql')
 
 
 @pytest.fixture
@@ -37,19 +37,19 @@ def _copy(src, dst):
 
 
 def _pre_590_file(live, tmp_path):
-    """A file from before migration 190: rolled back AND un-stamped."""
+    """A file from before migration 191: rolled back AND un-stamped."""
     path = _copy(live, str(tmp_path / 'old.db'))
     c = actor.install(sqlite3.connect(path), actor.Actor(who='setup', kind='test'))
-    with open(ROLLBACK_190, encoding='utf-8') as f:
+    with open(ROLLBACK_191, encoding='utf-8') as f:
         c.executescript(f.read())
-    c.execute("DELETE FROM applied_migrations WHERE filename = '190_cost_actor_guards.sql'")
+    c.execute("DELETE FROM applied_migrations WHERE filename = '191_cost_actor_guards.sql'")
     c.commit()
     c.close()
     return path
 
 
 def _stamped_but_unguarded(live, tmp_path):
-    """applied_migrations says 190 ran, but a guard is missing — the file the
+    """applied_migrations says 191 ran, but a guard is missing — the file the
     behavioural probe exists for: its stamp alone would read as safe."""
     path = _copy(live, str(tmp_path / 'tampered.db'))
     c = sqlite3.connect(path)

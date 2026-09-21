@@ -42,7 +42,7 @@ class Actor:
 
 _FIELDS = ('who', 'source', 'reason')
 
-# The words every #590 refusal carries: migration 190's RAISE and ActorMissing.
+# The words every #590 refusal carries: migration 191's RAISE and ActorMissing.
 REFUSAL_MARK = 'ต้องระบุตัวผู้แก้ต้นทุน'
 
 # Each frame is (is_root, Actor). A tuple, so a reset token restores it exactly.

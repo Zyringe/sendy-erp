@@ -1,4 +1,4 @@
-"""#590 PR 2: migration 190 — every cost write carries who made it.
+"""#590 PR 2: migration 191 — every cost write carries who made it.
 
 Design §A3 (docs/specs/2026-09-19-590-cost-audit-actor-design.md, branch
 feat/590-cost-audit-actor): the guard table, verb by verb. Each test pairs the
@@ -19,8 +19,8 @@ import actor
 import database
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-MIG = os.path.join(REPO, 'data', 'migrations', '190_cost_actor_guards.sql')
-ROLLBACK = os.path.join(REPO, 'data', 'migrations', '190_cost_actor_guards.rollback.sql')
+MIG = os.path.join(REPO, 'data', 'migrations', '191_cost_actor_guards.sql')
+ROLLBACK = os.path.join(REPO, 'data', 'migrations', '191_cost_actor_guards.rollback.sql')
 REFUSAL = 'ต้องระบุตัวผู้แก้ต้นทุน'
 PUT = actor.Actor(source='manual', who='put', kind='script', detail='x.py: why')
 
@@ -198,14 +198,14 @@ def _objects(path):
         conn.close()
 
 
-def _pre_190_audit_trigger():
+def _pre_191_audit_trigger():
     """audit_products_update exactly as migration 159 last defined it."""
     with open(os.path.join(REPO, 'data', 'migrations', '159_product_parcel_weight.sql'),
               encoding='utf-8') as f:
         return re.search(r'CREATE TRIGGER audit_products_update.*?\nEND', f.read(), re.S).group(0)
 
 
-def test_the_rollback_restores_the_pre_190_schema_byte_for_byte(migrated):
+def test_the_rollback_restores_the_pre_191_schema_byte_for_byte(migrated):
     tmp_db = migrated
     after = _objects(tmp_db)
     conn = actor.install(sqlite3.connect(tmp_db), PUT)
@@ -214,7 +214,7 @@ def test_the_rollback_restores_the_pre_190_schema_byte_for_byte(migrated):
     conn.close()
     rolled = _objects(tmp_db)
     trig = [sql for t, n, _, sql in rolled if n == 'audit_products_update']
-    assert trig == [_pre_190_audit_trigger()]
+    assert trig == [_pre_191_audit_trigger()]
     names = {n for _, n, _, _ in rolled}
     assert not names & {'products_cost_needs_actor', 'audit_products_cost_update'}
     assert 'written_by' not in dict(((n, s) for _, n, _, s in rolled))['conversion_cost_log']
