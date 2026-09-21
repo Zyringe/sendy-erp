@@ -511,6 +511,48 @@ def test_precondition_new_is_base_aborts(pre190_db):
     _expect_abort(pre190_db, 'new_is_base')
 
 
+def test_the_postcondition_catches_a_conversion_that_was_not_written(pre190_db):
+    """Break-it-once, owned by the test rather than by a hand edit: run the
+    migration's own SQL with its INSERT removed and require the postcondition
+    to ABORT. Without this the postcondition is a clause nothing ever exercises
+    -- it cannot be reached from data alone, because the INSERT covers every
+    planned row by construction."""
+    conn = _open(pre190_db)
+    pid = _product(conn, 'mig190 postcondition', unit_type='ตัว')
+    _uc(conn, pid, 'กร', 1.0)
+    conn.commit()
+
+    sql = _read(MIG_190)
+    insert = ("INSERT INTO unit_conversions (product_id, bsn_unit, ratio)\n"
+              "SELECT product_id, new_word, COALESCE(code_ratio, old_ratio)\n"
+              "  FROM _mig190_plan\n"
+              " WHERE new_ratio IS NULL AND COALESCE(code_ratio, old_ratio) IS NOT NULL;")
+    assert insert in sql, 'the INSERT this test removes has been reworded'
+    broken = sql.replace(insert, '-- removed by the test')
+    assert insert not in broken, 'the mutation did not land'
+
+    with pytest.raises(sqlite3.Error) as exc:
+        conn.executescript(broken)
+    assert 'postcondition FAILED' in str(exc.value), str(exc.value)
+
+    # RAISE(ABORT) cancels its own STATEMENT and leaves the transaction open,
+    # so the caller is what makes the failure atomic. The migration RUNNER
+    # rolls back (proved by the precondition tests above, which read a FRESH
+    # connection); here the test is the caller, so it rolls back itself.
+    # NOT conn.executescript('ROLLBACK') -- executescript COMMITS first, which
+    # would keep the half-applied migration.
+    conn.execute('ROLLBACK')
+    assert _words(conn)['กร'] == 'ตัว'
+    assert _units(conn, pid) == {'กร': 1.0}
+    # CONTROL: the untouched SQL runs clean on the same DB, so the abort came
+    # from the missing INSERT and not from the fixture or the script itself.
+    conn.executescript(sql)
+    try:
+        assert _units(conn, pid) == {'กร': 1.0, 'กุรุส': 1.0}
+    finally:
+        conn.close()
+
+
 # ── rollback, re-runnability ────────────────────────────────────────────────
 
 def test_rollback_restores_the_map_and_removes_only_its_own_rows(pre190_db):
