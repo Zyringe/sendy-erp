@@ -492,6 +492,18 @@ ALLOWED = {
             'as the literal empty string (the non-split catch-all row) — '
             'never a real code.'),
     },
+    'scripts/2026_09_21_fix_rr6700253_unit_1658.py::fix': {
+        'DYNAMIC-TABLE': ('exempt',
+            'The only dynamic-table write is the replay\'s `UPDATE {table} SET '
+            'synced_to_stock=0` over sales_transactions/purchase_transactions; it '
+            'names no unit column.'),
+        'purchase_transactions.unit': ('through_map',
+            'One-off re-unit of RR6700253\'s 26in-saw line (#586 tail). Calls '
+            'bsn_units.normalize_unit(EXPRESS_UNIT, conn=conn) in fix() itself and '
+            'writes ITS result, so the Sendy spelling of Express\'s re-keyed `หล` '
+            'comes from unit_map, never from the script. The script refuses when '
+            'the map does not translate the code.'),
+    },
     'scripts/import_express.py::_import_sales': {
         'express_sales.unit': ('through_map',
             'Calls bsn_units.normalize_unit(r.unit, conn=conn) — comment '
@@ -988,6 +1000,7 @@ _TRANSLATE_ASSIGN_RE = re.compile(
     r'\b(\w+)\s*=\s*bsn_units\.(?:normalize_unit|translate)\s*\(')
 
 _DIRECT_ASSIGN_THROUGH_MAP_SITES = (
+    'scripts/2026_09_21_fix_rr6700253_unit_1658.py::fix',
     'scripts/import_express.py::_import_sales',
     'vat_book_builder.py::seed_products_from_stmas',
 )

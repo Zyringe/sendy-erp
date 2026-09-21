@@ -175,6 +175,11 @@ SCRIPT_EXEMPTIONS = {
     'phase_c_dedup_replay_20260530.py': 'one-off dedup pass of the phase-C replay',
     'load_purchase_history_20250529.py': 'one-off initial load of the purchase history',
     'backfill_nonstock_2026_08.py': 'one-off non-stock line backfill (mig 155 era)',
+    '2026_09_21_fix_rr6700253_unit_1658.py': ('one-off re-unit of one purchase line (#586 tail). '
+        'Unlike the entries above it does NOT pre-date the guard: its UPDATE sets '
+        'change_source=manual, actor, a reason and a fresh token, so mig 173 accepts it. It '
+        'stays a literal UPDATE rather than declared_update so tests/test_unit_writer_census.py '
+        'can see its unit write go through bsn_units.'),
     'reimport_2026_04_28/import_credit_notes.py': 'archived copy of the 04-28 reimport',
     'reimport_2026_04_28/run.py': 'archived driver for the 04-28 reimport',
 }
