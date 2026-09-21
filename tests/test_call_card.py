@@ -522,6 +522,13 @@ def _assemble_db():
             id INTEGER PRIMARY KEY, table_name TEXT, row_id INTEGER, action TEXT,
             changed_fields TEXT, created_at TEXT
         );
+        -- Every DB the app runs on has the unit map (mig 185), and
+        -- bsn_units raises on a MISSING one by design (a pre-185 upload).
+        -- Empty = every spelling unknown, the behaviour these tests assert.
+        CREATE TABLE unit_map (
+            id INTEGER PRIMARY KEY, book TEXT NOT NULL, spelling TEXT NOT NULL,
+            word TEXT NOT NULL, UNIQUE(book, spelling)
+        );
         CREATE TABLE ar_writeoffs (doc_no TEXT, excludes_revenue INTEGER);
         CREATE TABLE sales_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER, product_name_raw TEXT,
