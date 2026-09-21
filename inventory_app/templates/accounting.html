@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 {% block title %}สรุปกำไร-ขาดทุน – Sendy{% endblock %}
-{% block page_title %}สรุปกำไร-ขาดทุน (BSN){% endblock %}
+{% block page_title %}สรุปกำไร-ขาดทุน (งบกองรวม){% endblock %}
 
 {% block content %}
 
@@ -17,10 +17,9 @@
 </ul>
 
 {# ── Disclaimer ──────────────────────────────────────────────────────────── #}
-<div class="alert alert-secondary py-2 mb-3 small">
+<div class="alert alert-secondary py-2 mb-3 small" id="pooled-statement">
   <i class="bi bi-info-circle me-1"></i>
-  <strong>รายได้ / COGS = BSN</strong> &nbsp;·&nbsp;
-  <strong>ค่าใช้จ่าย = สมุดรับ-จ่าย (BSN+SD รวมกัน)</strong> &nbsp;·&nbsp;
+  <strong>งบกองรวม</strong> — รายได้และต้นทุนขายเป็นของ BSN เท่านั้น แต่ค่าใช้จ่ายมาจากสมุดรับ-จ่ายที่ BSN กับ SD ใช้ร่วมกันและแยกบริษัทไม่ได้ กำไรสุทธิจึงต่ำกว่าของ BSN จริง &nbsp;·&nbsp;
   รายได้ = <code>net</code> (ก่อน VAT, หลังหัก discount, หักยอดคืน SR แล้ว) &nbsp;·&nbsp;
   ต้นทุนขาย = qty (แปลงเป็นหน่วยสินค้าแล้ว) × ทุน ณ วันขาย ตั้งแต่ 3 มี.ค. 2569 &nbsp;·&nbsp;
   ไม่รวม VAT &nbsp;·&nbsp;
@@ -284,7 +283,7 @@
       </div>
       <div class="mt-2">
         <span class="badge bg-warning text-dark">ประมาณการ</span>
-        <span class="text-subtle small ms-2">ต้นทุนขายอ่านที่ทุน ณ วันขาย ตั้งแต่ 3 มี.ค. 2569 แปลงหน่วยบิลเป็นหน่วยสินค้าแล้ว · ไม่รวม VAT · รายได้/ต้นทุนขาย = BSN, ค่าใช้จ่าย = BSN+SD</span>
+        <span class="text-subtle small ms-2">ต้นทุนขายอ่านที่ทุน ณ วันขาย ตั้งแต่ 3 มี.ค. 2569 แปลงหน่วยบิลเป็นหน่วยสินค้าแล้ว · ไม่รวม VAT · งบกองรวม: รายได้/ต้นทุนขาย = BSN, ค่าใช้จ่าย = BSN+SD ปนกัน</span>
       </div>
       {% if s.cogs_basis == 'mixed' %}
       {# story 15: a chart across these months would compare two measurements,
