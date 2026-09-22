@@ -33,6 +33,13 @@ def _seed_schema(conn):
             bsn_code TEXT, date_iso TEXT, unit TEXT,
             unit_price REAL, qty REAL
         );
+        -- Every DB the app runs on has the unit map (mig 185), and
+        -- bsn_units raises on a MISSING one by design (a pre-185 upload).
+        -- Empty = every spelling unknown, the behaviour these tests assert.
+        CREATE TABLE unit_map (
+            id INTEGER PRIMARY KEY, book TEXT NOT NULL, spelling TEXT NOT NULL,
+            word TEXT NOT NULL, UNIQUE(book, spelling)
+        );
     """)
 
 

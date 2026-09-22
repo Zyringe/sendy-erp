@@ -39,6 +39,7 @@ A MISSING table raises; an EMPTY one reads as "every spelling unknown".
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 BOOK_BSN5657 = 'BSN5657'
@@ -169,3 +170,47 @@ def add_acronym(acronym: str, full: str, *, conn=None) -> None:
     function — a caller that knows a different book should call `learn()`
     directly."""
     learn(acronym, DEFAULT_BOOK, full, conn=conn)
+
+
+# ── tier labels ──────────────────────────────────────────────────────────
+#
+# A tier's `qty_label` is a COUNT plus a หน่วย ('1 โหล', '1กิโล', '200 ใบ').
+# Only the unit part is a spelling the map owns; the count is the tier's
+# identity and is kept byte-for-byte (#595: "tier labels — the leading count
+# is kept and only the unit part is translated", the same rule migration 186
+# applied to the stored rows via `ltrim(qty_label, '0123456789 ')`).
+#
+# Deliberately exact after splitting: '1 โหลคู่' and '1 โหล (special)' must
+# NOT collapse onto 'โหล' — dozen-PAIRS and a hand-set special price are
+# different tiers of different SKUs, and the map has no entry for either, so
+# they pass through untouched.
+_TIER_QTY_PREFIX_RE = re.compile(r'^\d+\s*')
+
+
+def split_tier_label(qty_label):
+    """`('1 ', 'โหล')` — the leading count (verbatim) and the unit part.
+
+    Does NOT translate; `normalize_tier_label` is the translating form.
+    Kept separate because price lookup needs the unit part on its own to
+    compare against the unit a caller asked about.
+    """
+    s = qty_label or ''
+    m = _TIER_QTY_PREFIX_RE.match(s)
+    prefix = m.group(0) if m else ''
+    return prefix, s[len(prefix):].strip()
+
+
+def normalize_tier_label(qty_label, book: str = DEFAULT_BOOK, *, conn=None):
+    """`qty_label` with its unit part translated and its count untouched.
+
+    Returns the ORIGINAL string (not a rebuilt one) whenever the unit part
+    does not translate, so an unknown label — or one whose spacing the split
+    would not reproduce — is never silently rewritten.
+    """
+    prefix, unit = split_tier_label(qty_label)
+    if not unit:
+        return qty_label
+    word = translate(unit, book, conn=conn)
+    if word is None or word == unit:
+        return qty_label
+    return prefix + word

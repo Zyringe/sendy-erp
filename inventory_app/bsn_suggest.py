@@ -16,6 +16,7 @@ import re
 import sys
 from collections import Counter
 
+import bsn_units
 import sales_filters
 
 # parse_sku_names.py is in sendy_erp/scripts/, sibling of inventory_app/
@@ -198,9 +199,15 @@ def _latest_bsn_unit(conn, bsn_code: str) -> dict:
 
 
 def _all_units_seen(conn, bsn_code: str) -> list:
-    """Distinct units this BSN code has ever billed in (purchase ∪ sales).
+    """Distinct หน่วย this BSN code has ever billed in (purchase ∪ sales).
     Returns list of {unit, last_date}, ordered by last_date DESC.
-    Length > 1 signals split-unit code (override candidate)."""
+    Length > 1 signals split-unit code (override candidate).
+
+    Counted BY WORD, not by raw spelling (#602 / ADR 0018): a product billed
+    in both `หล` and `โหล` is ONE unit, and counting the spellings made this
+    list length 2, which is the signal the mapping page reads as "this code
+    is sold in two different units" — a false split-unit flag.
+    """
     rows = conn.execute(
         """SELECT unit, MAX(date_iso) AS last_date FROM (
              SELECT unit, date_iso FROM purchase_transactions WHERE bsn_code = ?
@@ -212,7 +219,13 @@ def _all_units_seen(conn, bsn_code: str) -> list:
            ORDER BY last_date DESC""",
         (bsn_code, bsn_code),
     ).fetchall()
-    return [{'unit': r['unit'], 'last_date': r['last_date']} for r in rows]
+    merged = {}
+    for r in rows:
+        word = bsn_units.normalize_unit(r['unit'], conn=conn)
+        prev = merged.get(word)
+        if prev is None or r['last_date'] > prev['last_date']:
+            merged[word] = {'unit': word, 'last_date': r['last_date']}
+    return sorted(merged.values(), key=lambda u: u['last_date'], reverse=True)
 
 
 def _load_parser_context(conn) -> dict:

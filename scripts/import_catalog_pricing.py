@@ -40,7 +40,8 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "inventory_app"))
-from models import promotions as promo_models  # noqa: E402  (needs sys.path above)
+import bsn_units  # noqa: E402  (needs sys.path above)
+from models import promotions as promo_models  # noqa: E402
 
 
 class RunAbort(Exception):
@@ -419,6 +420,39 @@ def _reconcile_promos(conn, product_id, intents, batch_date):
 
 # ── Pass 1: build the full plan (reads only — no writes) ────────────────────
 
+# Column names in the catalog CSV that carry a หน่วย. `bundle_unit` is a bare
+# unit; the tier labels are a COUNT plus a unit ('1 โหล'), and only the unit
+# part of those is translated — the count is the tier's identity.
+_UNIT_COLUMNS = ("bundle_unit",)
+_TIER_LABEL_COLUMNS = ("tier1_qty_label", "tier2_qty_label")
+
+
+def _translate_units(conn, row: dict) -> dict:
+    """`row` with every unit-carrying column read through the unit map."""
+    out = dict(row)
+    for col in _UNIT_COLUMNS:
+        raw = (out.get(col) or "").strip()
+        if raw:
+            out[col] = bsn_units.normalize_unit(raw, conn=conn)
+    for col in _TIER_LABEL_COLUMNS:
+        raw = (out.get(col) or "").strip()
+        if raw:
+            out[col] = bsn_units.normalize_tier_label(raw, conn=conn)
+    extra = (out.get("extra_tiers_json") or "").strip()
+    if extra:
+        try:
+            parsed = json.loads(extra)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            for et in parsed:
+                if isinstance(et, dict) and et.get("qty_label"):
+                    et["qty_label"] = bsn_units.normalize_tier_label(
+                        str(et["qty_label"]).strip(), conn=conn)
+            out["extra_tiers_json"] = json.dumps(parsed, ensure_ascii=False)
+    return out
+
+
 def _build_ops(conn, rows_all, batch_date, limit):
     csv_pids = []
     skipped_non_int = []
@@ -465,6 +499,15 @@ def _build_ops(conn, rows_all, batch_date, limit):
 
     for r, pid in row_plans:
         current_base = bsp_lookup[pid]
+        # Every หน่วย the CSV carries becomes its word HERE, before the plan
+        # is built (#602 / ADR 0018). It has to happen before, not at the
+        # write: `_reconcile_tiers` matches the CSV's label against the
+        # tier labels already stored, and `_assert_invariants` re-reads by
+        # that same label — translating later would make the importer
+        # compare `1 หล` against a stored `1 โหล`, see a tier it does not
+        # have, and INSERT a duplicate against UNIQUE(product_id,
+        # qty_label). A spelling the map does not know is left as written.
+        r = _translate_units(conn, r)
         plan = plan_writes_for_row(r, current_base, batch_date)
 
         if plan["update_base"] is not None:

@@ -14,13 +14,14 @@ report's monkeypatch-retarget section.
 import json
 import sqlite3
 
+import bsn_units
 import sku_code_utils
 from database import get_connection
 
 from . import products as products_mod
 from .products import create_structured_product
 from .mapping import _EVIDENCE_SUBQUERY, resolve_pending_mappings
-from .bsn_sync import cross_unit_hazard
+from .bsn_sync import conversion_unit_key, cross_unit_hazard
 
 
 class DuplicateSkuError(Exception):
@@ -196,6 +197,21 @@ def save_pending_suggestion(data: dict, user_id: int, *, upsert: bool = True) ->
             status = 'pending'
     """ if upsert else ""
     conn = get_connection()
+    # ADR 0018 (#602): both unit columns this row carries are stored as the
+    # หน่วย word. `suggested_unit_type` becomes the new product's own unit,
+    # and `bsn_unit` becomes a unit_conversions key at approve time — so the
+    # latter follows the ledger while a raw spelling is still on it, exactly
+    # as the approve path does.
+    raw_bsn_unit = (data.get('bsn_unit') or '').strip()
+    data = dict(
+        data,
+        suggested_unit_type=bsn_units.normalize_unit(
+            (data.get('suggested_unit_type') or '').strip(), conn=conn) or None,
+        bsn_unit=conversion_unit_key(
+            conn, raw_bsn_unit,
+            bsn_units.normalize_unit(raw_bsn_unit, conn=conn),
+            bsn_code=data.get('bsn_code')) or None,
+    )
     try:
         cur = conn.execute(f"""
             INSERT INTO pending_product_suggestions
@@ -505,9 +521,20 @@ def approve_pending_suggestion(suggestion_id: int, edits: dict, reviewer_id: int
         # unit then matches it and is multiplied by the ratio (round 5). The
         # product side uses the same rule the row was actually stored with, so
         # the comparison cannot disagree with reality.
-        bsn_unit = (d.get('bsn_unit') or '').strip()
+        #
+        # ADR 0018 (#602): the stored spelling goes through the unit map, so
+        # a suggestion staged before the map knew a code still lands on the
+        # word. `conversion_unit_key` keys by BSN CODE here, not product id:
+        # this product was created seconds ago and its ledger rows are only
+        # linked below, by resolve_pending_mappings.
+        raw_unit = (d.get('bsn_unit') or '').strip()
+        bsn_unit = conversion_unit_key(
+            conn, raw_unit, bsn_units.normalize_unit(raw_unit, conn=conn),
+            bsn_code=d.get('bsn_code'))
         ratio = d.get('unit_conversion_ratio')
-        product_unit = products_mod.normalize_unit_type(d.get('suggested_unit_type'))
+        product_unit = products_mod.normalize_unit_type(
+            bsn_units.normalize_unit(
+                (d.get('suggested_unit_type') or '').strip(), conn=conn))
         if bsn_unit and ratio and float(ratio) > 0 and bsn_unit != product_unit:
             hz = cross_unit_hazard(conn, new_pid, bsn_unit)
             # Allowlist, not a blocklist: only a clean None or a ratio-1

@@ -2,6 +2,7 @@
 (behavior-preserving split, Phase 11) — see models/__init__.py's module
 docstring for the overall file-split rationale. No behavior changes.
 """
+import bsn_units
 from database import get_connection
 from datetime import date
 
@@ -140,6 +141,7 @@ def create_promotion(data: dict) -> int:
               bundle_unit, bundle_condition, bundle_tiers_json,
               gift_desc, gift_qty.
     """
+    conn = get_connection()
     full = {
         "product_id":        data["product_id"],
         "promo_name":        data["promo_name"],
@@ -149,13 +151,13 @@ def create_promotion(data: dict) -> int:
         "date_end":          data.get("date_end"),
         "bundle_buy":        data.get("bundle_buy"),
         "bundle_free":       data.get("bundle_free"),
-        "bundle_unit":       data.get("bundle_unit"),
+        "bundle_unit":       bsn_units.normalize_unit(
+            (data.get("bundle_unit") or "").strip(), conn=conn) or None,
         "bundle_condition":  data.get("bundle_condition"),
         "bundle_tiers_json": data.get("bundle_tiers_json"),
         "gift_desc":         data.get("gift_desc"),
         "gift_qty":          data.get("gift_qty"),
     }
-    conn = get_connection()
     try:
         cur = conn.execute("""
             INSERT INTO promotions (
@@ -366,7 +368,8 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
                 "date_end":          new_end,
                 "bundle_buy":        data.get("bundle_buy"),
                 "bundle_free":       data.get("bundle_free"),
-                "bundle_unit":       data.get("bundle_unit"),
+                "bundle_unit":       bsn_units.normalize_unit(
+                    (data.get("bundle_unit") or "").strip(), conn=conn) or None,
                 "bundle_condition":  data.get("bundle_condition"),
                 "bundle_tiers_json": data.get("bundle_tiers_json"),
                 "gift_desc":         data.get("gift_desc"),
