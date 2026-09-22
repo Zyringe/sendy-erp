@@ -30,7 +30,7 @@ import pytest
 import bsn_units
 import database
 from tests.test_migration_186_unit_code_cleanup import (
-    _entry, _ledger, _new_product, _purchase, _sale, _uc, _units)
+    _entry, _new_product, _purchase, _sale, _uc, _units)
 
 MIG = '193_unit_vocabulary.sql'
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -112,6 +112,15 @@ def pre193_db(tmp_db):
 
 def _migrate():
     database.init_db()
+
+
+def _ledger(conn, pid):
+    """(stock level, (ledger rows, ledger sum)) for one product; a product that
+    never posted has no stock_levels row, read as 0."""
+    stock = conn.execute("SELECT quantity FROM stock_levels WHERE product_id=?", (pid,)).fetchone()
+    return (stock[0] if stock else 0,
+            tuple(conn.execute("SELECT COUNT(*), SUM(quantity_change) FROM transactions "
+                               "WHERE product_id=?", (pid,)).fetchone()))
 
 
 def _conn(db):
@@ -207,6 +216,10 @@ def test_migration_map_equals_the_runtime_map_both_directions(pre193_db):
     _migrate()
     conn = _conn(pre193_db)
     try:
+        # A '*' row for a spelling a book also holds: translate() lets the book
+        # row win, so the migration must too (a flipped precedence is otherwise
+        # invisible on today's map, where no such pair disagrees).
+        conn.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('*', 'หล', 'โหลพิเศษ')")
         conn.executescript(_block(_read(MIG_193), 'mig193 map'))
         embedded = {(r['source'], r['spelling']): r['word']
                     for r in conn.execute("SELECT source, spelling, word FROM temp._mig193_map")}
@@ -218,6 +231,7 @@ def test_migration_map_equals_the_runtime_map_both_directions(pre193_db):
                 if word != spelling:
                     derived[(source, spelling)] = word
         assert derived[('BSN5657', 'ช5')] == 'ชุด5' and derived[('*', 'กิโล')] == 'กิโลกรัม'  # control
+        assert derived[('BSN5657', 'หล')] == 'โหล' and derived[('*', 'หล')] == 'โหลพิเศษ'
         assert sorted(set(embedded.items()) - set(derived.items())) == [], \
             'the migration translates a spelling to a word the importer never produces'
         assert sorted(set(derived.items()) - set(embedded.items())) == [], \
@@ -389,8 +403,9 @@ def test_reimport_of_raw_lines_is_unchanged_after_193(pre193_db, tag, file_type,
         assert res['unchanged'] == 1, res
         assert res['overwritten'] == 0 and res['imported'] == 0, res
         assert _ledger(conn, pid) == before
-        assert conn.execute(f"SELECT id, unit, synced_to_stock FROM {table} WHERE product_id=?",
-                            (pid,)).fetchall() == [(rows[0]['id'], word, synced)]
+        assert [tuple(r) for r in conn.execute(
+            f"SELECT id, unit, synced_to_stock FROM {table} WHERE product_id=?", (pid,))] == [
+            (rows[0]['id'], word, synced)]
     finally:
         conn.close()
 
@@ -525,6 +540,9 @@ def test_a_line_whose_resolution_would_change_keeps_its_spelling(pre193_db):
     moved = _new_product(conn, 'mig193 moved ช3', unit_type='อัน')
     _uc(conn, moved, 'ช3', 3.0)
     moved_line = _sale(conn, 'IV1932-2', moved, 'ช3', synced=0)
+    # the other way a word can newly resolve: it IS the product's own unit
+    own = _new_product(conn, 'mig193 held คร', unit_type='เครื่อง')
+    own_line = _sale(conn, 'IV1930-1', own, 'คร', synced=0)
     conn.commit()
     stock_before = dict(conn.execute("SELECT product_id, quantity FROM stock_levels"))
     conn.close()
@@ -535,12 +553,15 @@ def test_a_line_whose_resolution_would_change_keeps_its_spelling(pre193_db):
     try:
         unit = lambda i: conn.execute("SELECT unit FROM sales_transactions WHERE id=?", (i,)).fetchone()[0]
         assert unit(held_line) == 'ช3'
+        assert unit(own_line) == 'คร'
         assert unit(moved_line) == 'ชุด3'                                   # CONTROL
         assert _units(conn, moved) == {'ชุด3': 3.0}
         assert _units(conn, held) == {'ชุด3': 3.0}
-        assert conn.execute("SELECT table_name, row_id, unit, word FROM migration_193_skipped "
-                            "WHERE product_id IN (?, ?)", (held, moved)).fetchall() == [
-            ('sales_transactions', held_line, 'ช3', 'ชุด3')]
+        assert [tuple(r) for r in conn.execute(
+            "SELECT table_name, row_id, unit, word FROM migration_193_skipped "
+            "WHERE product_id IN (?, ?, ?) ORDER BY row_id", (held, moved, own))] == sorted([
+            ('sales_transactions', held_line, 'ช3', 'ชุด3'),
+            ('sales_transactions', own_line, 'คร', 'เครื่อง')], key=lambda r: r[1])
         assert dict(conn.execute("SELECT product_id, quantity FROM stock_levels")) == stock_before
     finally:
         conn.close()
@@ -571,7 +592,8 @@ def test_the_postcondition_aborts_when_a_line_would_resolve_differently(pre193_d
 
 def test_bill_lines_are_translated_through_the_declared_change_path(pre193_db):
     conn = _conn(pre193_db)
-    pid = _new_product(conn, 'mig193 declared product', unit_type='เครื่อง')
+    pid = _new_product(conn, 'mig193 declared product')
+    _uc(conn, pid, 'คร', 1.0)
     sid = _sale(conn, 'IV1934-1', pid, 'คร', price=100)
     pur = _purchase(conn, 'RR1934', pid, 'คร', price=80)
     conn.execute("UPDATE sales_transactions SET change_reason='old human reason here' WHERE id=?", (sid,))
@@ -617,10 +639,12 @@ def test_conversions_move_with_their_rows(pre193_db):
     try:
         assert _units(conn, twin) == {'ชุด5': 5.0}
         assert _units(conn, rename) == {'ชุด5': 5.0}
-        assert conn.execute("SELECT id, bsn_unit FROM unit_conversions WHERE product_id=?",
-                            (two,)).fetchall() == [(keep, 'กิโลกรัม')]
-        assert conn.execute("SELECT id, bsn_unit FROM migration_193_uc_deleted WHERE product_id=?",
-                            (two,)).fetchall() == [(gone, 'กก.')]
+        assert [tuple(r) for r in conn.execute(
+            "SELECT id, bsn_unit FROM unit_conversions WHERE product_id=?", (two,))] == [
+            (keep, 'กิโลกรัม')]
+        assert [tuple(r) for r in conn.execute(
+            "SELECT id, bsn_unit FROM migration_193_uc_deleted WHERE product_id=?", (two,))] == [
+            (gone, 'กก.')]
     finally:
         conn.close()
 
