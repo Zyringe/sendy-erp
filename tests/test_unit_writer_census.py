@@ -8,10 +8,13 @@ That rule holds only if EVERY place that writes a unit column honours it.
 #596 built the map; #597 cleaned up the codes the importer already knows;
 **#602 cleared its own nine entries** (product form, promotions, the two
 unit_conversions edge writers, both suggestion writers, and — transitively —
-the catalog-pricing importer). This file is the checklist for the writers
-that still don't: #599 (กร/ถง/บล Express meaning), #601 (VAT-book
+the catalog-pricing importer). This file was the checklist for the writers
+that still didn't: #599 (กร/ถง/บล Express meaning), #601 (VAT-book
 book-awareness), #610 (the DBF sales-order-lines writer, the credit-note
 importers, the supplier catalogue importer).
+  ✅ #610 cleared its four sites, the last `pending` entries in this file:
+  four `through_map` labels and one `through_map_transitive`
+  (express_registers.replace, with two registered controls).
 #600 shipped as a one-off script, not a migration: its forward write is
 `through_map` (it translates each Express code itself, next to the write) and
 its undo is `exempt` (it restores the value audit_log recorded). #599 is NOT call-site-free
