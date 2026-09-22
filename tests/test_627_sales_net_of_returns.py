@@ -65,14 +65,15 @@ def _product(conn, name):
     return cur.lastrowid
 
 
-def _line(conn, doc_base, seq, *, pid, customer, qty, net, date_iso, vat_type=1):
+def _line(conn, doc_base, seq, *, pid, customer, qty, net, date_iso, vat_type=1,
+          code=None):
     """One sales line in the real shape: doc_no '<base>-<seq>'. A credit note
     is stored exactly like the real ones: positive qty and net."""
     conn.execute(
         "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, "
-        " product_name_raw, customer, qty, unit, unit_price, vat_type, total, net) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (date_iso, f'{doc_base}-{seq}', doc_base, pid, f'สินค้า {pid}', customer,
+        " product_name_raw, customer, customer_code, qty, unit, unit_price, vat_type, "
+        " total, net) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (date_iso, f'{doc_base}-{seq}', doc_base, pid, f'สินค้า {pid}', customer, code,
          qty, 'ตัว', net / qty, vat_type, net, net))
 
 
@@ -233,12 +234,18 @@ def test_product_trade_page_keeps_the_giveaway(tmp_db_conn):
 # C3 bought E for 900 and A for 1,000, then returned 300 of A. Returns added,
 # A (1,300) ranks above E (900); net of returns, E (900) ranks above A (700).
 
+C3_CODE = 'T627C'
+
+
 def _seed_c3(conn):
     _reset(conn)
+    conn.execute("INSERT INTO customers (code, name) VALUES (?, ?) "
+                 "ON CONFLICT(code) DO UPDATE SET name = excluded.name", (C3_CODE, C3))
     a, e = _product(conn, 'สินค้าทดสอบ 627 A'), _product(conn, 'สินค้าทดสอบ 627 E')
-    _line(conn, 'IV62711', 1, pid=a, customer=C3, qty=10, net=1000, date_iso='2031-03-03')
-    _line(conn, 'IV62712', 1, pid=e, customer=C3, qty=9, net=900, date_iso='2031-03-04')
-    _line(conn, 'SR62713', 1, pid=a, customer=C3, qty=3, net=300, date_iso='2031-03-12')
+    for doc, pid, qty, net, day in (('IV62711', a, 10, 1000, '03'), ('IV62712', e, 9, 900, '04'),
+                                    ('SR62713', a, 3, 300, '12')):
+        _line(conn, doc, 1, pid=pid, customer=C3, qty=qty, net=net,
+              date_iso=f'2031-03-{day}', code=C3_CODE)
     conn.commit()
     return a, e
 
@@ -260,6 +267,19 @@ def test_call_card_top_product_name_is_net_of_returns(tmp_db_conn):
     assert len(top) == 2
     assert top[0]['product_id'] == e, 'แบรนด์เด่น reads top_products[0]'
     assert top[1]['total_net'] == pytest.approx(700.0)
+
+
+def test_customer_page_pieces_are_net_of_returns(tmp_db_conn):
+    """The customer page's ยอดซื้อรวม has been net of returns since #494; its
+    จำนวนชิ้น must follow the same rule, or one page disagrees with itself
+    (team lead's ruling on #627). 10 + 9 − 3 = 16, never 22."""
+    _seed_c3(tmp_db_conn)
+    import models
+    for summary in (models.get_customer_summary(C3)['summary'],
+                    models.get_customer_summary_by_code(C3_CODE)['summary']):
+        assert summary['doc_count'] == 3                 # CONTROL: the credit note is there
+        assert summary['total_net'] == pytest.approx(1000 + 900 - 300)
+        assert summary['total_qty'] == pytest.approx(10 + 9 - 3)
 
 
 # ── the rendered pages say they are net of returns ───────────────────────────
