@@ -382,7 +382,10 @@ def mapping_save():
                 except (TypeError, ValueError):
                     r = 0
                 if r > 0:
-                    models.upsert_unit_conversion(pid, bsn_unit, r)
+                    # bsn_code too: on a first map the code's ledger rows are
+                    # not linked to `pid` yet (review of #631, should-fix 2)
+                    models.upsert_unit_conversion(pid, bsn_unit, r,
+                                                  bsn_code=bsn_code)
         elif action == 'stage':
             # Smart-suggest flow: stage new SKU for manager/admin review
             payload = _build_suggestion_payload(bsn_code, item)

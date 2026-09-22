@@ -453,7 +453,8 @@ def _function_source(path, qualname):
 _KEY = (
     "The spelling it stores is `conversion_unit_key(conn, raw, "
     "bsn_units.normalize_unit(raw, conn=conn), ...)`: the หน่วย word, EXCEPT "
-    "while the ledger still carries the raw spelling for that product, in "
+    "while the ledger still carries the raw spelling for that product OR "
+    "its BSN code (a first map links the code's rows only afterwards), in "
     "which case the conversion follows the ledger. That exception is not a "
     "preference — `_get_base_qty` matches unit_conversions.bsn_unit against "
     "the ledger row's own `unit` character for character, so storing the "
@@ -659,7 +660,10 @@ ALLOWED = {
             'This closes the gap review S1 named: its one caller '
             '(blueprints/bsn.py::mapping_save\'s \'map\' action) still '
             'passes the client-posted value straight through, so the '
-            'translation had to land here. Behaviour pinned by '
+            'translation had to land here; it also passes its bsn_code, '
+            'because on a FIRST map the code\'s rows are not linked to the '
+            'product yet (review of #631). Behaviour pinned by '
+            'test_first_time_map_keeps_the_spelling_the_codes_rows_still_use, '
             'test_602_units_through_map.py::'
             'test_upsert_unit_conversion_stores_the_word, with '
             'test_upsert_unit_conversion_unknown_code_survives as the '

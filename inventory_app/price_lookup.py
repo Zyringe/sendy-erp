@@ -130,6 +130,39 @@ def _tier_unit_word(conn, qty_label):
     return _unit_word(conn, _strip_tier_qty(qty_label))
 
 
+def _count_of(label):
+    """The leading count of a tier label or an ask as an int ('2 โหล' -> 2,
+    '1โหล' -> 1), or None when there is none ('โหล')."""
+    prefix = bsn_units.split_tier_label(label)[0].strip()
+    return int(prefix) if prefix else None
+
+
+def _is_counted(unit):
+    """True for an ask carrying a count OTHER than 1 — a QUANTITY of the unit,
+    not a spelling of it (review of #631, blocker 1). `_normalize_unit` keeps
+    such an ask whole, and only a tier stored with that same count answers
+    it (`_tier_key`)."""
+    count = _count_of(unit)
+    return count is not None and count != 1
+
+
+def _tier_key(conn, label):
+    """(count, หน่วย word) — how a counted ask is matched to a tier label, so
+    '2 โหล', '2โหล' and '2 หล' are one key and '1 โหล' is a different one."""
+    return _count_of(label), _tier_unit_word(conn, label)
+
+
+def _label_answers(conn, qty_label, unit):
+    """Does the tier labelled `qty_label` answer an ask for `unit`?
+
+    A counted ask (see `_is_counted`) needs the SAME count and word. Any
+    other ask compares the tier's unit part only, which is the long-standing
+    rule — a bare 'ใบ' ask has always been answered by a '200 ใบ' tier."""
+    if _is_counted(unit):
+        return _tier_key(conn, qty_label) == _tier_key(conn, unit)
+    return _tier_unit_word(conn, qty_label) == unit
+
+
 def _conversion_ratio(conn, product_id, unit):
     """This product's `unit_conversions` ratio for `unit`, or None.
 
@@ -251,6 +284,13 @@ def _find_matching_tier(conn, product_id, unit):
         "SELECT id, qty_label, price FROM product_price_tiers WHERE product_id = ?",
         (product_id,)
     ).fetchall()
+    if _is_counted(unit):
+        # '2 โหล' is two dozen, not a dozen: only a tier stored with that same
+        # count answers it. Nothing below may match it by its unit part.
+        for r in rows:
+            if _label_answers(conn, r['qty_label'], unit):
+                return r
+        return None
     for r in rows:
         if _strip_tier_qty(r['qty_label']) == unit:
             return r
@@ -280,13 +320,20 @@ def _normalize_unit(conn, unit, unit_type):
     the map, or the product's own unit (also through the map) when none was
     asked for.
 
-    An ASK may arrive carrying a tier's leading count — `'1 โหล'` is what a
-    human copies off a tier label, and it is one of the three forms the
-    hand-coded alias list used to collapse. The count is not part of the
-    หน่วย, so it is stripped here (and only here: a STORED spelling is
-    looked up as written, see `_conversion_ratio`).
+    An ASK may arrive carrying a tier's leading count. A count of exactly
+    ONE is a spelling of the unit — `'1 โหล'` is what a human copies off a
+    tier label, and it is one of the three forms the hand-coded alias list
+    used to collapse — so it is stripped. ANY OTHER count is a quantity
+    (review of #631, blocker 1): stripping it made `'2 โหล'` at qty 1 quote
+    one dozen, and the quote CLI passes a line's unit verbatim. Such an ask is
+    kept whole, with only its unit part translated, and `_find_matching_tier`
+    answers it from a tier stored with that same count or not at all.
+    (A STORED spelling is always looked up as written, see
+    `_conversion_ratio`.)
     """
     raw = unit_type if unit is None else unit
+    if _is_counted(raw):
+        return bsn_units.normalize_tier_label(raw.strip(), conn=conn)
     return _unit_word(conn, bsn_units.split_tier_label(raw)[1] or raw)
 
 
@@ -603,7 +650,7 @@ def _tier_price_events(conn, product_id, unit):
         (product_id,)
     ).fetchall():
         cf = json.loads(row['changed_fields']) if row['changed_fields'] else {}
-        if _tier_unit_word(conn, cf.get('qty_label')) != unit:
+        if not _label_answers(conn, cf.get('qty_label'), unit):
             continue
         events.append({'at': row['created_at'], 'id': row['id'],
                         'action': row['action'], 'price': cf.get('price')})
@@ -857,7 +904,8 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     cache = {}
     for row in rows:
         if ratio is None:
-            if row['unit'] != target_unit:
+            # by WORD: a bill spelled `บล` is evidence for an ask in `แผง`
+            if _unit_word(conn, row['unit']) != target_unit:
                 continue
             cash_val = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
             return {
@@ -1143,7 +1191,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     comparable = []  # (cash_per_piece, row) — used for R6 promo evidence
     for row in rows:
         if ratio is None:
-            if row['unit'] != answer_unit:
+            if _unit_word(conn, row['unit']) != answer_unit:
                 n_unratioed += 1
                 continue
             cash_asked = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)

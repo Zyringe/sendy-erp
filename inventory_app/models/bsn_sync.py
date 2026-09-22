@@ -491,9 +491,10 @@ def conversion_unit_key(conn, raw, word, *, product_id=None, bsn_code=None):
     would never be found for it, and the row would sit unsynced forever
     without so much as a flash message.
 
-    So: the word, unless the ledger still holds `raw` for this product (or
-    for this BSN code, before the product exists), in which case the
-    conversion follows the ledger. #600 relabels those rows and #610 the
+    So: the word, unless the ledger still holds `raw` for this product OR
+    for this BSN code (a first map, or a product created seconds ago, whose
+    rows are not linked to it yet), in which case the conversion follows
+    the ledger. #600 relabels those rows and #610 the
     rest; after that this branch stops firing and every key is a word. This
     is the same "old conversion rows stay while any ledger row still uses
     them" rule #599 states for its own migration, applied at the edge.
@@ -509,7 +510,10 @@ def conversion_unit_key(conn, raw, word, *, product_id=None, bsn_code=None):
     if bsn_code:
         where.append("bsn_code = ?")
         params.append(bsn_code)
-    cond = " AND ".join(where)
+    # OR, not AND: on a FIRST map the code's ledger rows do not carry the
+    # product id yet (they are linked afterwards), so "this product AND this
+    # code" would match nothing and store the word the rows cannot use.
+    cond = "(" + " OR ".join(where) + ")"
     for table in ('sales_transactions', 'purchase_transactions'):
         if conn.execute(
             f"SELECT 1 FROM {table} WHERE unit = ? AND {cond} LIMIT 1",
@@ -821,7 +825,8 @@ def get_all_unit_conversions(search=None, page=1, per_page=50):
     return rows, total
 
 
-def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float):
+def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float,
+                           bsn_code: str = None):
     """Set unit_conversion ratio for a (product, bsn_unit) pair.
     UNIQUE constraint on (product_id, bsn_unit) ensures upsert semantics."""
     if not bsn_unit or not ratio or float(ratio) <= 0:
@@ -833,7 +838,7 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float):
     bsn_unit = conversion_unit_key(
         conn, bsn_unit.strip(),
         bsn_units.normalize_unit(bsn_unit.strip(), conn=conn),
-        product_id=product_id)
+        product_id=product_id, bsn_code=bsn_code)
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(ratio) != 1):
         conn.close()
