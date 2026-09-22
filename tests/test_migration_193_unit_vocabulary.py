@@ -674,6 +674,52 @@ def test_conversions_move_with_their_rows(pre193_db):
         conn.close()
 
 
+def test_gross_bucket_and_block_conversions_survive_193_unchanged(pre193_db):
+    """กร/ถง/บล conversion keys are left alone (lead's ruling, 2026-09-22).
+    After #600 no bill line reads them and each agrees with its กุรุส/ถัง/บล็อก
+    twin, so they are harmless; #603's hasp plan pins 1187/1188's to
+    {'กร': 1.0, 'ตัว': 1.0}, and merging them would make it refuse. Their
+    clean-up is a follow-up after that rebase. CONTROL in the same run: a ช5
+    twin (193's own vocabulary) still merges."""
+    conn = _conn(pre193_db)
+    kept = []
+    for key, word, ratio in (('กร', 'กุรุส', 1.0), ('ถง', 'ถัง', 18.0), ('บล', 'บล็อก', 3.0)):
+        twin = _new_product(conn, f'mig193 kept twin {key}')
+        _uc(conn, twin, key, ratio)
+        _uc(conn, twin, word, ratio)
+        alone = _new_product(conn, f'mig193 kept alone {key}')
+        _uc(conn, alone, key, ratio * 2)
+        kept += [twin, alone]
+    disagree = _new_product(conn, 'mig193 kept disagreeing กร')   # would abort as twin_ratio
+    _uc(conn, disagree, 'กร', 144.0)
+    _uc(conn, disagree, 'กุรุส', 1.0)
+    kept.append(disagree)
+    ctl = _new_product(conn, 'mig193 merged ช5 twin')
+    _uc(conn, ctl, 'ช5', 5.0)
+    _uc(conn, ctl, 'ชุด5', 5.0)
+    conn.commit()
+    q = ("SELECT id, product_id, bsn_unit, ratio, created_at FROM unit_conversions "
+         "WHERE product_id IN (%s) ORDER BY id" % ','.join('?' * len(kept)))
+    before = [tuple(r) for r in conn.execute(q, kept)]
+    assert len(before) == 11
+    conn.close()
+
+    _migrate()
+
+    conn = _conn(pre193_db)
+    try:
+        assert [tuple(r) for r in conn.execute(q, kept)] == before
+        ids = [r[0] for r in before]
+        marks = ','.join('?' * len(ids))
+        assert conn.execute(f"SELECT COUNT(*) FROM migration_193_uc_deleted WHERE id IN ({marks})",
+                            ids).fetchone()[0] == 0
+        assert conn.execute(f"SELECT COUNT(*) FROM migration_193_snapshot WHERE table_name = "
+                            f"'unit_conversions' AND row_id IN ({marks})", ids).fetchone()[0] == 0
+        assert _units(conn, ctl) == {'ชุด5': 5.0}                          # CONTROL
+    finally:
+        conn.close()
+
+
 def test_product_units_and_tier_labels_are_translated(pre193_db):
     conn = _conn(pre193_db)
     kg = _new_product(conn, 'mig193 kg', unit_type='กก.')
