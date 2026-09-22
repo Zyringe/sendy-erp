@@ -34,8 +34,9 @@ WHAT IT WRITES, in one BEGIN IMMEDIATE transaction taken before the first read:
 
 REFUSES (exit 2, nothing written) when: the map does not read `ช3` as ชุด3 (#610 not
 live); either line is missing, not pid 436, not qty 1, not `ช3`, or already synced; the
-ชุด3 conversion is not exactly 3; pid 436 has any other pending line (the scoped sync
-would take it too); a costing IN follows the sales; this script's run is outstanding.
+ชุด3 conversion is not exactly 3; the ledger already holds a sale row for either line;
+pid 436 has any other pending line (the scoped sync would take it too); a costing IN
+follows the sales. A second run meets the first two lines already ชุด3 and synced.
 
 UNDO. `--undo` reverses the outstanding run the way the app itself unwinds a BSN sync
 (delete the two 'BSN ขาย' rows, the delete trigger returns the 6 to stock, reset
@@ -118,17 +119,12 @@ def _legs(conn, doc_no):
 def preconditions(conn):
     """(the two sales rows, problems)."""
     import bsn_units
-    if outstanding(conn):
-        return [], ['already synced: this script\'s run is outstanding (--undo first to run again)']
     word = bsn_units.translate(EXPRESS_CODE, BOOK, conn=conn)
     if word != EXPECT_WORD:
         return [], ['the unit map reads %s %r as %r, not %r — #610 is not live on this DB'
                     % (BOOK, EXPRESS_CODE, word, EXPECT_WORD)]
 
     problems, rows = [], []
-    prod = conn.execute("SELECT unit_type FROM products WHERE id = ?", (PID,)).fetchone()
-    if prod is None or prod[0] != UNIT_TYPE:
-        problems.append('pid %s unit_type is %r, expected %r' % (PID, prod and prod[0], UNIT_TYPE))
     ratio = conn.execute("SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
                          (PID, word)).fetchone()
     if ratio is None or ratio[0] != EXPECT_RATIO:
@@ -141,7 +137,8 @@ def preconditions(conn):
             continue
         r = found[0]
         if r['unit'] == word and r['synced_to_stock']:
-            problems.append('%s: already %s and synced — nothing to do' % (doc_no, word))
+            problems.append('%s: already %s and synced — nothing to do (a second run?)'
+                            % (doc_no, word))
         elif (r['product_id'], r['qty'], r['unit'], r['synced_to_stock']) != \
                 (PID, EXPECT_QTY, EXPRESS_CODE, 0):
             problems.append('%s: pid/qty/unit/synced is %r, expected %r' % (

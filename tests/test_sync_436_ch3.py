@@ -253,6 +253,19 @@ def test_refuses_unless_both_lines_are_still_ch3_and_unsynced(db, capsys, breaka
     assert _state(db) == before, 'all or nothing: the other line is untouched too'
 
 
+def test_refuses_when_the_ledger_already_holds_a_sale_row(db, capsys):
+    """A hand-reverted line (back to ช3, unsynced) whose leg was left behind would
+    deduct twice."""
+    _exec(db, "INSERT INTO transactions (product_id, txn_type, quantity_change, unit_mode,"
+              " reference_no, note, created_at) VALUES (436, 'OUT', -3, 'unit', 'IV6901461-2',"
+              " 'BSN ขาย', '2026-08-31 00:00:00')")
+    before = _state(db)
+    assert _run(db) == 2
+    out = capsys.readouterr().out
+    assert 'IV6901461-2' in out and 'ledger' in out, out
+    assert _state(db) == before
+
+
 def test_refuses_when_the_conversion_is_not_3(db, capsys):
     _exec(db, "UPDATE unit_conversions SET ratio=5 WHERE product_id=436 AND bsn_unit='ชุด3'")
     before = _state(db)
@@ -360,6 +373,17 @@ def test_undo_refuses_once_436s_ledger_moved(db, capsys):
     capsys.readouterr()
     assert _run(db, '--undo') == 2
     assert 'ledger' in capsys.readouterr().out
+    assert _state(db) == state
+
+
+def test_undo_refuses_when_a_leg_no_longer_reads_minus_3(db, capsys):
+    assert _run(db) == 0
+    _exec(db, "UPDATE transactions SET quantity_change=-2 WHERE product_id=436"
+              " AND reference_no='IV6901500-2'")
+    state = _state(db)
+    capsys.readouterr()
+    assert _run(db, '--undo') == 2
+    assert 'IV6901500-2' in capsys.readouterr().out
     assert _state(db) == state
 
 
