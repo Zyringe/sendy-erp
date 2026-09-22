@@ -527,6 +527,34 @@ def test_a_dbf_upload_after_193_leaves_translated_order_lines_as_they_are(pre193
         conn.close()
 
 
+def test_sales_order_lines_are_translated_without_a_snapshot(pre193_db):
+    """The DBF upload replaces the whole register from TQUCOD every time, so a
+    snapshot of its ~48.5k rows would only cost prod's small /data volume
+    (~5 MB, ENOSPC this month) to restore codes the next upload writes as
+    words anyway. CONTROL in the same run: a credit-note line, whose writer
+    does not replace it wholesale, is snapshotted."""
+    conn = _conn(pre193_db)
+    so = conn.execute("INSERT INTO express_sales_order_lines (entity, so_no, line_seq, unit) "
+                      "VALUES ('BSN', 'SO193NOSNAP', 1, 'หล')").lastrowid
+    cn = conn.execute("INSERT INTO express_credit_note_lines (credit_note_id, line_no, unit) "
+                      "VALUES (999999, 1, 'หล')").lastrowid
+    conn.commit()
+    conn.close()
+
+    _migrate()
+
+    conn = _conn(pre193_db)
+    try:
+        assert conn.execute("SELECT unit FROM express_sales_order_lines WHERE id=?", (so,)).fetchone()[0] == 'โหล'
+        assert conn.execute("SELECT COUNT(*) FROM migration_193_snapshot "
+                            "WHERE table_name = 'express_sales_order_lines'").fetchone()[0] == 0
+        assert conn.execute("SELECT old_value, new_value FROM migration_193_snapshot "
+                            "WHERE table_name = 'express_credit_note_lines' AND row_id = ?",
+                            (cn,)).fetchone() == ('หล', 'โหล')              # CONTROL
+    finally:
+        conn.close()
+
+
 def test_a_credit_note_reimport_after_193_writes_the_same_word(pre193_db):
     import sys
     scripts = os.path.join(REPO, 'scripts')
@@ -930,12 +958,15 @@ def test_hand_rerun_keeps_the_first_runs_records(pre193_db):
         conn.close()
 
 
+# express_sales_order_lines is left out on purpose: 193 does not snapshot it
+# (the next DBF upload rewrites the register), so its rollback leaves the words;
+# test_rollback_restores_data_exactly asserts that explicitly.
 UNIT_COLUMNS = (('sales_transactions', 'unit'), ('purchase_transactions', 'unit'),
                 ('products', 'unit_type'), ('promotions', 'bundle_unit'),
                 ('product_code_mapping', 'bsn_unit'), ('pending_product_suggestions', 'bsn_unit'),
                 ('pending_product_suggestions', 'suggested_unit_type'),
                 ('credit_note_imports', 'unit'), ('express_sales', 'unit'),
-                ('product_price_tiers', 'qty_label'), ('express_sales_order_lines', 'unit'),
+                ('product_price_tiers', 'qty_label'),
                 ('express_credit_note_lines', 'unit'), ('supplier_catalogue_items', 'unit'),
                 ('supplier_catalogue_price_history', 'unit'))
 
@@ -990,6 +1021,9 @@ def test_rollback_restores_data_exactly(pre193_db):
         assert _state(conn) != before, 'migration made no change -- rollback check would be vacuous'
         assert _run_rollback(conn) == []
         assert _state(conn) == before
+        # the register the next DBF upload rewrites keeps its words (no snapshot)
+        assert conn.execute("SELECT unit FROM express_sales_order_lines "
+                            "WHERE so_no = 'SO193RB'").fetchone()[0] == 'โหล'
         assert conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY 1, 2").fetchall() == schema
     finally:
         conn.close()
