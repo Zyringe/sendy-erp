@@ -23,7 +23,7 @@ The word a line reads after the relabel always comes from the unit map
 (bsn_units.translate, the call the importer makes). OLD_READING below is a
 historical fact about the retired map, not a spelling.
 
-READ-ONLY on both sides: the DB is opened `mode=ro`, the DBF is only read. It
+READ-ONLY on both sides: the DB connection is `query_only`, the DBF is only read. It
 writes one JSON file for scripts/2026_09_22_relabel_history_600.py to apply.
 
     EXPRESS_DIR=~/Sendai-Boonsawat/projects/express-integration/data/BSN5657 \\
@@ -139,7 +139,7 @@ def derive(conn, stcrd_rows):
                 if suspect:
                     unrecoverable.append(dict(entry, reason=reason))
                 else:
-                    not_suspect[reason] += 1
+                    not_suspect[reason.split(' at line')[0]] += 1
                 continue
             codes = {l['unit'] for l in cands}
             if len(codes) > 1:
@@ -216,7 +216,10 @@ def main(argv=None):
     sys.path.insert(0, os.path.join(os.path.dirname(_HERE), 'inventory_app'))
     import express_dbf_source as eds
 
-    conn = sqlite3.connect(f'file:{a.db}?mode=ro', uri=True)
+    # query_only rather than a `mode=ro` URI: a fresh `.backup` of a WAL database
+    # has no -shm yet, and a read-only open cannot create one.
+    conn = sqlite3.connect(a.db)
+    conn.execute('PRAGMA query_only = ON')
     conn.row_factory = sqlite3.Row
     try:
         plan = derive(conn, eds.open_table(express_dir, 'STCRD'))
