@@ -65,15 +65,45 @@ def _embedded(name, table, cols):
 
 @pytest.fixture
 def pre190_db(tmp_db):
-    """The true pre-190 state. Once 190 has merged, `tmp_db`'s clone of the
-    live DB already carries it and a bare `init_db()` would skip the SQL."""
+    """A pre-190 DB whose OWN data the migration cannot see, so every test
+    decides exactly what 190 finds.
+
+    It deliberately does NOT run the rollback on the clone. The rollback is
+    guarded: it refuses when a row 190 inserted has been edited since, and the
+    live DB is ABOUT to hold such rows (#603 upserts 1187/1188 กุรุส to 144).
+    Undoing 190 there would make every test in this file error, and even an
+    unguarded undo cannot recover the true pre-190 state of rows a later
+    change has touched. A re-run over post-#603 hasps would also trip
+    code_vs_old (กร = 144 against a ตัว base) on data no test put there.
+
+    So the fixture forces the state instead of inheriting it
+    (erp-engineering-discipline.md, `tmp_db` clones the live DB WITH its data):
+      * the three BSN5657 map rows back to the pre-190 words;
+      * 190 unstamped, and its forensic tables dropped (a pre-190 DB has none);
+      * every conversion under the three raw codes or the three new words
+        deleted, which empties arm (a) and rules out new_conflict;
+      * every mapping row for the migration's embedded stock codes deleted,
+        which empties arm (b).
+    What the clone's REAL rows do under 190 is the prod-copy rehearsal's job
+    (PR #628), not this file's."""
+    codes = [c for c, _b in _embedded('mig190 stkcod', '_mig190_stkcod', 'code, bsn_code')]
+    stkcods = [b for _c, b in _embedded('mig190 stkcod', '_mig190_stkcod', 'code, bsn_code')]
+    assert set(codes) == set(MEANINGS) and stkcods, 'the embedded list did not parse'
     conn = _open(tmp_db)
     try:
-        applied = {r[0] for r in conn.execute("SELECT filename FROM applied_migrations")}
-        if MIG in applied:
-            conn.executescript(_read(ROLLBACK_190))
-            conn.execute("DELETE FROM applied_migrations WHERE filename = ?", (MIG,))
-            conn.commit()
+        for code, (old_word, _new) in MEANINGS.items():
+            conn.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', ?, ?) "
+                         "ON CONFLICT(book, spelling) DO UPDATE SET word = excluded.word",
+                         (code, old_word))
+        conn.execute("DELETE FROM applied_migrations WHERE filename = ?", (MIG,))
+        conn.execute("DROP TABLE IF EXISTS migration_190_snapshot")
+        conn.execute("DROP TABLE IF EXISTS migration_190_uc_inserted")
+        words = list(MEANINGS) + [new for _old, new in MEANINGS.values()]
+        conn.execute(f"DELETE FROM unit_conversions WHERE bsn_unit IN ({','.join('?' * len(words))})",
+                     words)
+        conn.execute(f"DELETE FROM product_code_mapping WHERE bsn_code IN "
+                     f"({','.join('?' * len(stkcods))})", stkcods)
+        conn.commit()
     finally:
         conn.close()
     return tmp_db
@@ -247,18 +277,23 @@ def test_non_rebased_product_gets_ratio_one(pre190_db):
 def test_product_billed_in_the_code_takes_the_unit_type_short_circuit(pre190_db):
     """No conversion under the raw code at all — the product is only known to
     Express. The old word IS its unit_type, so `_get_base_qty` resolved it at 1
-    and the new word must too. This is the ถง/บล arm."""
+    and the new word must too. This is the ถง/บล arm.
+
+    No `แผง` conversion row, on purpose: with one present the migration could
+    take 1.0 from that row, and this test would stay green with the
+    unit_type short circuit deleted (review of #628, NIT 4)."""
     conn = _open(pre190_db)
     pid = _product(conn, 'mig190 billed in บล', unit_type='แผง')
-    _uc(conn, pid, 'แผง', 1.0)
     _map_row(conn, pid, _a_stkcod('บล'))
-    conn.commit(); conn.close()
+    conn.commit()
+    assert _units(conn, pid) == {}, 'control: only the short circuit can answer'
+    conn.close()
 
     database.init_db()
 
     conn = _open(pre190_db)
     try:
-        assert _units(conn, pid) == {'แผง': 1.0, 'บล็อก': 1.0}
+        assert _units(conn, pid) == {'บล็อก': 1.0}
     finally:
         conn.close()
 
@@ -311,14 +346,20 @@ def test_an_existing_new_word_row_is_not_duplicated_or_overwritten(pre190_db):
 
 
 def test_every_raw_code_conversion_ends_with_its_word_conversion(pre190_db):
-    """The ticket's AC, over the WHOLE live dataset the clone carries, not just
-    a fixture."""
+    """The ticket's AC, asserted over the WHOLE table, one seeded product per
+    code. The fixture removes the clone's own raw-code rows, so the same
+    property over the REAL rows is proved by the prod-copy rehearsal and by the
+    migration's own postcondition, not here."""
     conn = _open(pre190_db)
-    missing_before = conn.execute("""
+    for code, ratio in (('กร', 144.0), ('ถง', 1.0), ('บล', 1.0)):
+        pid = _product(conn, f'mig190 AC {code}', unit_type='ชิ้น')
+        _uc(conn, pid, code, ratio)
+    conn.commit()
+    seeded = conn.execute("""
         SELECT COUNT(*) FROM unit_conversions c
          WHERE c.bsn_unit IN ('กร','ถง','บล')""").fetchone()[0]
     conn.close()
-    assert missing_before > 0, 'control: the clone holds no raw-code conversion at all'
+    assert seeded == 3, 'control: exactly the three seeded raw-code rows'
 
     database.init_db()
 
@@ -575,9 +616,12 @@ def test_rollback_restores_the_map_and_removes_only_its_own_rows(pre190_db):
         assert _words(conn)['บล'] == 'แผง'
         assert _units(conn, pid) == {'กร': 1.0}
         assert _units(conn, keeper) == {'กุรุส': 999.0}, 'rollback took an unrelated row'
+        # Only THIS test's products: a prod-shaped clone legitimately holds
+        # other new-word rows (#584 gave 1050/1320 กุรุส = 144) that a
+        # whole-table count would read as rollback leftovers.
         assert conn.execute(
-            "SELECT COUNT(*) FROM unit_conversions WHERE bsn_unit IN ('กุรุส','ถัง','บล็อก')"
-        ).fetchone()[0] == 1
+            "SELECT COUNT(*) FROM unit_conversions WHERE bsn_unit IN ('กุรุส','ถัง','บล็อก') "
+            "AND product_id IN (?, ?)", (pid, keeper)).fetchone()[0] == 1
     finally:
         conn.close()
 
