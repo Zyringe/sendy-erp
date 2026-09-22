@@ -111,14 +111,40 @@ def _units(conn, pid):
 
 # ── the map: exactly what the importer produces ─────────────────────────────
 
+def _map_as_186_saw_it(db):
+    """The live unit map minus the rows migration 193 (#610) seeded later: 193
+    taught the importer the approved vocabulary 186 deliberately left alone
+    (ช5, กิโล, คค ...). Read from 193's own seed block, matched on (book,
+    spelling), so a spelling 186 already knew under BSN5657 (แพค) survives
+    193 adding the same spelling under '*'. Returned as an in-memory DB for
+    bsn_units' public API."""
+    mig193 = os.path.join(REPO, 'data', 'migrations', '193_unit_vocabulary.sql')
+    seeds_conn = sqlite3.connect(':memory:')
+    try:
+        seeds_conn.executescript(_block(_read(mig193), 'mig193 seeds'))
+        later = set(seeds_conn.execute('SELECT book, spelling FROM _mig193_seed'))
+    finally:
+        seeds_conn.close()
+    src = sqlite3.connect(db)
+    rows = [r for r in src.execute('SELECT book, spelling, word FROM unit_map')
+            if (r[0], r[1]) not in later]
+    src.close()
+    mem = sqlite3.connect(':memory:')
+    mem.execute('CREATE TABLE unit_map (book TEXT, spelling TEXT, word TEXT)')
+    mem.executemany('INSERT INTO unit_map VALUES (?, ?, ?)', rows)
+    assert len(later) == 26 and rows, 'the 193 seed block or the live map read back empty'
+    return mem
+
+
 def test_embedded_map_equals_what_the_importer_produces(tmp_db):
     """Both directions: every pair in the migration is one the importer makes,
     and every code the importer translates (minus the exclusions) is in it.
     Derived through bsn_units' PUBLIC API so it holds when #596 moves the map
-    into the DB."""
+    into the DB, and against the map as it stood before 193 grew it."""
+    mem = _map_as_186_saw_it(tmp_db)
     derived = {}
-    for code in bsn_units.load_unit_map():
-        word = bsn_units.normalize_unit(code)
+    for code in bsn_units.load_unit_map(conn=mem):
+        word = bsn_units.normalize_unit(code, conn=mem)
         if word != code and code not in EXCLUDED_CODES and not code.startswith('!'):
             derived[code] = word
     # control: the API really returned the map, not an empty one
@@ -130,7 +156,8 @@ def test_embedded_map_equals_what_the_importer_produces(tmp_db):
     assert sorted(set(derived.items()) - set(embedded.items())) == [], \
         "importer translates a code the migration leaves behind"
     # a translated word must survive a second normalize, or _unit_same flags it
-    assert {w for w in embedded.values() if bsn_units.normalize_unit(w) != w} == set()
+    assert {w for w in embedded.values() if bsn_units.normalize_unit(w, conn=mem) != w} == set()
+    mem.close()
 
 
 # ── the #609 blocker, kept as a test: re-import is a no-op after 186 ────────
@@ -221,25 +248,28 @@ def test_reimport_of_raw_lines_is_unchanged_after_186(pre186_db, tag, file_type,
 
 
 def test_reimport_check_goes_red_when_186_translates_a_non_importer_code(pre186_db, tmp_path):
-    """Control for the test above: give a COPY of 186 the reviewer's bad pair
-    (ช5 -> ชุด5) and the same pid-436-shaped line must move stock on re-import.
-    If this ever passes quietly, the re-import test above has gone vacuous."""
+    """Control for the test above: give a COPY of 186 a pair the importer does
+    not produce and the same pid-436-shaped line must move stock on re-import.
+    If this ever passes quietly, the re-import test above has gone vacuous.
+    The reviewer's pair was ช5 -> ชุด5; migration 193 (#610) taught the
+    importer that one, so the control uses a code no map knows."""
     import models
     sql = _read(MIG_186)
     marker = "INSERT INTO _mig186_map (code, word) VALUES\n"
     assert sql.count(marker) == 1
-    mutated = sql.replace(marker, marker + "    ('ช5', 'ชุด5'),\n")
-    assert "('ช5', 'ชุด5')" in _block(mutated, 'mig186 map')
+    mutated = sql.replace(marker, marker + "    ('ซZ', 'ชุดZ'),\n")
+    assert "('ซZ', 'ชุดZ')" in _block(mutated, 'mig186 map')
 
     conn = sqlite3.connect(pre186_db)
     conn.row_factory = sqlite3.Row
-    pid, table = _seed_reimport_case(conn, 'sales', 'ช5', {'ช5': 5.0}, 'bad')
+    assert bsn_units.translate('ซZ', conn=conn) is None, 'the control code became an importer code'
+    pid, table = _seed_reimport_case(conn, 'sales', 'ซZ', {'ซZ': 5.0}, 'bad')
     before = _ledger(conn, pid)
     conn.executescript(mutated)
     row = conn.execute(f"SELECT * FROM {table} WHERE product_id=?", (pid,)).fetchone()
-    assert row['unit'] == 'ชุด5'
+    assert row['unit'] == 'ชุดZ'
     entry = _entry(row, 'sales')
-    entry['unit'] = 'ช5'
+    entry['unit'] = 'ซZ'
     conn.close()
 
     res = models.import_weekly([entry], 'sales', 'mig186-bad-map', apply_removals=False)

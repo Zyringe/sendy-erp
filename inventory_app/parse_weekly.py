@@ -722,7 +722,9 @@ def _parse_detail_line(stripped):
         'bsn_code':      bsn_code,
         'product_name':  _apply_brand_aliases(name.strip()),
         'qty':           _parse_float_or_zero(qty_s),
-        'unit':          unit,
+        # "2.00!หล": the '!' Express glues on is not part of the unit
+        # (_QTY_UNIT_SEP strips it on the sales/purchase path too).
+        'unit':          unit.replace('!', ''),
         'unit_price':    unit_price,
         'discount':      discount.strip(),
         'amount':        amount,

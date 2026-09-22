@@ -65,6 +65,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
+import bsn_units
 from config import DATABASE_PATH
 from parse_weekly import (
     parse_credit_notes,
@@ -218,6 +219,9 @@ def _process_entry(conn, entry, ref_conflicts):
         return {"outcome": "already_new"}
 
     # ── Case 3: genuinely new — record in side table ─────────────────────────
+    # The standalone ใบลดหนี้ file is a BSN5657 report: its unit is read
+    # against the default book (#610, ADR 0018).
+    word = bsn_units.normalize_unit(entry.get("unit"), conn=conn)
     conn.execute(
         """INSERT INTO credit_note_imports
                (doc_no, doc_base, date_iso, customer, salesperson,
@@ -238,7 +242,7 @@ def _process_entry(conn, entry, ref_conflicts):
             entry.get("bsn_code"),
             entry.get("product_name_raw"),
             entry.get("qty", 0.0),
-            entry.get("unit"),
+            word,
             entry.get("unit_price", 0.0),
             entry.get("discount"),
             entry.get("total", 0.0),
