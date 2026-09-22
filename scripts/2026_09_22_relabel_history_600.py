@@ -394,7 +394,7 @@ def main(argv=None):
                                (rid, new)).fetchone()[0] for (t, rid), (_o, new) in changes.items())
     finally:
         chk.close()
-    print("COMMITTED (%s) — re-read on a new connection: %d of %d row(s) read the new unit"
+    print("COMMITTED (%s) — re-read on a new connection: %d of %d row(s) read the unit written"
           % (a.mode, n_ok, len(changes)))
     return 0 if n_ok == len(changes) else 1
 
