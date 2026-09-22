@@ -13,8 +13,9 @@ A second guard is new here. Translating a line can change what it RESOLVES
 to without any conversion disagreeing: pid 436's two unsynced `ช3` lines have
 no `ช3` conversion but the product has a `ชุด3` one, so translating them would
 make them syncable and move stock on the next import. 193 translates a bill
-line only when its `_get_base_qty` ratio and its COGS ratio are unchanged;
-the others keep their spelling and are listed in migration_193_skipped.
+line only when its `_get_base_qty` ratio is unchanged (COGS reads the same
+ratio, with 1 for none); the others keep their spelling and are listed in
+migration_193_skipped.
 
 Assert external behaviour only: the word on a row, what a re-import does,
 stock before vs after. `tmp_db` clones the live dev DB WITH its data, so
@@ -530,7 +531,7 @@ def test_a_credit_note_reimport_after_193_writes_the_same_word(pre193_db):
 def test_a_line_whose_resolution_would_change_keeps_its_spelling(pre193_db):
     """pid 436 on prod: two UNSYNCED ช3 lines, no ช3 conversion, but a ชุด3
     conversion at 3. As ชุด3 they would become syncable and deduct stock on
-    the next import (and COGS would read ratio 3 instead of the fallback 1).
+    the next import (COGS reads the same ratio, with 1 for nothing).
     Control in the same run: a ช3 line whose OWN conversion exists moves with
     it and is translated."""
     conn = _conn(pre193_db)
@@ -586,6 +587,30 @@ def test_the_postcondition_aborts_when_a_line_would_resolve_differently(pre193_d
     try:
         assert conn.execute("SELECT unit FROM sales_transactions WHERE id=?", (line,)).fetchone()[0] == 'ช3'
         assert conn.execute("SELECT COUNT(*) FROM unit_map WHERE spelling='ช3'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_the_leftover_postcondition_aborts_when_an_update_does_not_land(pre193_db):
+    """The second postcondition is a net under every UPDATE: a copy of 193 that
+    loses one (here the credit-note lines') must be refused, not commit a
+    half-translated table."""
+    sql = _read(MIG_193)
+    lost = ("UPDATE express_credit_note_lines\n"
+            "   SET unit = (SELECT word FROM _mig193_map\n"
+            "                WHERE source = 'BSN5657' AND spelling = express_credit_note_lines.unit)\n"
+            " WHERE unit IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657');\n")
+    assert sql.count(lost) == 1
+    conn = _conn(pre193_db)
+    line = conn.execute("INSERT INTO express_credit_note_lines (credit_note_id, line_no, unit) "
+                        "VALUES (999999, 1, 'หล')").lastrowid
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError, match='mig 193 postcondition FAILED: a covered column'):
+        conn.executescript(sql.replace(lost, ''))
+    conn.rollback()
+    try:
+        assert conn.execute("SELECT unit FROM express_credit_note_lines WHERE id=?",
+                            (line,)).fetchone()[0] == 'หล'
     finally:
         conn.close()
 

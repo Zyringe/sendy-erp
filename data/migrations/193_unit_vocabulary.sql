@@ -50,10 +50,11 @@
 --
 -- BILL LINES ARE TRANSLATED ONLY WHEN WHAT THEY RESOLVE TO IS UNCHANGED. A
 -- line's ratio (bsn_sync._get_base_qty: 1 when the unit is the product's own,
--- else its conversion, else nothing) and its COGS ratio
--- (sales_filters.base_qty_sql: the same, with 1 as the fallback) are captured
--- before anything moves. A line whose word would resolve differently keeps its
--- spelling and is listed in migration_193_skipped. The prod case: pid 436's two
+-- else its conversion, else nothing) is captured before anything moves. The
+-- COGS ratio (sales_filters.base_qty_sql) is the same value with 1 for
+-- nothing, so an unchanged ratio leaves COGS unchanged too. A line whose word
+-- would resolve differently keeps its spelling and is listed in
+-- migration_193_skipped. The prod case: pid 436's two
 -- UNSYNCED ช3 lines have no ช3 conversion, but the product has a ชุด3 one at 3,
 -- so as ชุด3 they would sync on the next import (stock −6) and cost at 3. They
 -- stay ช3 until Put names a ratio on /unit-conversions; a re-import leaves them
@@ -325,26 +326,19 @@ DROP TABLE _mig193_pre_tier_collision;
 DROP TABLE _mig193_pre_unit_type_ratio;
 
 -- ── 2. what every bill line resolves to NOW, before anything moves ─────────
--- res  = bsn_sync._get_base_qty's ratio (NULL = the line cannot sync)
--- cogs = sales_filters.base_qty_sql's ratio (1 when there is none)
+-- res = bsn_sync._get_base_qty's ratio (NULL = the line cannot sync)
 DROP TABLE IF EXISTS temp._mig193_res_pre;
 CREATE TEMP TABLE _mig193_res_pre AS
 SELECT 'sales_transactions' AS table_name, t.id AS row_id, t.product_id, t.unit,
        CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
             ELSE (SELECT c.ratio FROM unit_conversions c
-                   WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END AS res,
-       CASE WHEN COALESCE(t.unit, '') = '' OR COALESCE(t.unit, '') = COALESCE(p.unit_type, '') THEN 1.0
-            ELSE COALESCE((SELECT c.ratio FROM unit_conversions c
-                            WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit), 1.0) END AS cogs
+                   WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END AS res
   FROM sales_transactions t LEFT JOIN products p ON p.id = t.product_id
 UNION ALL
 SELECT 'purchase_transactions', t.id, t.product_id, t.unit,
        CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
             ELSE (SELECT c.ratio FROM unit_conversions c
-                   WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END,
-       CASE WHEN COALESCE(t.unit, '') = '' OR COALESCE(t.unit, '') = COALESCE(p.unit_type, '') THEN 1.0
-            ELSE COALESCE((SELECT c.ratio FROM unit_conversions c
-                            WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit), 1.0) END
+                   WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END
   FROM purchase_transactions t LEFT JOIN products p ON p.id = t.product_id;
 CREATE INDEX temp._mig193_res_pre_key ON _mig193_res_pre(table_name, row_id);
 
@@ -391,14 +385,10 @@ UPDATE unit_conversions
 -- ── 5. bill lines, only where the word resolves exactly as the spelling did
 DROP TABLE IF EXISTS temp._mig193_line;
 CREATE TEMP TABLE _mig193_line AS
-SELECT r.table_name, r.row_id, r.product_id, r.unit AS old_unit, m.word AS new_unit,
-       r.res, r.cogs,
+SELECT r.table_name, r.row_id, r.product_id, r.unit AS old_unit, m.word AS new_unit, r.res,
        CASE WHEN trim(m.word) = trim(COALESCE(p.unit_type, '')) THEN 1.0
             ELSE (SELECT c.ratio FROM unit_conversions c
-                   WHERE c.product_id = r.product_id AND c.bsn_unit = m.word) END AS res_new,
-       CASE WHEN m.word = COALESCE(p.unit_type, '') THEN 1.0
-            ELSE COALESCE((SELECT c.ratio FROM unit_conversions c
-                            WHERE c.product_id = r.product_id AND c.bsn_unit = m.word), 1.0) END AS cogs_new
+                   WHERE c.product_id = r.product_id AND c.bsn_unit = m.word) END AS res_new
   FROM _mig193_res_pre r
   JOIN _mig193_map m ON m.source = 'BSN5657' AND m.spelling = r.unit
   LEFT JOIN products p ON p.id = r.product_id;
@@ -406,13 +396,13 @@ SELECT r.table_name, r.row_id, r.product_id, r.unit AS old_unit, m.word AS new_u
 -- >>> mig193 skip
 INSERT INTO migration_193_skipped (table_name, row_id, product_id, unit, word, detail)
 SELECT l.table_name, l.row_id, l.product_id, l.old_unit, l.new_unit,
-       'resolves to ' || COALESCE(l.res, 'nothing') || ' (cost ' || l.cogs || ') as ' || l.old_unit
-       || ' but ' || COALESCE(l.res_new, 'nothing') || ' (cost ' || l.cogs_new || ') as ' || l.new_unit
+       'resolves to ' || COALESCE(l.res, 'nothing') || ' as ' || l.old_unit
+       || ' but to ' || COALESCE(l.res_new, 'nothing') || ' as ' || l.new_unit
   FROM _mig193_line l
- WHERE (l.res IS NOT l.res_new OR l.cogs IS NOT l.cogs_new)
+ WHERE l.res IS NOT l.res_new
    AND NOT EXISTS (SELECT 1 FROM migration_193_skipped k
                     WHERE k.table_name = l.table_name AND k.row_id = l.row_id);
-DELETE FROM _mig193_line WHERE res IS NOT res_new OR cogs IS NOT cogs_new;
+DELETE FROM _mig193_line WHERE res IS NOT res_new;
 -- <<< mig193 skip
 
 -- Through the mig-173 declared-change path. change_reason is set NULL (the
@@ -531,24 +521,18 @@ SELECT r.row_id
   JOIN sales_transactions t ON t.id = r.row_id
   LEFT JOIN products p ON p.id = t.product_id
  WHERE r.table_name = 'sales_transactions'
-   AND (r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
-                          ELSE (SELECT c.ratio FROM unit_conversions c
-                                 WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END
-        OR r.cogs IS NOT CASE WHEN COALESCE(t.unit, '') = '' OR COALESCE(t.unit, '') = COALESCE(p.unit_type, '') THEN 1.0
-                              ELSE COALESCE((SELECT c.ratio FROM unit_conversions c
-                                              WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit), 1.0) END)
+   AND r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+                         ELSE (SELECT c.ratio FROM unit_conversions c
+                                WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END
 UNION ALL
 SELECT r.row_id
   FROM _mig193_res_pre r
   JOIN purchase_transactions t ON t.id = r.row_id
   LEFT JOIN products p ON p.id = t.product_id
  WHERE r.table_name = 'purchase_transactions'
-   AND (r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
-                          ELSE (SELECT c.ratio FROM unit_conversions c
-                                 WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END
-        OR r.cogs IS NOT CASE WHEN COALESCE(t.unit, '') = '' OR COALESCE(t.unit, '') = COALESCE(p.unit_type, '') THEN 1.0
-                              ELSE COALESCE((SELECT c.ratio FROM unit_conversions c
-                                              WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit), 1.0) END);
+   AND r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+                         ELSE (SELECT c.ratio FROM unit_conversions c
+                                WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END;
 
 CREATE TEMP TRIGGER _mig193_guard_post_resolution BEFORE DELETE ON _mig193_post_resolution
 BEGIN SELECT RAISE(ABORT, 'mig 193 postcondition FAILED: a bill line would resolve to a different quantity or cost (line_resolution).'); END;
