@@ -458,6 +458,12 @@ def test_rollback_restores_prior_trigger_bodies_byte_for_byte_and_drops_column(
 def test_data_usable_after_rollback(pre150_conn):
     conn = pre150_conn
     _apply(conn, MIG_150)
+    # Capture audit_log's column set right before the rollback runs, so this
+    # assertion doesn't hardcode a column list — a later migration (e.g. 173,
+    # which added change_source/change_reason independent of 150/151) must
+    # not break this test just by existing. What the rollback is actually
+    # required to do is remove row_key and NOTHING else.
+    before_cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_log)")}
     _apply(conn, ROLLBACK_150)
 
     conn.execute("INSERT INTO customers (code, name) VALUES ('RB1', 'post-rollback')")
@@ -468,6 +474,4 @@ def test_data_usable_after_rollback(pre150_conn):
     assert row["row_id"] is not None
     assert row["action"] == "INSERT"
     # row_key column is gone post-rollback — the old trigger never wrote one
-    assert set(row.keys()) == {
-        "id", "table_name", "row_id", "action", "changed_fields", "user", "created_at"
-    }
+    assert set(row.keys()) == before_cols - {"row_key"}
