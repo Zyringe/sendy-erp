@@ -66,15 +66,17 @@ def _product(conn, name):
 
 
 def _line(conn, doc_base, seq, *, pid, customer, qty, net, date_iso, vat_type=1,
-          code=None):
+          code=None, name_raw=None):
     """One sales line in the real shape: doc_no '<base>-<seq>'. A credit note
-    is stored exactly like the real ones: positive qty and net."""
+    is stored exactly like the real ones: positive qty and net — and, like the
+    real ones, it may print `product_name_raw` differently from the invoice it
+    reverses (prod: '(ต)' vs '(P)', 'SS' vs 'SS S/D')."""
     conn.execute(
         "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, "
         " product_name_raw, customer, customer_code, qty, unit, unit_price, vat_type, "
         " total, net) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (date_iso, f'{doc_base}-{seq}', doc_base, pid, f'สินค้า {pid}', customer, code,
-         qty, 'ตัว', net / qty, vat_type, net, net))
+        (date_iso, f'{doc_base}-{seq}', doc_base, pid, name_raw or f'สินค้า {pid}',
+         customer, code, qty, 'ตัว', net / qty, vat_type, net, net))
 
 
 def _seed(conn):
@@ -85,7 +87,11 @@ def _seed(conn):
     _line(conn, 'IV62702', 1, pid=a, customer=C2, qty=4, net=400, date_iso='2031-03-04',
           vat_type=2)
     _line(conn, GIVEAWAY_DOC, 1, pid=b, customer=C1, qty=20, net=2000, date_iso='2031-03-05')
-    _line(conn, 'SR62703', 1, pid=a, customer=C1, qty=3, net=300, date_iso='2031-03-12')
+    # The credit note prints A's name differently from IV62701's line, the
+    # shape that made the top-10 list show it as its own negative row (#627
+    # review): grouping mapped rows on product_id alone is what nets it.
+    _line(conn, 'SR62703', 1, pid=a, customer=C1, qty=3, net=300, date_iso='2031-03-12',
+          name_raw='สินค้า A (ต) ตามใบลดหนี้')
     _line(conn, 'SR62703', 2, pid=d, customer=C1, qty=2, net=200, date_iso='2031-03-12')
     conn.execute(
         "INSERT INTO ar_writeoffs (doc_no, customer_name, amount, type, writeoff_date, "
@@ -174,6 +180,8 @@ def test_dashboard_top10s_net_the_return_and_drop_the_giveaway(tmp_db_conn):
     d = models.get_trade_dashboard(*WINDOW)
 
     products = [(r['product_id'], r['total_net'], r['total_qty']) for r in d['top_products']]
+    # THREE rows, not four: A's credit note prints another raw name and must
+    # still net against A rather than form its own negative row (#627 review).
     assert len(products) == 3
     assert products == [
         (pids['A'], pytest.approx(1000 + 400 - 300), pytest.approx(10 + 4 - 3)),
@@ -242,10 +250,12 @@ def _seed_c3(conn):
     conn.execute("INSERT INTO customers (code, name) VALUES (?, ?) "
                  "ON CONFLICT(code) DO UPDATE SET name = excluded.name", (C3_CODE, C3))
     a, e = _product(conn, 'สินค้าทดสอบ 627 A'), _product(conn, 'สินค้าทดสอบ 627 E')
-    for doc, pid, qty, net, day in (('IV62711', a, 10, 1000, '03'), ('IV62712', e, 9, 900, '04'),
-                                    ('SR62713', a, 3, 300, '12')):
+    for doc, pid, qty, net, day, raw in (
+            ('IV62711', a, 10, 1000, '03', None), ('IV62712', e, 9, 900, '04', None),
+            # again a return printing its own name for the same product
+            ('SR62713', a, 3, 300, '12', 'สินค้า A (ต) ตามใบลดหนี้')):
         _line(conn, doc, 1, pid=pid, customer=C3, qty=qty, net=net,
-              date_iso=f'2031-03-{day}', code=C3_CODE)
+              date_iso=f'2031-03-{day}', code=C3_CODE, name_raw=raw)
     conn.commit()
     return a, e
 
@@ -264,6 +274,7 @@ def test_call_card_top_product_name_is_net_of_returns(tmp_db_conn):
     a, e = _seed_c3(tmp_db_conn)
     import models
     top = models.get_customer_summary(C3)['top_products']
+    # TWO rows: the credit note's own raw name must not split A (#627 review).
     assert len(top) == 2
     assert top[0]['product_id'] == e, 'แบรนด์เด่น reads top_products[0]'
     assert top[1]['total_net'] == pytest.approx(700.0)
@@ -298,6 +309,14 @@ def _client():
     return c
 
 
+def _card_class(html, label):
+    """The class attribute of the stat-card value that follows `label`."""
+    m = re.search(re.escape(label) + r'.{0,400}?class="stat-card-value ([^"]*)"',
+                  html, re.S)
+    assert m, f'no stat card labelled {label!r}'
+    return m.group(1)
+
+
 def _card_value(html, label):
     """The stat-card value that follows `label`, as a float."""
     m = re.search(re.escape(label) + r'.{0,400}?stat-card-value[^>]*>\s*฿?([-\d,\.]+)',
@@ -321,6 +340,18 @@ def test_dashboard_renders_the_netted_card_and_says_so(tmp_db_conn):
         '/trade-dashboard?date_from={}&date_to={}'.format(*WINDOW)).get_data(as_text=True))
     assert _card_value(html, 'ยอดขายรวม') == pytest.approx(1400.0)
     assert NET_OF_RETURNS in html
+    # CONTROL for the negative-colour test below: a positive total stays green.
+    assert _card_class(html, 'ยอดขายรวม') == 'text-success'
+
+
+def test_dashboard_card_turns_red_when_the_period_is_negative(tmp_db_conn):
+    """A window holding only the credit note reads −฿500. Negative is not
+    success, so it must not render in the success colour (#627 review)."""
+    _seed(tmp_db_conn)
+    html = unescape(_client().get(
+        '/trade-dashboard?date_from=2031-03-10&date_to=2031-03-31').get_data(as_text=True))
+    assert _card_value(html, 'ยอดขายรวม') == pytest.approx(-500.0)
+    assert _card_class(html, 'ยอดขายรวม') == 'text-danger'
 
 
 def test_product_trade_page_renders_negative_and_says_so(tmp_db_conn):
@@ -328,7 +359,17 @@ def test_product_trade_page_renders_negative_and_says_so(tmp_db_conn):
     html = unescape(_client().get('/products/{}/trade?date_from={}&date_to={}'.format(
         pids['D'], *WINDOW)).get_data(as_text=True))
     assert _card_value(html, 'ยอดขายรวม') == pytest.approx(-200.0)
+    assert _card_class(html, 'ยอดขายรวม') == 'text-danger'
     assert NET_OF_RETURNS in html
+
+
+def test_product_trade_page_keeps_a_positive_total_green(tmp_db_conn):
+    """CONTROL for the colour above: the class really does follow the sign."""
+    pids = _seed(tmp_db_conn)
+    html = unescape(_client().get('/products/{}/trade?date_from={}&date_to={}'.format(
+        pids['A'], *WINDOW)).get_data(as_text=True))
+    assert _card_value(html, 'ยอดขายรวม') == pytest.approx(1100.0)
+    assert _card_class(html, 'ยอดขายรวม') == 'text-success'
 
 
 # ── what must NOT change: the revenue question keeps its own rule ────────────

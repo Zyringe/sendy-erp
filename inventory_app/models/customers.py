@@ -127,7 +127,11 @@ def _customer_sales_aggregates(conn, where, params):
     summary['purchase_doc_count'] = purchases['n']
 
     # Money-ordered NET of returns (#627), like the trade screens: the call
-    # card's แบรนด์เด่น reads the first name.
+    # card's แบรนด์เด่น reads the first name. A MAPPED line groups on
+    # product_id alone — a credit note prints `product_name_raw` differently
+    # from the invoice it reverses often enough that keeping it in the key
+    # left the return as its own negative row (#627 review). An UNMAPPED line
+    # has no product to group on and keeps the raw name.
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
                p.id AS product_id,
@@ -138,7 +142,8 @@ def _customer_sales_aggregates(conn, where, params):
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where}
-        GROUP BY s.product_id, s.product_name_raw
+        GROUP BY s.product_id,
+                 CASE WHEN s.product_id IS NULL THEN s.product_name_raw END
         ORDER BY total_net DESC
         LIMIT 20
     """, params).fetchall()

@@ -190,6 +190,12 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     ]
 
     # ── Top 10 สินค้าขายดี (by net) ──────────────────────────────────────────
+    # A MAPPED line groups on product_id alone: `product_name_raw` is what the
+    # bill happened to print, and a credit note often prints it differently
+    # from the invoice it reverses ((ต) vs (P), 'SS' vs 'SS S/D'). Keeping the
+    # raw name in the key gave that return its own negative row instead of
+    # netting the product (#627 review; 87 SR lines all-time on prod). An
+    # UNMAPPED line has no product to group on, so it keeps the raw name.
     top_products = conn.execute(f"""
         SELECT COALESCE(pr.product_name, s.product_name_raw) AS name,
                s.product_id,
@@ -199,7 +205,8 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
         LEFT JOIN products pr ON pr.id = s.product_id
         WHERE s.date_iso >= ? AND s.date_iso <= ?
           AND {sales_filters.not_a_sale_clause('s')}
-        GROUP BY s.product_id, s.product_name_raw
+        GROUP BY s.product_id,
+                 CASE WHEN s.product_id IS NULL THEN s.product_name_raw END
         ORDER BY total_net DESC
         LIMIT 10
     """, (date_from, date_to)).fetchall()
