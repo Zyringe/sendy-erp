@@ -220,6 +220,9 @@ SCRIPT_WRITERS = {
         {('UPDATE', '%s'), ('UPDATE', 'product_cost_ledger'), ('UPDATE', 'products')},
         'dated, but rebase() is an engine another script loads: main() opens '
         'database.script_connection with --operator/--reason', 'script'),
+    'scripts/2026_09_21_fix_rr6700253_unit_1658.py': ({('UPDATE', '%s')},
+        'dated #632 fix for pid 1658: resets synced_to_stock on sales/purchase, then replays '
+        'and recalculates on database.script_connection', 'script'),
     'scripts/2026_08_17_bolt_dozen_to_piece.py': ({('UPDATE', 'product_cost_ledger')},
         'dated one-off applied 2026-08-17; raw connection, aborts if re-run (accepted)', 'dated'),
     'scripts/2026_09_19_fix_pack_ratios_592.py': ({('UPDATE', '%s')},
@@ -273,7 +276,7 @@ def test_every_entry_carries_a_reason():
 
 def test_scripts_recorded_as_signed_really_open_a_script_connection():
     signed = [n for n, e in SCRIPT_WRITERS.items() if e[2] == 'script']
-    assert len(signed) == 2
+    assert len(signed) == 3
     for name in signed:
         with open(os.path.join(REPO, name), encoding='utf-8') as f:
             body = normalise(f.read())
@@ -297,6 +300,9 @@ ENGINE_CALLERS = {
         'LIVE tool: recalculates WACC for both products on its script_connection'),
     'scripts/remap_bsn_code.py': ('script',
         'LIVE tool: repoint_bsn_code on its script_connection, which preflights the actor'),
+    'scripts/2026_09_21_fix_rr6700253_unit_1658.py': ('script',
+        'dated #632 fix for pid 1658 that may still run on prod; recalculates WACC on its '
+        'database.script_connection (who = its fixed ACTOR name)'),
     'scripts/2026_09_19_rebase_689_767.py': ('dated',
         'dated one-off applied on prod 2026-09-19 through the gross_to_piece engine'),
     'scripts/2026_09_19_fix_pack_ratios_592.py': ('dated',
