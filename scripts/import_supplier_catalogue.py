@@ -37,6 +37,11 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+# inventory_app/ for bsn_units. Appended, so nothing there can shadow an
+# installed package this script imports.
+sys.path.append(str(Path(__file__).resolve().parent.parent / "inventory_app"))
+import bsn_units  # noqa: E402
+
 DB_PATH = Path(__file__).resolve().parent.parent / "inventory_app" / "instance" / "inventory.db"
 
 # Sheets that contain instructions/legends, not product rows.
@@ -211,6 +216,10 @@ def get_or_create_version(conn, supplier_id, source_file, catalogue_date, import
 
 
 def upsert_item(conn, supplier_id, version_id, row):
+    # Sendy's spelling variants only (book '*'), never an Express code: a
+    # supplier's `ขด` is a coil of rope, which Express's `ขด` (ขีด) would
+    # silently rename (#610, ADR 0018).
+    word = bsn_units.normalize_unit(row["unit"], bsn_units.BOOK_ANY, conn=conn)
     cur = conn.execute(
         """
         SELECT id FROM supplier_catalogue_items
@@ -242,7 +251,7 @@ def upsert_item(conn, supplier_id, version_id, row):
             """,
             (
                 row["name_raw"], row["name_tokens"], row["category_hint"], row["sheet_name"],
-                row["unit"], row["min_order_qty"], row["list_price"],
+                word, row["min_order_qty"], row["list_price"],
                 row["trade_discount_pct"], row["cash_discount_pct"], row["net_cash_price"],
                 row["price_change_flag"], version_id, item_id,
             ),
@@ -260,7 +269,7 @@ def upsert_item(conn, supplier_id, version_id, row):
             """,
             (
                 supplier_id, row["name_raw"], row["name_normalized"], row["name_tokens"],
-                row["category_hint"], row["sheet_name"], row["unit"], row["min_order_qty"],
+                row["category_hint"], row["sheet_name"], word, row["min_order_qty"],
                 row["list_price"], row["trade_discount_pct"], row["cash_discount_pct"],
                 row["net_cash_price"], row["price_change_flag"], version_id, version_id,
             ),
@@ -277,7 +286,7 @@ def upsert_item(conn, supplier_id, version_id, row):
         """,
         (
             item_id, version_id, row["list_price"], row["trade_discount_pct"],
-            row["cash_discount_pct"], row["net_cash_price"], row["unit"],
+            row["cash_discount_pct"], row["net_cash_price"], word,
             row["price_change_flag"],
         ),
     )

@@ -273,6 +273,25 @@ def _open_table_group(eds, dataset_dir, names):
     return found
 
 
+def _unit_words(lines, book, db_path):
+    """Replace each line's raw Express unit code with its หน่วย word, in place
+    (ADR 0018, #610). The register is replaced wholesale from TQUCOD on every
+    upload, so translating here is the only place it can stick. Read against
+    THIS upload's book, from db_path's own map: BSN5657 into the main DB, xp5
+    into the VAT book. Each distinct code is translated once (~50 codes across
+    ~52k lines)."""
+    import sqlite3
+    import bsn_units
+    conn = sqlite3.connect(db_path)
+    try:
+        words = {u: bsn_units.normalize_unit(u, book, conn=conn)
+                 for u in {line['unit'] for line in lines}}
+    finally:
+        conn.close()
+    for line in lines:
+        line['unit'] = words[line['unit']]
+
+
 def _commit_snapshot(kind, build, db_path, snapshot_date):
     """Build + import one outstanding snapshot, converting a failure into a
     reported one instead of an exception (see the call site's rationale).
@@ -426,7 +445,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     credit_notes_ar_stats = import_credit_notes.import_credit_note_amounts_records(
         credit_notes_ar_records, db_path=db_path)
     credit_notes_ap_stats = import_express.run_import_records(
-        "credit_notes", credit_notes_ap_records, db_path=db_path)
+        "credit_notes", credit_notes_ap_records, db_path=db_path, book=book)
 
     # Outstanding snapshots. Built from the SAME already-read ARTRN/APTRN rows,
     # and deliberately WITHOUT `cutoff`: since_days scopes the ledger, but a
@@ -470,6 +489,7 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
         else:
             sales_order_records = eds.build_sales_order_records(
                 group["OESO"], group["OESOIT"], armas)
+            _unit_words(sales_order_records[1], book, db_path)
             n_head, n_line = express_registers.replace(
                 'sales_orders', sales_order_records, "BSN", db_path)
             sales_orders_stats = {"orders": n_head, "lines": n_line}

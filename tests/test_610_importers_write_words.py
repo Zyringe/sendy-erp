@@ -14,7 +14,6 @@ same run: a spelling the map does not know is stored as written, so a writer
 that blanked or constant-ed the column cannot pass. `empty_db` starts with an
 EMPTY unit_map, so every test seeds exactly the rows it asserts on.
 """
-import ast
 import datetime
 import os
 import sqlite3
@@ -24,7 +23,6 @@ import pytest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS = os.path.join(_ROOT, 'scripts')
-_APP = os.path.join(_ROOT, 'inventory_app')
 # scripts/ goes on sys.path LAST, never insert(0) (#489).
 if _SCRIPTS not in sys.path:
     sys.path.append(_SCRIPTS)
@@ -102,63 +100,9 @@ def _order_units(db):
                        "WHERE so_no = 'SO610' ORDER BY line_seq"))
 
 
-@pytest.mark.parametrize('book,hoo', [(None, 'ห่อ'), ('BSN5657', 'ห่อ'), ('xp5', 'หลอด')])
-def test_dbf_sales_order_lines_store_the_word_of_their_book(empty_db, monkeypatch, book, hoo):
-    """The census control for `express_registers.py::replace` (through_map_
-    transitive): commit_express_dbf, the one caller that hands it a unit
-    column, translates every line against the upload's own book first. `หอ`
-    is the one code the two books disagree on, so it proves the book is
-    threaded, not defaulted."""
-    import import_router
-    _seed_map(empty_db)
-    _seed_company(empty_db)
-    _patch_dbf(monkeypatch, {
-        'OESO': [_oeso('SO610')],
-        'OESOIT': [_oesoit('SO610', 1, 'หล'), _oesoit('SO610', 2, 'ช5'),
-                   _oesoit('SO610', 3, 'หอ'), _oesoit('SO610', 4, 'ZZ'),
-                   _oesoit('SO610', 5, '')],
-    })
-
-    out = import_router.commit_express_dbf('/x', db_path=empty_db,
-                                           snapshot_date='2026-09-22', book=book)
-
-    assert out['sales_orders'] == {'orders': 1, 'lines': 5}, out['sales_orders']
-    units = _order_units(empty_db)
-    assert units[1] == 'โหล'
-    assert units[3] == hoo
-    assert units[4] == 'ZZ'          # CONTROL: an unknown code is stored as sent
-    assert units[5] == ''            # an empty TQUCOD stays empty
-    # ช5 is a BSN5657 code only; xp5's own unit list does not carry it
-    assert units[2] == ('ช5' if book == 'xp5' else 'ชุด5')
-
-
-def test_only_commit_express_dbf_replaces_the_sales_order_register():
-    """The transitive claim rests on commit_express_dbf being the ONLY code
-    path that hands express_registers.replace() the sales-order register (the
-    one register with a unit column). A second caller would bypass the
-    translation while the test above stayed green."""
-    callers = []
-    for base in (_APP, _SCRIPTS):
-        for root, dirs, names in os.walk(base):
-            dirs[:] = [d for d in dirs if d not in ('__pycache__', 'instance', 'static', 'tests')]
-            for n in names:
-                if not n.endswith('.py'):
-                    continue
-                path = os.path.join(root, n)
-                with open(path, encoding='utf-8') as f:
-                    tree = ast.parse(f.read())
-                for fn in ast.walk(tree):
-                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        continue
-                    for call in ast.walk(fn):
-                        if (isinstance(call, ast.Call)
-                                and isinstance(call.func, ast.Attribute)
-                                and call.func.attr == 'replace'
-                                and call.args
-                                and isinstance(call.args[0], ast.Constant)
-                                and call.args[0].value == 'sales_orders'):
-                            callers.append((os.path.relpath(path, _ROOT), fn.name))
-    assert callers == [('inventory_app/import_router.py', 'commit_express_dbf')], callers
+# The two sales-order controls (the stored word per book, and 'no second
+# caller') live in tests/test_unit_writer_census.py: they are the registered
+# control for its through_map_transitive claim on express_registers.replace.
 
 
 # ── credit notes, AP side (express_credit_note_lines) ────────────────────────

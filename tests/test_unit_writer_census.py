@@ -746,43 +746,50 @@ ALLOWED = {
             'in one run.'),
     },
 
-    # ── pending:#610 (the DBF sales-order-lines writer, the credit-note
-    # importers, the supplier catalogue importer) ────────────────────────
+    # ── #610 cleared its four writers (the DBF sales-order-lines writer, both
+    # credit-note importers, the supplier catalogue importer) ──────────────
     'express_registers.py::replace': {
-        'DYNAMIC-TABLE': ('pending:#610',
+        'DYNAMIC-TABLE': ('through_map_transitive',
             'The fully generic register-replacement writer (table name AND '
             'column list both computed at runtime from a RegisterTable '
-            'dataclass, so no static text ever names "unit"). It executes '
-            'whatever express_dbf_source.py::build_sales_order_records '
-            'hands it, and that builder sets \'unit\': _plain(row, '
-            '\'TQUCOD\') — the raw Express code, never normalised. This is '
-            '#610\'s "DBF sales-order-lines writer" bullet.'),
+            'dataclass, so no static text ever names "unit"). Of its three '
+            'registers only the sales orders carry a unit column, and its '
+            'one caller, import_router.commit_express_dbf, runs every line '
+            'through _unit_words (bsn_units.normalize_unit against the '
+            'upload\'s own book: BSN5657 into the main DB, xp5 into the VAT '
+            'book) before handing them over. Controls: '
+            'test_dbf_sales_order_lines_store_the_word_of_their_book (the '
+            'stored word, per book) and '
+            'test_only_commit_express_dbf_replaces_the_sales_order_register '
+            '(no second caller), both in tests/test_610_importers_write_words.py.'),
     },
     'scripts/import_express.py::_import_credit_notes_records': {
-        'express_credit_note_lines.unit': ('pending:#610',
-            'Writes ln[\'unit\'] verbatim for every credit-note line. Fed '
-            'by BOTH the text-report parser (p_cn.parse_credit_notes) and '
-            'the DBF path (express_dbf_source.py::build_credit_notes_ap_'
-            'records, which also sets \'unit\': l.get(\'TQUCOD\') raw) — '
-            '#610\'s "credit-note importers" bullet, both paths in one '
-            'function.'),
+        'express_credit_note_lines.unit': ('through_map',
+            'Translates each line with bsn_units.normalize_unit(ln[\'unit\'], '
+            'book) before the INSERT, for BOTH feeds (the text-report parser '
+            'and the DBF path). `book` defaults to BSN5657 and is threaded '
+            'from commit_express_dbf through run_import_records, so the VAT '
+            'book reads its lines against xp5. Behaviour pinned by '
+            'test_credit_note_lines_store_the_word_of_their_book and '
+            'test_commit_express_dbf_threads_its_book_to_the_credit_note_writer.'),
     },
     'import_credit_notes.py::_process_entry': {
-        'credit_note_imports.unit': ('pending:#610',
-            'Writes entry["unit"] verbatim into the credit_note_imports '
-            'side table with no bsn_units call anywhere in this file '
-            '(confirmed: no `import bsn_units`). #610\'s "credit-note '
-            'importers" bullet — the SECOND of the two credit-note writers '
-            'it names, alongside the scripts/import_express.py one above.'),
+        'credit_note_imports.unit': ('through_map',
+            'Translates entry["unit"] with bsn_units.normalize_unit (the '
+            'standalone ใบลดหนี้ file is a BSN5657 report, so the default '
+            'book) before the INSERT into the side table. Behaviour pinned by '
+            'test_credit_note_imports_store_the_word.'),
     },
     'scripts/import_supplier_catalogue.py::upsert_item': {
-        'supplier_catalogue_items.unit': ('pending:#610',
-            'Writes row["unit"] verbatim (a supplier\'s own Excel '
-            'spelling, e.g. the ขด/ขีด collision #610\'s own body names). '
-            '#610\'s explicit "supplier catalogue importer" bullet.'),
-        'supplier_catalogue_price_history.unit': ('pending:#610',
-            'Same INSERT OR REPLACE statement, same row["unit"], same '
-            'reasoning as the items-table write above.'),
+        'supplier_catalogue_items.unit': ('through_map',
+            'Translates row["unit"] with bsn_units.normalize_unit(..., '
+            'BOOK_ANY): Sendy\'s spelling variants only, never an Express '
+            'code, because a supplier\'s `ขด` is a coil of rope and Express\'s '
+            '`ขด` is ขีด (64 prod rows). Behaviour pinned by '
+            'test_supplier_catalogue_writes_sendy_spellings_never_express_codes.'),
+        'supplier_catalogue_price_history.unit': ('through_map',
+            'Same function, same translated `unit`, written by the INSERT OR '
+            'REPLACE that follows; the same test asserts both tables.'),
     },
 
     # ── exempt: no ticket needed — verified NOT a raw-code risk ──────────
@@ -1121,9 +1128,12 @@ _TRANSLATE_ASSIGN_RE = re.compile(
     r'\b(\w+)\s*=\s*bsn_units\.(?:normalize_unit|translate)\s*\(')
 
 _DIRECT_ASSIGN_THROUGH_MAP_SITES = (
+    'import_credit_notes.py::_process_entry',
     'scripts/2026_09_21_fix_rr6700253_unit_1658.py::fix',
     'scripts/2026_09_22_relabel_history_600.py::relabel',
+    'scripts/import_express.py::_import_credit_notes_records',
     'scripts/import_express.py::_import_sales',
+    'scripts/import_supplier_catalogue.py::upsert_item',
     'vat_book_builder.py::seed_products_from_stmas',
 )
 
@@ -1184,6 +1194,8 @@ THROUGH_MAP_TRANSITIVE_CONTROLS = {
         'test_catalog_pricing_build_ops_translates_before_execute_ops',
     (_ICP, 'promotions.bundle_unit'):
         'test_catalog_pricing_build_ops_translates_before_execute_ops',
+    ('express_registers.py::replace', 'DYNAMIC-TABLE'):
+        'test_dbf_sales_order_lines_store_the_word_of_their_book',
 }
 
 
@@ -1252,6 +1264,73 @@ def test_catalog_pricing_build_ops_translates_before_execute_ops(empty_db):
         'run_import no longer builds its ops through _build_ops — the '
         'transitive claim above rests on that being the only way an ops '
         'dict reaches _execute_ops')
+
+
+# ── #610: the sales-order register (express_registers.replace) ──────────
+# Helpers shared with tests/test_610_importers_write_words.py, which holds
+# the other #610 writer tests.
+from tests.test_610_importers_write_words import (  # noqa: E402
+    _oeso, _oesoit, _order_units, _patch_dbf, _seed_company, _seed_map)
+
+
+@pytest.mark.parametrize('book,hoo', [(None, 'ห่อ'), ('BSN5657', 'ห่อ'), ('xp5', 'หลอด')])
+def test_dbf_sales_order_lines_store_the_word_of_their_book(empty_db, monkeypatch, book, hoo):
+    """The census control for `express_registers.py::replace` (through_map_
+    transitive): commit_express_dbf, the one caller that hands it a unit
+    column, translates every line against the upload's own book first. `หอ`
+    is the one code the two books disagree on, so it proves the book is
+    threaded, not defaulted."""
+    import import_router
+    _seed_map(empty_db)
+    _seed_company(empty_db)
+    _patch_dbf(monkeypatch, {
+        'OESO': [_oeso('SO610')],
+        'OESOIT': [_oesoit('SO610', 1, 'หล'), _oesoit('SO610', 2, 'ช5'),
+                   _oesoit('SO610', 3, 'หอ'), _oesoit('SO610', 4, 'ZZ'),
+                   _oesoit('SO610', 5, '')],
+    })
+
+    out = import_router.commit_express_dbf('/x', db_path=empty_db,
+                                           snapshot_date='2026-09-22', book=book)
+
+    assert out['sales_orders'] == {'orders': 1, 'lines': 5}, out['sales_orders']
+    units = _order_units(empty_db)
+    assert units[1] == 'โหล'
+    assert units[3] == hoo
+    assert units[4] == 'ZZ'          # CONTROL: an unknown code is stored as sent
+    assert units[5] == ''            # an empty TQUCOD stays empty
+    # ช5 is a BSN5657 code only; xp5's own unit list does not carry it
+    assert units[2] == ('ช5' if book == 'xp5' else 'ชุด5')
+
+
+def test_only_commit_express_dbf_replaces_the_sales_order_register():
+    """The transitive claim rests on commit_express_dbf being the ONLY code
+    path that hands express_registers.replace() the sales-order register (the
+    one register with a unit column). A second caller would bypass the
+    translation while the test above stayed green."""
+    callers = []
+    for base in (APP, SCRIPTS):
+        for root, dirs, names in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in ('__pycache__', 'instance', 'static', 'tests')]
+            for n in names:
+                if not n.endswith('.py'):
+                    continue
+                path = os.path.join(root, n)
+                with open(path, encoding='utf-8') as f:
+                    tree = ast.parse(f.read())
+                for fn in ast.walk(tree):
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    for call in ast.walk(fn):
+                        if (isinstance(call, ast.Call)
+                                and isinstance(call.func, ast.Attribute)
+                                and call.func.attr == 'replace'
+                                and call.args
+                                and isinstance(call.args[0], ast.Constant)
+                                and call.args[0].value == 'sales_orders'):
+                            callers.append((os.path.relpath(path, _ROOT), fn.name))
+    assert callers == [('inventory_app/import_router.py', 'commit_express_dbf')], callers
+
 
 
 def _missing_transitive_controls(allowed, control_names, existing):

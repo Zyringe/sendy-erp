@@ -262,18 +262,24 @@ def _delete_existing_doc(conn, header_table, child_table, child_fk, company_id, 
 
 
 def _import_credit_notes_records(conn, records, batch_id, company_id, incremental=True,
-                                 replace_existing=False):
+                                 replace_existing=False, book=None):
     """Shared write step behind _import_credit_notes (text-report path,
     which converts p_cn.parse_credit_notes()'s CreditNote objects to dicts
     via dataclasses.asdict) and the Express DBF-direct path
     (express_dbf_source.py::build_credit_notes_ap_records, via
     run_import_records — Phase 1 slice B).
 
+    book: the Express book each line's unit code is read against (#610,
+    ADR 0018). None = bsn_units.DEFAULT_BOOK (BSN5657, the text reports and
+    the main DB's DBF upload); the VAT-book build passes xp5 through
+    run_import_records.
+
     records: list of dicts shaped like dataclasses.asdict(CreditNote(...))
     — doc_no, date_iso, supplier_name, ref_doc, discount, vat, total,
     is_cleared, is_void, type_code, note, lines=[{line_no, product_code,
     product_name, qty, unit, unit_price, discount, line_total, is_cleared}].
     """
+    book = book or bsn_units.DEFAULT_BOOK
     skip = (_existing_doc_nos(conn, 'express_credit_notes', company_id)
             if incremental and not replace_existing else set())
     skipped = 0
@@ -304,6 +310,7 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
         ))
         cn_id = cur.lastrowid
         for ln in r['lines']:
+            word = bsn_units.normalize_unit(ln['unit'], book, conn=conn)
             conn.execute("""
                 INSERT INTO express_credit_note_lines
                     (credit_note_id, line_no, product_code, product_id,
@@ -313,7 +320,7 @@ def _import_credit_notes_records(conn, records, batch_id, company_id, incrementa
             """, (
                 cn_id, ln['line_no'], ln['product_code'],
                 _product_id_by_code(conn, ln['product_code']),
-                ln['product_name'], ln['qty'], ln['unit'], ln['unit_price'],
+                ln['product_name'], ln['qty'], word, ln['unit_price'],
                 ln['discount'], ln['line_total'], int(ln['is_cleared']),
             ))
             line_count += 1
@@ -673,12 +680,15 @@ _SNAPSHOT_RECORDS_IMPORTERS = {'ar_snapshot', 'ap_snapshot'}
 
 
 def run_import_records(file_type, records, company_code='BSN', db_path=None,
-                        incremental=True, snapshot_date=None):
+                        incremental=True, snapshot_date=None, book=None):
     """Records-first entry point — the Express DBF-direct path
     (express_dbf_source.py::build_payments_out_records /
     build_credit_notes_ap_records) calls this with already-built records,
     skipping file parsing entirely. Mirrors run_import()'s batch-logging /
     commit-or-rollback semantics, minus the parse step.
+
+    book: passed only to an importer that writes a unit (credit_notes, #610);
+    any other file_type given one raises TypeError rather than ignoring it.
     """
     if file_type not in _RECORDS_IMPORTERS:
         raise SystemExit(
@@ -698,11 +708,12 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
           'imported via express_dbf_source (DBF-direct)'))
     batch_id = cur.lastrowid
 
+    unit_book = {'book': book} if book else {}
     try:
         if file_type in _SNAPSHOT_RECORDS_IMPORTERS:
             record_count, line_count = _RECORDS_IMPORTERS[file_type](
                 conn, records, batch_id, company_id, incremental=incremental,
-                entity=company_code, snapshot_date=snapshot_date)
+                entity=company_code, snapshot_date=snapshot_date, **unit_book)
         else:
             # replace_existing: this entry point IS the Express DBF-direct path,
             # and the daily zip is authoritative for the documents it carries —
@@ -714,7 +725,7 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
             # a printed report can legitimately cover only part of a period.
             record_count, line_count = _RECORDS_IMPORTERS[file_type](
                 conn, records, batch_id, company_id, incremental=incremental,
-                replace_existing=True)
+                replace_existing=True, **unit_book)
         conn.execute("""
             UPDATE express_import_log
             SET record_count = ?, line_count = ?
