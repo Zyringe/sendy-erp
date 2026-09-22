@@ -190,14 +190,15 @@ def undo_preconditions(conn):
         return [], ['nothing to undo: no outstanding row from a relabel run']
     todo, problems = [], []
     for (t, rid), (old, new) in sorted(rows.items()):
-        row = conn.execute(f"SELECT doc_no, unit, change_actor FROM {t} WHERE id = ?",
+        row = conn.execute(f"SELECT doc_no, unit, change_actor, product_id FROM {t} WHERE id = ?",
                            (rid,)).fetchone()
         if row is None or row['unit'] != new or row['change_actor'] != ACTOR:
             problems.append('%s id %s (%s): changed since the relabel (%r) — reconcile it by hand'
                             % (t, rid, row['doc_no'] if row else 'deleted',
                                tuple(row)[1:] if row else None))
             continue
-        todo.append({'table': t, 'row_id': rid, 'old': old, 'new': new, 'doc_no': row['doc_no']})
+        todo.append({'table': t, 'row_id': rid, 'old': old, 'new': new, 'doc_no': row['doc_no'],
+                     'product_id': row['product_id']})
     return todo, problems
 
 
@@ -287,11 +288,11 @@ def _app_dir():
     return None
 
 
-def _summary(rows):
+def _summary(rows, undo):
     by = {}
     for e in rows:
-        k = (e.get('product_id'), e['table'].split('_')[0], e.get('stored', e.get('old')),
-             e.get('new'))
+        k = (e['product_id'], e['table'].split('_')[0],
+             *((e['new'], e['old']) if undo else (e['stored'], e['new'])))
         by[k] = by.get(k, 0) + 1
     for (pid, t, old, new), n in sorted(by.items(), key=lambda kv: (kv[0][0] or 0, kv[0][1])):
         print('    pid %-5s %-8s %s -> %s  x%d' % (pid, t, old, new, n))
@@ -378,7 +379,7 @@ def main(argv=None):
     verb = 'restored' if a.undo else 'relabelled'
     print("%s %d row(s)%s:" % (verb.upper(), len(todo),
                                 '' if a.undo else ', %d already read the new word' % len(already)))
-    _summary(todo)
+    _summary(todo, a.undo)
     print("  stock, cost, ledger, cost ledger, conversions, sync flags: unchanged (asserted)")
     if a.mode == 'dry-run':
         conn.rollback()
