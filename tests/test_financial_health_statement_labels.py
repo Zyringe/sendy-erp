@@ -240,6 +240,10 @@ def test_every_page_state_carries_the_pooled_label(empty_db, admin_client_empty,
     statement = _extract_div(html, 'pooled-floor-statement')
     assert statement is not None, f'id="pooled-floor-statement" absent in state={state}'
     assert 'งบกองรวม' in statement
+    assert 'BSN กับ SD' in statement, \
+        f'pooled-explanation sentence (which inputs are pooled) missing in state={state}'
+    assert 'ยอดที่ขาดจริงของ BSN จะน้อยกว่าที่เห็น' in statement, \
+        f'pooled-explanation sentence (which way the floor is biased) missing in state={state}'
 
     for word in _FORBIDDEN:
         assert word not in html, f'{word!r} found on the page in state={state}'
