@@ -164,6 +164,49 @@ def test_the_map_learns_every_approved_entry(pre193_db):
         conn.close()
 
 
+BANG = ('!กล', '!คู', '!ลก', '!หด', '!หล')
+
+
+def test_the_five_bang_rows_leave_the_map(pre193_db):
+    """#595's approved list removes them: `!` is a warning mark Express prints
+    in text reports, not part of a unit, and the parsers strip it. Their exact
+    rows are kept in migration_193_unit_map_removed for the rollback."""
+    conn = _conn(pre193_db)
+    try:
+        before = {r['spelling']: tuple(r) for r in conn.execute(
+            "SELECT id, book, spelling, word, created_at FROM unit_map WHERE spelling IN (?,?,?,?,?)",
+            BANG)}
+    finally:
+        conn.close()
+    assert sorted(before) == sorted(BANG), 'the clone lacks the ! rows -- the test cannot see 193 remove them'
+
+    _migrate()
+
+    conn = _conn(pre193_db)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM unit_map WHERE spelling IN (?,?,?,?,?)",
+                            BANG).fetchone()[0] == 0
+        for code in BANG:
+            assert bsn_units.translate(code, 'BSN5657', conn=conn) is None, code
+        assert sorted(tuple(r) for r in conn.execute(
+            "SELECT id, book, spelling, word, created_at FROM migration_193_unit_map_removed")) == \
+            sorted(before.values())
+        assert bsn_units.translate('หล', 'BSN5657', conn=conn) == 'โหล'      # CONTROL: the code itself stays
+    finally:
+        conn.close()
+
+
+def test_a_stored_bang_code_aborts(pre193_db):
+    """They match nothing on prod. If one ever does, removing its map row would
+    make the next import rewrite that line (the #609 shape), so 193 refuses."""
+    conn = sqlite3.connect(pre193_db)
+    pid = _new_product(conn, 'mig193 bang line')
+    _sale(conn, 'IV193BANG-1', pid, '!หล')
+    conn.commit()
+    conn.close()
+    _assert_aborts_unchanged(pre193_db, 'mig 193 precondition FAILED: a stored unit still holds a ! code')
+
+
 def test_every_code_in_both_books_unit_lists_is_known(pre193_db):
     """User story 19: the map holds every code in both books' unit lists, so a
     rare code is translated on the first bill that uses it. Checked against
@@ -966,6 +1009,8 @@ def test_rollback_leaves_later_edits_alone(pre193_db):
         _uc(conn, twin, 'ช5', 5.0)
         conn.execute("UPDATE products SET unit_type='ถุง' WHERE id=?", (kg,))
         conn.execute("UPDATE unit_map SET word='ชุด' WHERE book='BSN5657' AND spelling='ช3'")
+        rebang = conn.execute("INSERT INTO unit_map (book, spelling, word) "
+                              "VALUES ('BSN5657', '!หล', 'โหล')").lastrowid
         conn.commit()
 
         skipped = _run_rollback(conn)
@@ -978,7 +1023,11 @@ def test_rollback_leaves_later_edits_alone(pre193_db):
             ('products', 'changed after 193, left as is'),
             ('unit_conversions', 'code row exists again, not restored'),
             ('unit_map', 'changed after 193, left as is'),
+            ('unit_map', 'value exists again, not restored'),
         ]
+        assert conn.execute("SELECT id FROM unit_map WHERE spelling='!หล'").fetchall() == [(rebang,)]
+        assert conn.execute("SELECT COUNT(*) FROM unit_map WHERE spelling IN ('!กล', '!คู', '!ลก', "
+                            "'!หด')").fetchone()[0] == 4                     # the others came back
         # the untouched parts still roll back
         assert conn.execute("SELECT unit FROM sales_transactions WHERE doc_no='IV193RB-1'"
                             ).fetchone()[0] == 'ช5'
