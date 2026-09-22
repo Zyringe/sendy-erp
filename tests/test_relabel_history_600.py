@@ -505,3 +505,32 @@ def test_control_without_the_relabel_the_importer_rewrites_them(db, monkeypatch)
     unrelabelled lines as changed."""
     stats = _reimport(db, monkeypatch, 'sales')
     assert stats['overwritten'] == 11, stats
+
+
+# ── the committed list ──────────────────────────────────────────────────────
+
+def test_the_committed_list_is_self_consistent_and_carries_the_eight_lines():
+    """The DBF is not in this repo, so the list's CONTENT is only as good as the
+    derivation run recorded in the PR. This pins its SHAPE: every row is one of
+    the three codes' old word (or the raw code) going to that code's new word, a
+    sales row points at its own document + line, and #603's eight lines are in."""
+    plan = json.loads((_SCRIPTS / '2026_09_22_relabel_history_600.json').read_text('utf-8'))
+    words = plan['words']
+    assert set(words) == {'กร', 'ถง', 'บล'}
+    rows = plan['relabel']
+    assert len(rows) == plan['counts']['relabel'] == 125
+    assert len({(e['table'], e['doc_no'], e['bsn_code']) for e in rows}) == 125
+    for e in rows:
+        w = words[e['express_code']]
+        assert e['new'] == w['new'] and e['stored'] in (w['old'], e['express_code']), e
+        assert e['qty'] == e['express_qty'], e
+        if e['table'] == 'sales_transactions':
+            assert e['doc_no'] == '%s-%s' % (e['express_doc'], e['express_seq']), e
+        else:
+            assert e['table'] == 'purchase_transactions' and e['doc_no'] == e['express_doc'], e
+    apply = _load(_APPLY, 'apply_600')
+    listed = {(e['table'], e['doc_no'], e['bsn_code']): e for e in rows}
+    for ident in apply.REQUIRED:
+        assert ident in listed, ident
+        assert (listed[ident]['stored'], listed[ident]['new']) == ('ตัว', 'กุรุส'), listed[ident]
+    assert plan['unrecoverable'] == []
