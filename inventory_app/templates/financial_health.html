@@ -48,9 +48,9 @@
           </div>
         </div>
       </div>
-      <div class="mt-2 text-subtle small">
+      <div class="mt-2 text-subtle small" id="floor-overhead-note">
         พนักงาน (ไม่รวมเจ้าของ) ฿{{ be.salary_floor | fmt_price }}
-        + ค่าใช้จ่ายคงที่ ฿{{ be.overhead | fmt_price }}
+        + ค่าใช้จ่ายคงที่ (สมุดรับ-จ่าย BSN+SD ปนกัน) ฿{{ be.overhead | fmt_price }}
         &divide; มาร์จิ้น {% if be.margin is not none %}{{ "%.1f"|format(be.margin * 100) }}%{% else %}—{% endif %}
       </div>
     </div>
@@ -72,9 +72,9 @@
           </div>
         </div>
       </div>
-      <div class="mt-2 text-subtle small">
+      <div class="mt-2 text-subtle small" id="full-overhead-note">
         พนักงานทั้งหมด (รวมเจ้าของ) ฿{{ be.salary_full | fmt_price }}
-        + ค่าใช้จ่ายคงที่ ฿{{ be.overhead | fmt_price }}
+        + ค่าใช้จ่ายคงที่ (สมุดรับ-จ่าย BSN+SD ปนกัน) ฿{{ be.overhead | fmt_price }}
       </div>
     </div>
   </div>
@@ -136,7 +136,8 @@
           <td class="text-end">฿{{ (be.salary_full - be.salary_floor) | fmt_price }}</td>
         </tr>
         <tr>
-          <td>ค่าใช้จ่ายดำเนินงาน (median 3 เดือนหลัง ไม่รวมเงินเดือน)</td>
+          <td>ค่าใช้จ่ายดำเนินงาน (median 3 เดือนหลัง ไม่รวมเงินเดือน)
+            <span id="table-overhead-note" class="text-subtle">(สมุดรับ-จ่าย BSN+SD ปนกัน)</span></td>
           <td class="text-end">฿{{ be.overhead | fmt_price }}</td>
         </tr>
         <tr class="fw-bold border-top">
@@ -152,8 +153,11 @@
   </div>
 </div>
 
-<div class="alert alert-secondary py-2 mb-0 small">
+<div class="alert alert-secondary py-2 mb-0 small" id="pooled-floor-statement">
   <i class="bi bi-info-circle me-1"></i>
+  <strong>งบกองรวม</strong> — ยอดขาย มาร์จิ้น และเงินเดือนเป็นของ BSN เท่านั้น
+  แต่ค่าใช้จ่ายคงที่มาจากสมุดรับ-จ่ายที่ BSN กับ SD ใช้ร่วมกันและแยกบริษัทไม่ได้
+  จุดคุ้มทุนจึงสูงกว่าของ BSN จริง อ่านว่าต่ำกว่า floor อาจเกินจริง &nbsp;·&nbsp;
   จุดคุ้มทุน = ต้นทุนคงที่ &divide; มาร์จิ้นขั้นต้น (เฉลี่ย 3 เดือนหลัง) &nbsp;·&nbsp;
   รายได้ = <code>net</code> (BSN) &nbsp;·&nbsp; ไม่มีการคาดการณ์/พยากรณ์ยอดสิ้นเดือน
 </div>
