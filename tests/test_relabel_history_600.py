@@ -275,13 +275,14 @@ def test_derive_refuses_before_599(db):
 
 def test_derive_never_guesses(db):
     """qty edited at source, a line number that now holds another stock code, two
-    stock-card lines disagreeing, two Sendy rows on one identity: each is listed,
-    none is taken."""
+    stock-card lines disagreeing, two Sendy rows on one identity, a stored word the
+    old map never wrote for that code: each is listed, none is taken."""
     stcrd = _stcrd()
     by = {(r['DOCNUM'], r['SEQNUM']): r for r in stcrd}
     by[('IV6702591', '3')]['TRNQTY'] = 5.0                       # qty differs
     by[('IV6702875', '4')]['STKCOD'] = '999ก9999'                # line 4 is another product
     stcrd.append(dict(by[('IV6700203', '5')], TQUCOD='ตว'))      # line 5 twice, two codes
+    by[('IV6700401', '3')]['TQUCOD'] = 'กร'                      # stored แผง, Express กร
     _exec(db, "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, bsn_code,"
               " qty, unit, unit_price, net, vat_type, synced_to_stock)"
               " VALUES ('2024-04-02','IV6700400-1','IV6700400',1303,'600ส7320',1,'ถุง',1,1,1,1)")
@@ -289,7 +290,8 @@ def test_derive_never_guesses(db):
     reasons = {e['doc_no']: e['reason'] for e in plan['unrecoverable']}
     taken = {e['doc_no'] for e in plan['relabel']}
     for doc, why in (('IV6702591-3', 'qty'), ('IV6702875-4', 'no stock-card line'),
-                     ('IV6700203-5', 'stock-card lines answer'), ('IV6700400-1', 'rows share')):
+                     ('IV6700203-5', 'stock-card lines answer'), ('IV6700400-1', 'rows share'),
+                     ('IV6700401-3', "stored 'แผง'")):
         assert doc not in taken, doc
         assert why in reasons.get(doc, ''), (doc, reasons.get(doc))
     assert 'IV6701146-6' in taken, 'control: an untouched line is still taken'
