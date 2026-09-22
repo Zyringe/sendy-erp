@@ -43,6 +43,9 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MIG_150 = os.path.join(REPO, "data", "migrations", "150_audit_log_row_key.sql")
 ROLLBACK_150 = os.path.join(
     REPO, "data", "migrations", "150_audit_log_row_key.rollback.sql")
+ROLLBACK_151 = os.path.join(
+    REPO, "data", "migrations",
+    "151_audit_row_key_index_and_pk_guard.rollback.sql")
 
 TABLES = {
     "customers": "code",
@@ -72,9 +75,24 @@ def pre150_conn(empty_db_conn):
     — so the rollback can't be run unconditionally the way pre134_conn does.
     Reconstruct the guaranteed pre-150 state: only run the rollback when the
     clone actually has row_key; otherwise the clone already IS pre-150
-    (today's reality on every machine this was written against)."""
+    (today's reality on every machine this was written against).
+
+    If the clone has ALSO had migration 151 applied, its index
+    `idx_audit_log_table_row_key` (on audit_log(table_name, row_key)) still
+    references row_key, so 150's `DROP COLUMN row_key` fails with
+    "error in index idx_audit_log_table_row_key after drop column" —
+    151 must be rolled back first. Detect this from 151's own artifact
+    (the index it creates), not from applied_migrations: empty_db is
+    data-less, so applied_migrations is cloned with zero rows and can't
+    answer "was 151 applied" for this schema-only clone."""
     cols = {r["name"] for r in empty_db_conn.execute("PRAGMA table_info(audit_log)")}
     if "row_key" in cols:
+        has_151_index = empty_db_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='idx_audit_log_table_row_key'"
+        ).fetchone()
+        if has_151_index:
+            _apply(empty_db_conn, ROLLBACK_151)
         _apply(empty_db_conn, ROLLBACK_150)
     return empty_db_conn
 
