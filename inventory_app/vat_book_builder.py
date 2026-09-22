@@ -195,13 +195,15 @@ def write_book_meta(conn, source_dir, isinfo_rows, counts):
 
 def finalize(db_path):
     """Make the artifact a single self-contained file: checkpoint + drop WAL,
-    integrity-check, then fsync file and directory. Aborts on any failure."""
+    VACUUM (a DELETE alone leaves the freed pages in the file), integrity-
+    check, then fsync file and directory. Aborts on any failure."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
         if mode.lower() != 'delete':
             raise RuntimeError(f"journal_mode is {mode!r}, expected delete")
+        conn.execute("VACUUM")
         ok = conn.execute("PRAGMA integrity_check").fetchone()[0]
         if ok != 'ok':
             raise RuntimeError(f"integrity_check failed: {ok}")
@@ -369,6 +371,19 @@ def _build(source_dir, snapshot_date=None, main_db_path=None):
             'snapshot_date': per_type['snapshot_date'],
         }
         write_book_meta(conn, source_dir, isinfo, counts)
+        # Every audit_log row here is this build's OWN insert — the book is
+        # rebuilt from scratch on every upload, so the trail carries no real
+        # history, and it was 44% of the published file (53MB of 120MB,
+        # ENOSPC on prod's 74MB-free volume since 09-04). Keep the triggers
+        # (the six importers still need them to run); drop what they wrote.
+        # table-existence check mirrors the DROP-TABLE-IF-EXISTS idiom this
+        # file already uses elsewhere (write_book_meta, dump_isvat) — a caller
+        # that stubs out init_db() (unit tests) never created the table.
+        if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'"
+        ).fetchone():
+            conn.execute("DELETE FROM audit_log")
+            conn.commit()
     finally:
         conn.close()
 
