@@ -359,6 +359,52 @@ def test_upsert_unit_conversion_unknown_code_survives(empty_db):
     assert [r['bsn_unit'] for r in rows] == ['ซซ']
 
 
+def test_first_time_map_keeps_the_spelling_the_codes_rows_still_use(empty_db):
+    """Review of #631, should-fix 2. On a FIRST map of a BSN code, its ledger
+    rows do not carry the product id yet, so a product-only ledger check
+    missed them: the word was stored and the `หล` rows could never sync
+    (`_get_base_qty('หล')` -> None). Driven through the real /mapping/save
+    route, then the rows are linked and synced the way the import does."""
+    import app as app_module
+    import models
+    from database import get_connection
+    _seed_map(empty_db)
+    pid = _seed_product(empty_db, sku='SK-602-FIRSTMAP')
+    conn = sqlite3.connect(empty_db)
+    conn.executemany(
+        "INSERT INTO purchase_transactions (date_iso, doc_no, bsn_code, unit, qty, "
+        "  net, product_id, synced_to_stock) VALUES (?,?,?,?,?,?,NULL,0)",
+        [('2026-01-01', 'RR1', 'ZZFIRST', 'หล', 2, 20),
+         ('2026-01-02', 'RR2', 'ZZFIRST', 'หล', 1, 10)])
+    conn.commit()
+    conn.close()
+
+    client = app_module.app.test_client()
+    with client.session_transaction() as s:
+        s['role'] = 'admin'
+        s['username'] = 'tester'
+        s['user_id'] = 1
+    client.post('/mapping/save', json={'mappings': [{
+        'bsn_code': 'ZZFIRST', 'bsn_name': 'ของแมปครั้งแรก', 'action': 'map',
+        'product_id': pid, 'bsn_unit': 'หล', 'unit_conversion_ratio': 12}]})
+
+    stored = [r['bsn_unit'] for r in _col(
+        empty_db, "SELECT bsn_unit FROM unit_conversions WHERE product_id=?", (pid,))]
+    assert stored == ['หล'], stored
+
+    c = get_connection()
+    try:
+        models.resolve_pending_mappings(c)
+        models._sync_bsn_to_stock(c, 'purchase_transactions', 'purchase')
+        c.commit()
+    finally:
+        c.close()
+    synced = [r['synced_to_stock'] for r in _col(
+        empty_db, "SELECT synced_to_stock FROM purchase_transactions "
+                  "WHERE bsn_code='ZZFIRST' ORDER BY id")]
+    assert synced == [1, 1], synced
+
+
 # ── 5. the /unit-conversions pending list groups by word ─────────────────
 
 def test_pending_unit_conversions_group_by_word(empty_db):
@@ -623,6 +669,94 @@ def test_price_lookup_finds_a_variant_tier_when_asked_by_the_word(empty_db):
 
     assert out['answer']['price_per_unit'] == 100.0, out['answer']
     assert out['list']['list_source'] == 'tier', out['list']
+
+
+# ── review of #631, blocker 1: a COUNT in the ask is a quantity ──────────
+#
+# Only a count of exactly ONE is a spelling of the unit ('1 โหล' is what a
+# human copies off a tier label). Any other count is a QUANTITY: stripping it
+# made '2 โหล' at qty 1 quote ONE dozen (line_total = one dozen's price), and
+# '144 อัน' quote one อัน. The quote CLI passes a line's unit verbatim, so a
+# counted ask other than 1 must match a tier stored with that same count and
+# unit, or refuse.
+
+@pytest.mark.parametrize('asked', ['1โหล', '1 โหล'])
+def test_price_lookup_a_count_of_one_is_still_the_unit(empty_db, asked):
+    _seed_map(empty_db)
+    pid = _seed_priced_product(empty_db)
+    out = _resolve(empty_db, product_id=pid, unit=asked)
+    assert out['answer']['unit'] == 'โหล', out['answer']
+    assert out['answer']['price_per_unit'] == 100.0, out['answer']
+
+
+@pytest.mark.parametrize('asked', ['2 โหล', '2โหล', '2 หล'])
+def test_price_lookup_refuses_a_count_other_than_one_without_that_tier(empty_db, asked):
+    """Blocker 1's reproduction: a `1 โหล` tier and a `โหล` ratio exist, and
+    `2 โหล` must still REFUSE — never answer one dozen's price."""
+    _seed_map(empty_db)
+    pid = _seed_priced_product(empty_db)
+    with pytest.raises(ValueError):
+        _resolve(empty_db, product_id=pid, unit=asked)
+
+
+def test_price_lookup_refuses_a_counted_base_unit(empty_db):
+    """`144 อัน` on a product whose own unit is อัน: the old strip read it as
+    ONE อัน. Same refusal."""
+    _seed_map(empty_db)
+    pid = _seed_product(empty_db, name='สินค้าอัน', unit_type='อัน',
+                        sku='SK-602-144', base=250.0, cost=100.0)
+    # CONTROL: the bare unit answers, so the refusal below is the count's doing
+    assert _resolve(empty_db, product_id=pid, unit='อัน')['answer']['price_per_unit'] == 250.0
+    with pytest.raises(ValueError):
+        _resolve(empty_db, product_id=pid, unit='144 อัน')
+
+
+def test_price_lookup_a_counted_ask_answers_its_own_counted_tier(empty_db):
+    """...and when a tier IS stored with that count, the counted ask gets THAT
+    tier — never the `1 โหล` one beside it. Spelling of the unit part still
+    goes through the map (`2 หล` finds `2 โหล`)."""
+    _seed_map(empty_db)
+    pid = _seed_priced_product(empty_db)           # has '1 โหล' = 100
+    conn = sqlite3.connect(empty_db)
+    conn.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) "
+                 "VALUES (?, '2 โหล', 190.0)", (pid,))
+    conn.commit()
+    conn.close()
+    for asked in ('2 โหล', '2โหล', '2 หล'):
+        out = _resolve(empty_db, product_id=pid, unit=asked)
+        assert out['answer']['price_per_unit'] == 190.0, (asked, out['answer'])
+        assert out['answer']['line_total'] == 190.0, (asked, out['answer'])
+        assert out['list']['list_source'] == 'tier', (asked, out['list'])
+    # CONTROL: the bare unit still answers the 1-dozen tier
+    assert _resolve(empty_db, product_id=pid, unit='โหล')['answer']['price_per_unit'] == 100.0
+
+
+# ── review of #631, nit 6: with no ratio, the bill's unit compares by WORD ─
+
+def test_price_lookup_last_paid_by_word_when_the_ratio_is_unknown(empty_db):
+    """The asked unit is answered by a tier alone (no conversion, so ratio is
+    unknown) and the customer's bill spells it `บล`. latest_evidence used to
+    compare the RAW bill unit to the word on this branch and skip the bill."""
+    _seed_map(empty_db)
+    pid = _seed_product(empty_db, name='สินค้าแผง', unit_type='ตัว',
+                        sku='SK-602-PANEL', base=10.0, cost=5.0)
+    conn = sqlite3.connect(empty_db)
+    conn.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) "
+                 "VALUES (?, '1 แผง', 80.0)", (pid,))
+    conn.execute("INSERT INTO customers (code, name) VALUES ('C602P', 'ลูกค้าแผง')")
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, "
+        "  customer_code, bsn_code, unit, qty, net, vat_type, product_id) "
+        "VALUES (date('now','-30 days'), 'IV602P-1', 'IV602P', 'ลูกค้าแผง', "
+        "        'C602P', 'X1', 'บล', 1, 75.0, 0, ?)", (pid,))
+    conn.commit()
+    conn.close()
+
+    out = _resolve(empty_db, product_id=pid, unit='แผง', customer_code='C602P')
+
+    assert out['unit']['ratio'] is None, out['unit']       # the branch under test
+    assert out['answer']['basis'] == 'last_paid', out['answer']
+    assert out['answer']['price_per_unit'] == 75.0, out['answer']
 
 
 def test_price_lookup_still_refuses_a_unit_nothing_can_answer(empty_db):
