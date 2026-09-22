@@ -563,6 +563,20 @@ ALLOWED = {
             'pre-run state), and only on a row still carrying the relabel\'s '
             'own declaration. Translating it would not restore it.'),
     },
+    'scripts/2026_09_22_sync_436_ch3.py::relabel': {
+        'sales_transactions.unit': ('through_map',
+            'One-off relabel of pid 436\'s two `ช3` Shopee lines (Put 2026-09-22, after '
+            '#610). Calls bsn_units.translate(EXPRESS_CODE, BOOK, conn=conn) in '
+            'relabel() itself and writes ITS result, so the word is the unit map\'s, the '
+            'one the importer writes for that Express code. The script refuses unless '
+            'the map reads `ช3` as ชุด3.'),
+    },
+    'scripts/2026_09_22_sync_436_ch3.py::undo': {
+        'sales_transactions.unit': ('exempt',
+            'The pid 436 ช3 sync\'s undo. It writes back exactly the unit audit_log '
+            'recorded the line holding before the sync, and only on a line still '
+            'carrying the sync\'s own declaration. Translating it would not restore it.'),
+    },
     'scripts/import_express.py::_import_sales': {
         'express_sales.unit': ('through_map',
             'Calls bsn_units.normalize_unit(r.unit, conn=conn) — comment '
@@ -1134,6 +1148,7 @@ _DIRECT_ASSIGN_THROUGH_MAP_SITES = (
     'import_credit_notes.py::_process_entry',
     'scripts/2026_09_21_fix_rr6700253_unit_1658.py::fix',
     'scripts/2026_09_22_relabel_history_600.py::relabel',
+    'scripts/2026_09_22_sync_436_ch3.py::relabel',
     'scripts/import_express.py::_import_credit_notes_records',
     'scripts/import_express.py::_import_sales',
     'scripts/import_supplier_catalogue.py::upsert_item',

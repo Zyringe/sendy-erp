@@ -180,6 +180,11 @@ SCRIPT_EXEMPTIONS = {
         'change_source=manual, actor, a reason and a fresh token, so mig 173 accepts it. It '
         'stays a literal UPDATE rather than declared_update so tests/test_unit_writer_census.py '
         'can see its unit write go through bsn_units.'),
+    '2026_09_22_sync_436_ch3.py': ('one-off relabel + sync of pid 436\'s two ช3 Shopee lines '
+        '(Put 2026-09-22, after #610). Like the rr6700253 entry it does not pre-date the '
+        'guard: both its UPDATEs set change_source=manual, actor, a reason and a fresh '
+        'token, so mig 173 accepts them. Literal UPDATEs so tests/test_unit_writer_census.py '
+        'can see the forward write go through bsn_units.'),
     'reimport_2026_04_28/import_credit_notes.py': 'archived copy of the 04-28 reimport',
     'reimport_2026_04_28/run.py': 'archived driver for the 04-28 reimport',
 }
