@@ -50,12 +50,8 @@ def test_finalize_vacuums_dead_pages_and_shrinks_the_file(tmp_path):
 # ── build: no audit rows survive in the published artifact ─────────────────
 
 def _build_a_tiny_book(tmp_path, monkeypatch):
-    """Copies the setup of test_build_imports_through_the_main_db_map in
-    tests/test_vat_book_builder.py: fake express_dbf_source.open_table, a
-    tiny STMAS/STLOC/ISVAT/ISINFO/APTRN/STCRD fixture, a main db carrying the
-    xp5 unit_map row, the monkeypatched DATABASE_PATH, VAT_BOOK_BUILD=1, and
-    the sys.modules leak guard so the lazily-imported modules bound to this
-    tmp db don't leak their config into later tests. Returns the built db path."""
+    """Same real build as test_build_imports_through_the_main_db_map; returns
+    the built db path."""
     import sys
     scripts = os.path.join(os.path.dirname(__file__), '..', 'scripts')
     if scripts not in sys.path:
