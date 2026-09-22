@@ -89,7 +89,8 @@ def _customer_sales_aggregates(conn, where, params):
     and `commission_attribution` exist as single definitions.
 
     `total_net` in summary and monthly is ยอดซื้อรวม: before VAT, credit notes
-    subtracted (sales_filters.purchase_net_sql, #494).
+    subtracted (sales_filters.purchase_net_sql, #494). The summary's
+    `total_qty` (จำนวนชิ้น) follows the same rule (sales_qty_sql, #627).
 
     Returns (summary, top_products, monthly, docs).
     """
@@ -98,7 +99,7 @@ def _customer_sales_aggregates(conn, where, params):
     summary = dict(conn.execute(f"""
         SELECT COUNT(DISTINCT doc_base) AS doc_count,
                COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS total_net,
-               COALESCE(SUM(qty), 0)  AS total_qty,
+               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS total_qty,
                MIN(date_iso)          AS first_date,
                MAX(date_iso)          AS last_date
         FROM sales_transactions

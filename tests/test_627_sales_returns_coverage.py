@@ -53,7 +53,7 @@ MUST_USE_HELPER = {
     'models/sales.py::get_trade_dashboard': 6,        # card (2) + weekly (1) + top products (2) + top customers (1)
     'models/sales.py::get_product_trade_summary': 8,  # card (2) + customers (2) + monthly (2) + docs (1) + doc units (1)
     'call_card.py::_assemble_products': 2,            # ซื้อประจำ ordering + its ซื้อรวม qty
-    'models/customers.py::_customer_sales_aggregates': 2,  # top_products: the call card's แบรนด์เด่น
+    'models/customers.py::_customer_sales_aggregates': 3,  # จำนวนชิ้น + top_products (the call card's แบรนด์เด่น)
 }
 
 # file::function -> (raw aggregates it holds, why a return is not subtracted there).
@@ -62,11 +62,6 @@ ALLOWED = {
     'models/sales.py::get_product_trade_summary': (1,
         'free_qty: counts a ฿0 line of an INVOICE as แถม and never looks at a '
         'credit note (doc_base NOT LIKE SR). A freebie count, not ยอดขาย.'),
-    'models/customers.py::_customer_sales_aggregates': (1,
-        'the customer page\'s จำนวนชิ้น (summary total_qty). A customer page, '
-        'not a trade screen: #494 ruled its money (ยอดซื้อรวม, which IS net of '
-        'returns) and left the qty raw; Put\'s #627 ruling names the trade '
-        'screens only. Raised on the #627 PR as a follow-up.'),
     # ── revenue: returns LEFT OUT, not subtracted (GL 41-01), unchanged by #627 ──
     'models/accounting.py::get_accounting_summary': (4,
         '/accounting: sales_net and COGS over GL 41-01 — SR dropped by WHERE, '
