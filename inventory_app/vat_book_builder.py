@@ -193,15 +193,26 @@ def write_book_meta(conn, source_dir, isinfo_rows, counts):
     conn.commit()
 
 
+def clear_build_audit(conn):
+    """Empty the book's audit_log. The book is rebuilt from scratch on every
+    upload, so every row in it is this build's own INSERT and records no
+    history. It was 45% of the file (54MB of 120MB, measured 2026-09-22), and
+    publish() needs free space on the data volume equal to the whole file."""
+    conn.execute("DELETE FROM audit_log")
+    conn.commit()
+
+
 def finalize(db_path):
     """Make the artifact a single self-contained file: checkpoint + drop WAL,
-    integrity-check, then fsync file and directory. Aborts on any failure."""
+    VACUUM (a DELETE alone leaves the freed pages in the file), integrity-
+    check, then fsync file and directory. Aborts on any failure."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
         if mode.lower() != 'delete':
             raise RuntimeError(f"journal_mode is {mode!r}, expected delete")
+        conn.execute("VACUUM")
         ok = conn.execute("PRAGMA integrity_check").fetchone()[0]
         if ok != 'ok':
             raise RuntimeError(f"integrity_check failed: {ok}")
@@ -369,6 +380,7 @@ def _build(source_dir, snapshot_date=None, main_db_path=None):
             'snapshot_date': per_type['snapshot_date'],
         }
         write_book_meta(conn, source_dir, isinfo, counts)
+        clear_build_audit(conn)
     finally:
         conn.close()
 
