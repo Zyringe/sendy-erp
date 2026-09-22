@@ -193,6 +193,15 @@ def write_book_meta(conn, source_dir, isinfo_rows, counts):
     conn.commit()
 
 
+def clear_build_audit(conn):
+    """Empty the book's audit_log. The book is rebuilt from scratch on every
+    upload, so every row in it is this build's own INSERT and records no
+    history. It was 45% of the file (54MB of 120MB), and publish() needs free
+    space on the data volume equal to the whole file."""
+    conn.execute("DELETE FROM audit_log")
+    conn.commit()
+
+
 def finalize(db_path):
     """Make the artifact a single self-contained file: checkpoint + drop WAL,
     VACUUM (a DELETE alone leaves the freed pages in the file), integrity-
@@ -371,19 +380,7 @@ def _build(source_dir, snapshot_date=None, main_db_path=None):
             'snapshot_date': per_type['snapshot_date'],
         }
         write_book_meta(conn, source_dir, isinfo, counts)
-        # Every audit_log row here is this build's OWN insert — the book is
-        # rebuilt from scratch on every upload, so the trail carries no real
-        # history, and it was 44% of the published file (53MB of 120MB,
-        # ENOSPC on prod's 74MB-free volume since 09-04). Keep the triggers
-        # (the six importers still need them to run); drop what they wrote.
-        # table-existence check mirrors the DROP-TABLE-IF-EXISTS idiom this
-        # file already uses elsewhere (write_book_meta, dump_isvat) — a caller
-        # that stubs out init_db() (unit tests) never created the table.
-        if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_log'"
-        ).fetchone():
-            conn.execute("DELETE FROM audit_log")
-            conn.commit()
+        clear_build_audit(conn)
     finally:
         conn.close()
 

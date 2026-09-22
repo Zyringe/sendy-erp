@@ -568,6 +568,7 @@ def test_build_passes_the_snapshot_date_through_to_the_importer(tmp_path, monkey
     monkeypatch.setattr(vb, 'dump_isvat', lambda *a, **k: 0)
     monkeypatch.setattr(vb, 'dump_stmas_meta', lambda *a, **k: 0)
     monkeypatch.setattr(vb, 'write_book_meta', lambda *a, **k: None)
+    monkeypatch.setattr(vb, 'clear_build_audit', lambda conn: None)
     monkeypatch.setattr(vb, 'finalize', lambda *a, **k: None)
     seen = {}
 
