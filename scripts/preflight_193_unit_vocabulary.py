@@ -23,13 +23,16 @@ It reports:
      column's book, normalize_tier_label for tier labels), and no covered
      column still holds a spelling the map translates outside the listed skips;
   6. per covered column, the values left that the map does not know as a word
-     (supplier spellings such as กป. or ปอนด์ that are not in the approved list).
+     (supplier spellings such as กป. or ปอนด์ that are not in the approved list);
+  7. the กร/ถง/บล conversion rows 193 deliberately keeps (its CONVERSION RULES),
+     each with its word twin: the follow-up clean-up after #603's hasp rebase.
 
 Exit: 0 clean, 1 blocked (any finding in 1, 2, 4 or 5), 2 could not run.
 """
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -83,6 +86,13 @@ PRECONDITIONS = {
 
 def _block(sql, name):
     return sql[sql.index(f'-- >>> {name}\n'):sql.index(f'-- <<< {name}\n')]
+
+
+def _kept_conversion_keys(sql):
+    """The conversion keys 193 leaves alone, read from its own _mig193_uc_map
+    definition so this script cannot drift from the migration."""
+    m = re.search(r"spelling NOT IN \(([^)]*)\)", _block(sql, 'mig193 preconditions'))
+    return {k.strip().strip("'") for k in m.group(1).split(',')}
 
 
 def _copy(src, dst):
@@ -227,6 +237,14 @@ def _run_on_copy(conn, sql, report):
                 mismatch.append([t, c, old, new, want])
         report['invariant_mismatches'] = mismatch
         skipped = {(r[0], r[1]) for r in report['skipped']}
+        kept = _kept_conversion_keys(sql)
+        report['kept_conversions'] = [list(r) for r in conn.execute(
+            "SELECT c.product_id, c.bsn_unit, c.ratio, w.bsn_unit, w.ratio "
+            "FROM unit_conversions c "
+            "LEFT JOIN unit_map u ON u.book = 'BSN5657' AND u.spelling = c.bsn_unit "
+            "LEFT JOIN unit_conversions w ON w.product_id = c.product_id AND w.bsn_unit = u.word "
+            "WHERE c.bsn_unit IN (%s) ORDER BY c.product_id, c.bsn_unit"
+            % ','.join('?' * len(kept)), sorted(kept))]
         left = {}
         unknown = {}
         words = bsn_units.full_units(conn=conn)
@@ -239,7 +257,8 @@ def _run_on_copy(conn, sql, report):
                 else:
                     unit = v
                     translated = bsn_units.normalize_unit(v, book, conn=conn) != v
-                if translated and (t, rid) not in skipped:
+                if translated and (t, rid) not in skipped and not (
+                        t == 'unit_conversions' and v in kept):
                     behind[v] += 1
                 elif not translated and unit not in words:
                     odd[unit] += 1
@@ -293,6 +312,10 @@ def _print(code, r):
         for row in r['invariant_mismatches'][:20]:
             print('     ', row)
         print('  left behind (the map translates it, 193 did not):', r['left_behind'] or 'none')
+        print(f"  กร/ถง/บล conversions kept for after #603 (product, key, ratio, twin, twin ratio): "
+              f"{len(r['kept_conversions'])}")
+        for row in r['kept_conversions']:
+            print('     ', row)
         print('  values the map does not know as a word (left as written):')
         for k, v in r['not_a_known_word'].items():
             print(f'    {k}: {v}')

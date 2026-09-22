@@ -67,6 +67,12 @@
 --     ratio (กิโล + กก.)                              -> keep the lower id, delete the other
 --   spelling row, no word row                         -> rename it to the word
 --   Every deleted row is snapshotted in migration_193_uc_deleted.
+-- ⛔ EXCEPT the กร / ถง / บล keys, which stay exactly as they are
+--   (_mig193_uc_map leaves them out). After #600 no bill line reads them and
+--   each agrees with its กุรุส / ถัง / บล็อก twin, so they are harmless; #603's
+--   hasp plan pins 1187/1188 at {'กร': 1.0, 'ตัว': 1.0} and would refuse if they
+--   merged. Their clean-up is a follow-up AFTER that rebase lands (lead's
+--   ruling, 2026-09-22).
 --
 -- PRECONDITIONS (the migration-177 shape: a temp table of violators and a
 -- BEFORE DELETE trigger that RAISEs; the runner rolls back and does not stamp
@@ -230,6 +236,14 @@ DELETE FROM _mig193_map WHERE word = spelling;
 -- <<< mig193 map
 
 -- >>> mig193 preconditions
+-- The keys this migration moves in unit_conversions: the BSN5657 map minus
+-- the three codes left for after #603 (see CONVERSION RULES).
+DROP TABLE IF EXISTS temp._mig193_uc_map;
+CREATE TEMP TABLE _mig193_uc_map (spelling TEXT PRIMARY KEY, word TEXT NOT NULL);
+INSERT INTO _mig193_uc_map (spelling, word)
+SELECT spelling, word FROM _mig193_map
+ WHERE source = 'BSN5657' AND spelling NOT IN ('กร', 'ถง', 'บล');
+
 -- Tier labels, split the way bsn_units.split_tier_label splits them: a leading
 -- run of digits plus the spaces after it is the count (kept byte for byte), the
 -- rest, trimmed, is the unit. No leading digit means no count.
@@ -262,7 +276,7 @@ DROP TABLE IF EXISTS temp._mig193_pre_twin_ratio;
 CREATE TEMP TABLE _mig193_pre_twin_ratio AS
 SELECT c.id AS uc_id
   FROM unit_conversions c
-  JOIN _mig193_map m ON m.source = 'BSN5657' AND m.spelling = c.bsn_unit
+  JOIN _mig193_uc_map m ON m.spelling = c.bsn_unit
   JOIN unit_conversions w ON w.product_id = c.product_id AND w.bsn_unit = m.word
  WHERE w.ratio IS NOT c.ratio;
 
@@ -270,9 +284,9 @@ DROP TABLE IF EXISTS temp._mig193_pre_codes_ratio;
 CREATE TEMP TABLE _mig193_pre_codes_ratio AS
 SELECT a.id AS uc_id
   FROM unit_conversions a
-  JOIN _mig193_map ma ON ma.source = 'BSN5657' AND ma.spelling = a.bsn_unit
+  JOIN _mig193_uc_map ma ON ma.spelling = a.bsn_unit
   JOIN unit_conversions b ON b.product_id = a.product_id AND b.id <> a.id
-  JOIN _mig193_map mb ON mb.source = 'BSN5657' AND mb.spelling = b.bsn_unit AND mb.word = ma.word
+  JOIN _mig193_uc_map mb ON mb.spelling = b.bsn_unit AND mb.word = ma.word
  WHERE b.ratio IS NOT a.ratio;
 
 DROP TABLE IF EXISTS temp._mig193_pre_pcm_collision;
@@ -298,7 +312,7 @@ CREATE TEMP TABLE _mig193_pre_unit_type_ratio AS
 SELECT c.id AS uc_id
   FROM unit_conversions c
   JOIN products p ON p.id = c.product_id
-  LEFT JOIN _mig193_map mc ON mc.source = 'BSN5657' AND mc.spelling = c.bsn_unit
+  LEFT JOIN _mig193_uc_map mc ON mc.spelling = c.bsn_unit
   LEFT JOIN _mig193_map mp ON mp.source = 'BSN5657' AND mp.spelling = p.unit_type
  WHERE (mc.spelling IS NOT NULL OR mp.spelling IS NOT NULL)
    AND COALESCE(mc.word, c.bsn_unit) = COALESCE(mp.word, p.unit_type)
@@ -362,7 +376,7 @@ UPDATE products
 INSERT INTO migration_193_uc_deleted (id, product_id, bsn_unit, ratio, created_at)
 SELECT c.id, c.product_id, c.bsn_unit, c.ratio, c.created_at
   FROM unit_conversions c
-  JOIN _mig193_map m ON m.source = 'BSN5657' AND m.spelling = c.bsn_unit
+  JOIN _mig193_uc_map m ON m.spelling = c.bsn_unit
  WHERE EXISTS (SELECT 1 FROM unit_conversions w
                 WHERE w.product_id = c.product_id AND w.bsn_unit = m.word);
 
@@ -370,10 +384,10 @@ SELECT c.id, c.product_id, c.bsn_unit, c.ratio, c.created_at
 INSERT INTO migration_193_uc_deleted (id, product_id, bsn_unit, ratio, created_at)
 SELECT c.id, c.product_id, c.bsn_unit, c.ratio, c.created_at
   FROM unit_conversions c
-  JOIN _mig193_map m ON m.source = 'BSN5657' AND m.spelling = c.bsn_unit
+  JOIN _mig193_uc_map m ON m.spelling = c.bsn_unit
  WHERE c.id NOT IN (SELECT id FROM migration_193_uc_deleted)
    AND EXISTS (SELECT 1 FROM unit_conversions o
-                 JOIN _mig193_map mo ON mo.source = 'BSN5657' AND mo.spelling = o.bsn_unit
+                 JOIN _mig193_uc_map mo ON mo.spelling = o.bsn_unit
                 WHERE o.product_id = c.product_id AND mo.word = m.word AND o.id < c.id);
 
 DELETE FROM unit_conversions WHERE id IN (SELECT id FROM migration_193_uc_deleted);
@@ -381,12 +395,11 @@ DELETE FROM unit_conversions WHERE id IN (SELECT id FROM migration_193_uc_delete
 -- (c) every spelling row left is the only one for its word: rename it
 INSERT INTO migration_193_snapshot (table_name, row_id, column_name, old_value, new_value)
 SELECT 'unit_conversions', c.id, 'bsn_unit', c.bsn_unit, m.word
-  FROM unit_conversions c JOIN _mig193_map m ON m.source = 'BSN5657' AND m.spelling = c.bsn_unit;
+  FROM unit_conversions c JOIN _mig193_uc_map m ON m.spelling = c.bsn_unit;
 
 UPDATE unit_conversions
-   SET bsn_unit = (SELECT word FROM _mig193_map
-                    WHERE source = 'BSN5657' AND spelling = unit_conversions.bsn_unit)
- WHERE bsn_unit IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657');
+   SET bsn_unit = (SELECT word FROM _mig193_uc_map WHERE spelling = unit_conversions.bsn_unit)
+ WHERE bsn_unit IN (SELECT spelling FROM _mig193_uc_map);
 
 -- ── 5. bill lines, only where the word resolves exactly as the spelling did
 DROP TABLE IF EXISTS temp._mig193_line;
@@ -561,7 +574,7 @@ UNION ALL SELECT id FROM pending_product_suggestions WHERE bsn_unit            I
 UNION ALL SELECT id FROM pending_product_suggestions WHERE suggested_unit_type IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657')
 UNION ALL SELECT id FROM credit_note_imports         WHERE unit                IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657')
 UNION ALL SELECT id FROM express_sales               WHERE unit                IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657')
-UNION ALL SELECT id FROM unit_conversions            WHERE bsn_unit            IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657')
+UNION ALL SELECT id FROM unit_conversions            WHERE bsn_unit            IN (SELECT spelling FROM _mig193_uc_map)
 UNION ALL SELECT id FROM express_sales_order_lines   WHERE unit                IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657')
 UNION ALL SELECT id FROM express_credit_note_lines   WHERE unit                IN (SELECT spelling FROM _mig193_map WHERE source = 'BSN5657')
 UNION ALL SELECT id FROM supplier_catalogue_items    WHERE unit                IN (SELECT spelling FROM _mig193_map WHERE source = '*')
@@ -578,6 +591,7 @@ DROP TABLE _mig193_line;
 DROP TABLE _mig193_res_pre;
 DROP TABLE _mig193_tier;
 DROP TABLE _mig193_pcm;
+DROP TABLE _mig193_uc_map;
 DROP TABLE _mig193_map;
 DROP TABLE _mig193_seed;
 

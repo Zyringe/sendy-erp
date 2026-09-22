@@ -73,6 +73,9 @@ def test_lists_a_held_line_and_never_writes_the_source(pre193):
     conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'ชุด3', 3)",
                  (pid,))
     held = _sale(conn, 'IVPF193-1', pid, 'ช3')
+    # a กร twin 193 keeps: listed, never "left behind"
+    conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'กร', 1)", (pid,))
+    conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'กุรุส', 1)", (pid,))
     moved = _sale(conn, 'IVPF193-2', _product(conn, 'preflight193 moved'), 'คค')
     conn.commit()
     conn.close()
@@ -83,6 +86,7 @@ def test_lists_a_held_line_and_never_writes_the_source(pre193):
     assert [r[:5] for r in report['skipped']] == [['sales_transactions', held, pid, 'ช3', 'ชุด3']]
     assert report['changed']['sales_transactions.unit'] >= 1
     assert report['invariant_mismatches'] == [] and report['left_behind'] == {}
+    assert [pid, 'กร', 1.0, 'กุรุส', 1.0] in report['kept_conversions']
     conn = sqlite3.connect(pre193)
     try:
         assert conn.execute("SELECT unit FROM sales_transactions WHERE id=?", (moved,)).fetchone()[0] == 'คค'
