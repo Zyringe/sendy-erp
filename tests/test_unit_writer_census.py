@@ -10,8 +10,9 @@ This ticket is the checklist for the writers that still don't: #599 (กร/ถ�
 Express meaning), #601 (VAT-book book-awareness), #602 (product form /
 promotions / suggestions / price lookup), #610 (the DBF sales-order-lines
 writer, the credit-note importers, the supplier catalogue importer).
-#600 runs a one-time historical relabel migration touching no call site, so
-this census has no entries under its name. #599 is NOT call-site-free
+#600 shipped as a one-off script, not a migration: its forward write is
+`through_map` (it translates each Express code itself, next to the write) and
+its undo is `exempt` (it restores the value audit_log recorded). #599 is NOT call-site-free
 (review N3 corrected this) — its own body says "Callers pass their book" —
 but the sites it would touch (import_weekly, repoint_bsn_code,
 seed_products_from_stmas) are already `through_map` below, because they
@@ -514,6 +515,22 @@ ALLOWED = {
             'comes from unit_map, never from the script. The script refuses when '
             'the map does not translate the code.'),
     },
+    'scripts/2026_09_22_relabel_history_600.py::relabel': {
+        'DYNAMIC-TABLE': ('through_map',
+            'One-off #600 relabel of bill lines the pre-#599 map mis-read. The '
+            'dynamic table is sales_transactions or purchase_transactions '
+            '(load_plan refuses any other), and the column written is unit. It '
+            'calls bsn_units.translate(e["express_code"], BOOK, conn=conn) in '
+            'relabel() itself and writes ITS result, so the word is the unit '
+            'map\'s, the same one the importer writes for that Express line.'),
+    },
+    'scripts/2026_09_22_relabel_history_600.py::undo': {
+        'DYNAMIC-TABLE': ('exempt',
+            'The #600 relabel\'s undo. It writes back exactly the unit '
+            'audit_log recorded the row holding before the relabel (the '
+            'pre-run state), and only on a row still carrying the relabel\'s '
+            'own declaration. Translating it would not restore it.'),
+    },
     'scripts/import_express.py::_import_sales': {
         'express_sales.unit': ('through_map',
             'Calls bsn_units.normalize_unit(r.unit, conn=conn) — comment '
@@ -1011,6 +1028,7 @@ _TRANSLATE_ASSIGN_RE = re.compile(
 
 _DIRECT_ASSIGN_THROUGH_MAP_SITES = (
     'scripts/2026_09_21_fix_rr6700253_unit_1658.py::fix',
+    'scripts/2026_09_22_relabel_history_600.py::relabel',
     'scripts/import_express.py::_import_sales',
     'vat_book_builder.py::seed_products_from_stmas',
 )
