@@ -8,7 +8,8 @@ fresh prod snapshot minutes before 193 is merged (merge = deploy).
 
 It reports:
   1. precondition violators, row by row (the migration's own seed, learn, map
-     and precondition blocks, run on the copy and rolled back);
+     and precondition blocks, run on the copy and rolled back), including a
+     stored unit still reading one of the five `!` codes 193 removes;
   2. whether the whole migration applies, the runner's way (executescript,
      rollback on error);
   3. rows changed per table.column, conversions merged away, map rows added,
@@ -59,6 +60,7 @@ COVERED = (
     ('supplier_catalogue_items', 'unit', '*'), ('supplier_catalogue_price_history', 'unit', '*'),
 )
 PRECONDITIONS = {
+    'bang_in_use': "SELECT table_name, row_id, value FROM _mig193_pre_bang_in_use",
     'seed_conflict': (
         "SELECT u.id, u.book, u.spelling, u.word, s.word FROM _mig193_pre_seed_conflict v "
         "JOIN unit_map u ON u.id = v.map_id "
@@ -170,12 +172,15 @@ def _run_on_copy(conn, sql, report):
         conn.executescript(
             'BEGIN;' + _block(sql, 'mig193 seeds') + _block(sql, 'mig193 seed precondition')
             + 'CREATE TEMP TABLE migration_193_unit_map_added (book TEXT, spelling TEXT, word TEXT);'
+            + 'CREATE TEMP TABLE migration_193_unit_map_removed '
+              '(id INTEGER, book TEXT, spelling TEXT, word TEXT, created_at TEXT);'
             + _block(sql, 'mig193 learn') + _block(sql, 'mig193 map')
             + _block(sql, 'mig193 preconditions'))
         report['violators'] = {name: [list(r) for r in conn.execute(q)]
                                for name, q in PRECONDITIONS.items()}
         conn.rollback()
         conn.execute('DROP TABLE IF EXISTS temp.migration_193_unit_map_added')
+        conn.execute('DROP TABLE IF EXISTS temp.migration_193_unit_map_removed')
 
         # 2. the migration, the runner's way
         before = _base_qtys(conn)
@@ -199,6 +204,8 @@ def _run_on_copy(conn, sql, report):
             "SELECT id, product_id, bsn_unit, ratio FROM migration_193_uc_deleted ORDER BY id")]
         report['unit_map_added'] = [list(r) for r in conn.execute(
             "SELECT book, spelling, word FROM migration_193_unit_map_added ORDER BY 1, 2")]
+        report['unit_map_removed'] = [list(r) for r in conn.execute(
+            "SELECT book, spelling, word FROM migration_193_unit_map_removed ORDER BY 1, 2")]
         report['skipped'] = [list(r) for r in conn.execute(
             "SELECT k.table_name, k.row_id, k.product_id, k.unit, k.word, k.detail, "
             "COALESCE(s.doc_no, p.doc_no) FROM migration_193_skipped k "
@@ -293,7 +300,8 @@ def _print(code, r):
         print(f"    unit_conversions deleted (merged): {len(r['unit_conversions_deleted'])}")
         for row in r['unit_conversions_deleted']:
             print('       ', row)
-        print(f"    unit_map rows added: {len(r['unit_map_added'])}")
+        print(f"    unit_map rows added: {len(r['unit_map_added'])}, removed (`!`): "
+              f"{[x[1] for x in r['unit_map_removed']]}")
         print(f"  bill lines left untranslated (their word would resolve differently): "
               f"{len(r['skipped'])}")
         for row in r['skipped']:

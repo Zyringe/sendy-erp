@@ -4798,18 +4798,13 @@ LEFT JOIN categories c          ON c.id   = p.category_id
 LEFT JOIN color_finish_codes cf ON cf.code = p.color_code
 LEFT JOIN stock_levels s        ON s.product_id = p.id;
 
--- data: unit_map (99 rows)
+-- data: unit_map (94 rows)
 INSERT INTO unit_map (book, spelling, word) VALUES
   ('*', '1กิโล', 'กิโลกรัม'),
   ('*', 'กก.', 'กิโลกรัม'),
   ('*', 'กล.เล็ก', 'กล่องเล็ก'),
   ('*', 'กิโล', 'กิโลกรัม'),
   ('*', 'แพค', 'แพ็ค'),
-  ('BSN5657', '!กล', 'กล่อง'),
-  ('BSN5657', '!คู', 'คู่'),
-  ('BSN5657', '!ลก', 'ลูก'),
-  ('BSN5657', '!หด', 'หลอด'),
-  ('BSN5657', '!หล', 'โหล'),
   ('BSN5657', 'กก', 'กิโลกรัม'),
   ('BSN5657', 'กน', 'ก้อน'),
   ('BSN5657', 'กป', 'กระป๋อง'),

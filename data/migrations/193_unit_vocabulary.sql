@@ -21,6 +21,12 @@
 --            กล่อง) · แพค แพ็ค — Sendy spellings, not Express codes, so they
 --            apply to every source, supplier price lists included.
 -- After it every code in both books' unit lists translates (49 + 34).
+-- REMOVED: the five `!` rows (!กล !คู !ลก !หด !หล, BSN5657), per #595's approved
+-- list: `!` is a warning mark Express prints in text reports, not part of a
+-- unit, and the parsers strip it. Their exact rows go to
+-- migration_193_unit_map_removed for the rollback. They match no stored row
+-- on prod; if one ever does, the bang_in_use precondition refuses (dropping
+-- the map row would make the next import rewrite that line, the #609 shape).
 -- BOTH BOOKS SEEDED TOGETHER: every spelling added here means the same word in
 -- BSN5657 and xp5, so bsn_line._unit_same and bsn_sync's conversion-role
 -- check, which normalise with the default book even inside the VAT-book import,
@@ -79,6 +85,11 @@
 -- applied_migrations, so the DB is untouched). Every list is empty on the
 -- 2026-09-22 prod snapshot. scripts/preflight_193_unit_vocabulary.py prints the
 -- violating rows of a real DB. RECOVERY per guard:
+--   bang_in_use     a stored unit (bill line, conversion, product, tier, mapping,
+--                   suggestion, Express copy) still reads one of the five `!`
+--                   codes. Translate it to the word after the `!` (the code
+--                   itself, e.g. !หล -> โหล) through the declared-change path,
+--                   moving its conversion with it, then re-run.
 --   seed_conflict   unit_map already names a spelling this migration seeds,
 --                   with a DIFFERENT word (Put named it on /unit-conversions).
 --                   Decide which word is right; if it is the approved one,
@@ -175,6 +186,15 @@ CREATE TABLE IF NOT EXISTS migration_193_unit_map_added (
     word        TEXT NOT NULL
 );
 
+-- The `!` rows this run removed, verbatim (the rollback re-inserts them).
+CREATE TABLE IF NOT EXISTS migration_193_unit_map_removed (
+    id          INTEGER NOT NULL,
+    book        TEXT NOT NULL,
+    spelling    TEXT NOT NULL,
+    word        TEXT NOT NULL,
+    created_at  TEXT
+);
+
 -- Bill lines left untranslated because their word would resolve differently.
 CREATE TABLE IF NOT EXISTS migration_193_skipped (
     table_name  TEXT NOT NULL,
@@ -186,6 +206,40 @@ CREATE TABLE IF NOT EXISTS migration_193_skipped (
 );
 
 -- >>> mig193 seed precondition
+DROP TABLE IF EXISTS temp._mig193_bang;
+CREATE TEMP TABLE _mig193_bang (spelling TEXT PRIMARY KEY);
+INSERT INTO _mig193_bang (spelling) VALUES ('!กล'), ('!คู'), ('!ลก'), ('!หด'), ('!หล');
+
+DROP TABLE IF EXISTS temp._mig193_pre_bang_in_use;
+CREATE TEMP TABLE _mig193_pre_bang_in_use AS
+          SELECT 'sales_transactions' AS table_name, id AS row_id, unit AS value
+            FROM sales_transactions WHERE unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'purchase_transactions', id, unit
+            FROM purchase_transactions WHERE unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'unit_conversions', id, bsn_unit
+            FROM unit_conversions WHERE bsn_unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'products', id, unit_type
+            FROM products WHERE unit_type IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'promotions', id, bundle_unit
+            FROM promotions WHERE bundle_unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'product_code_mapping', id, bsn_unit
+            FROM product_code_mapping WHERE bsn_unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'pending_product_suggestions', id, bsn_unit
+            FROM pending_product_suggestions WHERE bsn_unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'pending_product_suggestions', id, suggested_unit_type
+            FROM pending_product_suggestions WHERE suggested_unit_type IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'credit_note_imports', id, unit
+            FROM credit_note_imports WHERE unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'express_sales', id, unit
+            FROM express_sales WHERE unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'express_sales_order_lines', id, unit
+            FROM express_sales_order_lines WHERE unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'express_credit_note_lines', id, unit
+            FROM express_credit_note_lines WHERE unit IN (SELECT spelling FROM _mig193_bang)
+UNION ALL SELECT 'product_price_tiers', id, qty_label
+            FROM product_price_tiers
+           WHERE trim(ltrim(qty_label, '0123456789 '), ' ') IN (SELECT spelling FROM _mig193_bang);
+
 DROP TABLE IF EXISTS temp._mig193_pre_seed_conflict;
 CREATE TEMP TABLE _mig193_pre_seed_conflict AS
 SELECT u.id AS map_id
@@ -193,6 +247,11 @@ SELECT u.id AS map_id
   JOIN _mig193_seed s ON s.book = u.book AND s.spelling = u.spelling
  WHERE u.word IS NOT s.word;
 -- <<< mig193 seed precondition
+
+CREATE TEMP TRIGGER _mig193_guard_bang_in_use BEFORE DELETE ON _mig193_pre_bang_in_use
+BEGIN SELECT RAISE(ABORT, 'mig 193 precondition FAILED: a stored unit still holds a ! code this migration removes from the map (bang_in_use). RECOVERY in the migration header.'); END;
+DELETE FROM _mig193_pre_bang_in_use;
+DROP TABLE _mig193_pre_bang_in_use;
 
 CREATE TEMP TRIGGER _mig193_guard_seed_conflict BEFORE DELETE ON _mig193_pre_seed_conflict
 BEGIN SELECT RAISE(ABORT, 'mig 193 precondition FAILED: the unit map already names a spelling 193 seeds, with a different word (seed_conflict). RECOVERY in the migration header.'); END;
@@ -210,6 +269,14 @@ INSERT INTO unit_map (book, spelling, word)
 SELECT s.book, s.spelling, s.word
   FROM _mig193_seed s
  WHERE NOT EXISTS (SELECT 1 FROM unit_map u WHERE u.book = s.book AND u.spelling = s.spelling);
+
+-- ... and forgets the five `!` rows (kept verbatim for the rollback)
+INSERT INTO migration_193_unit_map_removed (id, book, spelling, word, created_at)
+SELECT u.id, u.book, u.spelling, u.word, u.created_at
+  FROM unit_map u
+ WHERE u.spelling IN (SELECT spelling FROM _mig193_bang)
+   AND u.id NOT IN (SELECT id FROM migration_193_unit_map_removed);
+DELETE FROM unit_map WHERE spelling IN (SELECT spelling FROM _mig193_bang);
 -- <<< mig193 learn
 
 -- >>> mig193 map
@@ -594,5 +661,6 @@ DROP TABLE _mig193_pcm;
 DROP TABLE _mig193_uc_map;
 DROP TABLE _mig193_map;
 DROP TABLE _mig193_seed;
+DROP TABLE _mig193_bang;
 
 COMMIT;

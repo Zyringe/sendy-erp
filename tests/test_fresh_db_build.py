@@ -137,8 +137,8 @@ def test_init_db_from_empty_seeds_unit_map(tmp_path, monkeypatch):
     scripts/dump_schema.py writes them into. An empty map would import every
     Express code untranslated on a fresh install (bare git clone, empty
     Railway volume) — the exact failure #595 exists to prevent. Pinned to
-    today's 60 rows (mig 185's 44 + mig 193's 16); a PR that changes a meaning
-    updates this line."""
+    today's 55 rows (mig 185's 44 + mig 193's 16 − the five `!` rows 193
+    removes); a PR that changes a meaning updates this line."""
     db_path = str(tmp_path / "fresh.db")
 
     import config
@@ -153,7 +153,7 @@ def test_init_db_from_empty_seeds_unit_map(tmp_path, monkeypatch):
         n = conn.execute(
             "SELECT COUNT(*) FROM unit_map WHERE book = 'BSN5657'"
         ).fetchone()[0]
-        assert n == 60, f"expected the 60 real seed rows, found {n}"
+        assert n == 55, f"expected the 55 real seed rows, found {n}"
         # #599 (migration 190) gave these three Express's own meaning. A fresh
         # build runs no migration, so it only carries them if data/schema.sql
         # was regenerated after 190 — which is what this line pins.
@@ -192,8 +192,9 @@ def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, mo
     # 44 BSN5657 (mig 185, mig 190 relabels 3 of them in place) + 29 xp5
     # (mig 192: หอ/ดว plus the 27 codes it shares an Express meaning with
     # BSN5657 for) — see test_migration_192_unit_map_xp5.py for the
-    # derivation — + mig 193's 26 (16 BSN5657, 5 xp5, 5 book-independent).
-    assert len(first) == 99                          # control: schema.sql's rows landed
+    # derivation — + mig 193's 26 (16 BSN5657, 5 xp5, 5 book-independent)
+    # − the five `!` rows 193 removes.
+    assert len(first) == 94                          # control: schema.sql's rows landed
     database.init_db()
     assert _unit_map_rows(db_path) == first          # idempotent
 
@@ -205,7 +206,7 @@ def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, mo
     finally:
         conn.close()
     learned = _unit_map_rows(db_path)
-    assert len(learned) == 100 and learned != first  # control: the edits landed
+    assert len(learned) == 95 and learned != first   # control: the edits landed
 
     database.init_db()
     assert _unit_map_rows(db_path) == learned

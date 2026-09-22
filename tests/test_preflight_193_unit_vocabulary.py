@@ -64,6 +64,19 @@ def test_reports_a_precondition_violator(pre193):
     assert 'twin_ratio' in report['migration_error']
 
 
+def test_reports_a_stored_bang_code(pre193):
+    conn = sqlite3.connect(pre193)
+    sid = _sale(conn, 'IVPF193-4', _product(conn, 'preflight193 bang'), '!หล')
+    conn.commit()
+    conn.close()
+
+    code, report = preflight.run(pre193)
+
+    assert code == 1
+    assert ['sales_transactions', sid, '!หล'] in report['violators']['bang_in_use']
+    assert 'bang_in_use' in report['migration_error']
+
+
 def test_lists_a_held_line_and_never_writes_the_source(pre193):
     """pid 436's shape: a ช3 line with only a ชุด3 conversion stays ช3 and is
     listed, and the run is still CLEAN. The migration APPLIES here, so this is
@@ -87,6 +100,7 @@ def test_lists_a_held_line_and_never_writes_the_source(pre193):
     assert report['changed']['sales_transactions.unit'] >= 1
     assert report['invariant_mismatches'] == [] and report['left_behind'] == {}
     assert [pid, 'กร', 1.0, 'กุรุส', 1.0] in report['kept_conversions']
+    assert sorted(r[1] for r in report['unit_map_removed']) == sorted(['!กล', '!คู', '!ลก', '!หด', '!หล'])
     conn = sqlite3.connect(pre193)
     try:
         assert conn.execute("SELECT unit FROM sales_transactions WHERE id=?", (moved,)).fetchone()[0] == 'คค'

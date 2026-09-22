@@ -1,7 +1,8 @@
 -- Rollback 193 — put back every label 193 changed (migration_193_snapshot),
 -- every unit_conversions row it deleted (migration_193_uc_deleted), remove the
--- unit_map rows it added (migration_193_unit_map_added), then drop the four
--- tables (migration_193_skipped too).
+-- unit_map rows it added (migration_193_unit_map_added), re-insert the five
+-- `!` rows it removed (migration_193_unit_map_removed, same id and created_at),
+-- then drop the five tables (migration_193_skipped too).
 --
 -- ⛔ RUN ONLY through Python (conn.executescript, then roll back on an error)
 -- or `sqlite3 -bail`. The plain sqlite3 CLI keeps going after a failed
@@ -18,7 +19,9 @@
 --   'code row exists again, not restored'  unit_conversions already holds that
 --                                          (product_id, bsn_unit) again
 --   'value exists again, not restored'     same for product_code_mapping /
---                                          product_price_tiers
+--                                          product_price_tiers, and a removed
+--                                          `!` unit_map row whose (book,
+--                                          spelling) exists again
 -- A skipped deleted conversion keeps its old ratio in `detail`.
 --
 -- Bill lines are restored through the mig-173 declared-change path (a plain
@@ -121,7 +124,13 @@ SELECT 'unit_map', u.id, 'changed after 193, left as is',
        u.book || ' ' || a.spelling || ': 193 added ' || a.word || ', now ' || u.word
   FROM migration_193_unit_map_added a
   JOIN unit_map u ON u.book = a.book AND u.spelling = a.spelling
- WHERE u.word IS NOT a.word;
+ WHERE u.word IS NOT a.word
+UNION ALL
+SELECT 'unit_map', r.id, 'value exists again, not restored',
+       r.book || ' ' || r.spelling || ' -> ' || r.word || ' was removed by 193; it exists again'
+  FROM migration_193_unit_map_removed r
+ WHERE EXISTS (SELECT 1 FROM unit_map u
+                WHERE u.id = r.id OR (u.book = r.book AND u.spelling = r.spelling));
 
 -- ── bill lines (declared-change path) ───────────────────────────────────────
 UPDATE sales_transactions
@@ -252,11 +261,18 @@ DELETE FROM unit_map
                 WHERE a.book = unit_map.book AND a.spelling = unit_map.spelling
                   AND a.word = unit_map.word);
 
+INSERT INTO unit_map (id, book, spelling, word, created_at)
+SELECT r.id, r.book, r.spelling, r.word, r.created_at
+  FROM migration_193_unit_map_removed r
+ WHERE NOT EXISTS (SELECT 1 FROM unit_map u
+                    WHERE u.id = r.id OR (u.book = r.book AND u.spelling = r.spelling));
+
 DROP TABLE _mig193_rb_ok;
 DROP TABLE _mig193_rb;
 DROP TABLE migration_193_snapshot;
 DROP TABLE migration_193_uc_deleted;
 DROP TABLE migration_193_unit_map_added;
+DROP TABLE migration_193_unit_map_removed;
 DROP TABLE migration_193_skipped;
 
 COMMIT;
