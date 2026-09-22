@@ -394,6 +394,37 @@ def test_undo_refuses_when_a_relabelled_row_was_changed_since(db, tmp_path, caps
     assert _content(db) == state
 
 
+def test_undo_refuses_once_603_has_rebased_the_hasps(db, tmp_path, capsys):
+    """The Opus review's sequence (#636): relabel, then #603 rebases 1187/1188 (ตัว stays
+    the base at 1, กุรุส becomes 144), then undo. Putting ตัว back would make every hasp
+    bill count single pieces at the next ledger rebuild (IV6702591-3: 576 -> 4), which
+    the in-transaction invariants cannot see, because no ratio moves inside the undo."""
+    plan = _plan_file(db, tmp_path)
+    assert _run(db, plan) == 0
+    _exec(db, "UPDATE unit_conversions SET ratio=144 WHERE product_id IN (1187, 1188)"
+              " AND bsn_unit IN ('กร', 'กุรุส')")
+    state = _content(db)
+    capsys.readouterr()
+    assert _run(db, plan, '--undo') == 2
+    out = capsys.readouterr().out
+    assert 'pid 1187' in out and 'pid 1188' in out and '#603' in out, out
+    assert 'pid 1050' not in out, 'control: an unrebased product is not named'
+    assert _content(db) == state
+
+
+def test_a_failed_backup_refuses_cleanly(db, tmp_path, capsys, monkeypatch):
+    import db_backup
+
+    def refuse(*a, **kw):
+        raise db_backup.BackupRefused('no space left on device')
+    monkeypatch.setattr(db_backup, 'guarded_backup', refuse)
+    before = _content(db)
+    assert _run(db, _plan_file(db, tmp_path), '--confirm-live', '600', mode='live') == 2
+    out = capsys.readouterr().out
+    assert 'REFUSED' in out and 'no space left' in out and 'Traceback' not in out, out
+    assert _content(db) == before
+
+
 def test_refuses_while_the_map_still_reads_the_old_word(db, tmp_path, capsys):
     plan = _plan_file(db, tmp_path)
     _exec(db, "UPDATE unit_map SET word='ตัว' WHERE book='BSN5657' AND spelling='กร'")

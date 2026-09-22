@@ -27,8 +27,10 @@ same Express line reads `unchanged`; the data file's word is only compared again
 
 RUNS. audit_log keeps every guarded UPDATE of these two tables forever, so it is this
 script's run record. A forward run is refused while any row it relabelled is still
-outstanding. --undo restores what that record says each row held, and refuses if a
-relabelled row has been changed by anyone since.
+outstanding. --undo restores what that record says each row held. It refuses if a
+relabelled row has been changed by anyone since, and, like the forward run, if the
+restored word would resolve to a different quantity: #603's hasp rebase makes กุรุส 144
+while ตัว stays the base at 1, so an undo is only safe BEFORE that rebase.
 
 THE EIGHT #603 LINES. #603's hasp rebase (1187/1188) refuses until none of their bills
 reads ตัว. REQUIRED names them by doc_no + bsn_code (ids churn); a plan or a DB
@@ -112,10 +114,25 @@ def outstanding(conn):
     return out
 
 
+def _moves_stock(conn, where, pid, qty, frm, to):
+    """A problem string when `qty` of `frm` and of `to` resolve to different base
+    quantities for `pid` (the ledger's own conversion), else None. Both directions
+    use it: #603's hasp rebase gives กุรุส 144 while ตัว stays the base at 1, so an
+    undo AFTER it would move stock on the next ledger rebuild."""
+    from models import bsn_sync
+    unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
+                             (pid,)).fetchone()[0] or ''
+    q_frm = bsn_sync._get_base_qty(conn, pid, unit_type, frm, qty)
+    q_to = bsn_sync._get_base_qty(conn, pid, unit_type, to, qty)
+    if q_frm == q_to:
+        return None
+    return ('%s: pid %s — %g %s resolves to %r but %g %s to %r; the relabel would move stock '
+            '(conversion ratio differs)' % (where, pid, qty, frm, q_frm, qty, to, q_to))
+
+
 def preconditions(conn, plan):
     """(rows to relabel, rows already reading the new word, problems)."""
     import bsn_units
-    from models import bsn_sync
     problems, todo, already = [], [], []
     earlier = outstanding(conn)
     if earlier:
@@ -153,15 +170,9 @@ def preconditions(conn, plan):
         if row['unit'] != e['stored']:
             problems.append('%s: unit is %r, the plan says %r' % (where, row['unit'], e['stored']))
             continue
-        unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
-                                 (row['product_id'],)).fetchone()[0] or ''
-        q_old = bsn_sync._get_base_qty(conn, row['product_id'], unit_type, e['stored'], row['qty'])
-        q_new = bsn_sync._get_base_qty(conn, row['product_id'], unit_type, e['new'], row['qty'])
-        if q_old != q_new:
-            problems.append('%s: pid %s — %g %s resolves to %r but %g %s to %r; relabelling would '
-                            'move stock (conversion ratio differs)'
-                            % (where, row['product_id'], row['qty'], e['stored'], q_old,
-                               row['qty'], e['new'], q_new))
+        moves = _moves_stock(conn, where, row['product_id'], row['qty'], e['stored'], e['new'])
+        if moves:
+            problems.append(moves)
             continue
         todo.append(dict(e, row_id=row['id']))
     return todo, already, problems
@@ -190,12 +201,17 @@ def undo_preconditions(conn):
         return [], ['nothing to undo: no outstanding row from a relabel run']
     todo, problems = [], []
     for (t, rid), (old, new) in sorted(rows.items()):
-        row = conn.execute(f"SELECT doc_no, unit, change_actor, product_id FROM {t} WHERE id = ?",
-                           (rid,)).fetchone()
+        row = conn.execute(f"SELECT doc_no, unit, change_actor, product_id, qty FROM {t} "
+                           f"WHERE id = ?", (rid,)).fetchone()
         if row is None or row['unit'] != new or row['change_actor'] != ACTOR:
             problems.append('%s id %s (%s): changed since the relabel (%r) — reconcile it by hand'
                             % (t, rid, row['doc_no'] if row else 'deleted',
-                               tuple(row)[1:] if row else None))
+                               tuple(row)[1:3] if row else None))
+            continue
+        moves = _moves_stock(conn, '%s %s' % (t.split('_')[0], row['doc_no']),
+                             row['product_id'], row['qty'], new, old)
+        if moves:
+            problems.append(moves + ' — undo is only safe before #603 rebases this product')
             continue
         todo.append({'table': t, 'row_id': rid, 'old': old, 'new': new, 'doc_no': row['doc_no'],
                      'product_id': row['product_id']})
@@ -352,8 +368,13 @@ def main(argv=None):
         if a.mode == 'live':
             # After the preconditions, so a refused run leaves the backup rotation alone.
             import db_backup
-            info = db_backup.guarded_backup(BACKUP_REASON, policy='refuse', db_path=a.db,
-                                            backup_dir=db_backup.default_backup_dir(a.db))
+            try:
+                info = db_backup.guarded_backup(BACKUP_REASON, policy='refuse', db_path=a.db,
+                                                backup_dir=db_backup.default_backup_dir(a.db))
+            except db_backup.BackupRefused as exc:
+                conn.rollback()
+                print("REFUSED — the pre-write backup failed, nothing written: %s" % exc)
+                return 2
             print("BACKUP", info)
 
         before = fingerprint(conn)
