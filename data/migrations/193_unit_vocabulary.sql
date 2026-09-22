@@ -194,6 +194,7 @@ DELETE FROM _mig193_pre_seed_conflict;
 DROP TABLE _mig193_pre_seed_conflict;
 
 -- ── 1. the map learns the vocabulary ───────────────────────────────────────
+-- >>> mig193 learn
 INSERT INTO migration_193_unit_map_added (book, spelling, word)
 SELECT s.book, s.spelling, s.word
   FROM _mig193_seed s
@@ -203,6 +204,7 @@ INSERT INTO unit_map (book, spelling, word)
 SELECT s.book, s.spelling, s.word
   FROM _mig193_seed s
  WHERE NOT EXISTS (SELECT 1 FROM unit_map u WHERE u.book = s.book AND u.spelling = s.spelling);
+-- <<< mig193 learn
 
 -- >>> mig193 map
 -- The runtime map, resolved the way bsn_units.translate() resolves it, for the
@@ -326,17 +328,21 @@ DROP TABLE _mig193_pre_tier_collision;
 DROP TABLE _mig193_pre_unit_type_ratio;
 
 -- ── 2. what every bill line resolves to NOW, before anything moves ─────────
--- res = bsn_sync._get_base_qty's ratio (NULL = the line cannot sync)
+-- res = bsn_sync._get_base_qty's ratio (NULL = the line cannot sync). Its
+-- short circuit compares str.strip()ped units; SQL's trim() takes an explicit
+-- set, so the common whitespace is listed (space, tab, CR/LF, VT, FF, NBSP).
+-- Rarer Unicode spaces are not: the preflight re-derives every line through
+-- the Python function itself, which is the check that sees them.
 DROP TABLE IF EXISTS temp._mig193_res_pre;
 CREATE TEMP TABLE _mig193_res_pre AS
 SELECT 'sales_transactions' AS table_name, t.id AS row_id, t.product_id, t.unit,
-       CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+       CASE WHEN t.unit IS NOT NULL AND trim(t.unit, char(32, 9, 10, 11, 12, 13, 160)) = trim(COALESCE(p.unit_type, ''), char(32, 9, 10, 11, 12, 13, 160)) THEN 1.0
             ELSE (SELECT c.ratio FROM unit_conversions c
                    WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END AS res
   FROM sales_transactions t LEFT JOIN products p ON p.id = t.product_id
 UNION ALL
 SELECT 'purchase_transactions', t.id, t.product_id, t.unit,
-       CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+       CASE WHEN t.unit IS NOT NULL AND trim(t.unit, char(32, 9, 10, 11, 12, 13, 160)) = trim(COALESCE(p.unit_type, ''), char(32, 9, 10, 11, 12, 13, 160)) THEN 1.0
             ELSE (SELECT c.ratio FROM unit_conversions c
                    WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END
   FROM purchase_transactions t LEFT JOIN products p ON p.id = t.product_id;
@@ -386,7 +392,7 @@ UPDATE unit_conversions
 DROP TABLE IF EXISTS temp._mig193_line;
 CREATE TEMP TABLE _mig193_line AS
 SELECT r.table_name, r.row_id, r.product_id, r.unit AS old_unit, m.word AS new_unit, r.res,
-       CASE WHEN trim(m.word) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+       CASE WHEN trim(m.word, char(32, 9, 10, 11, 12, 13, 160)) = trim(COALESCE(p.unit_type, ''), char(32, 9, 10, 11, 12, 13, 160)) THEN 1.0
             ELSE (SELECT c.ratio FROM unit_conversions c
                    WHERE c.product_id = r.product_id AND c.bsn_unit = m.word) END AS res_new
   FROM _mig193_res_pre r
@@ -521,7 +527,7 @@ SELECT r.row_id
   JOIN sales_transactions t ON t.id = r.row_id
   LEFT JOIN products p ON p.id = t.product_id
  WHERE r.table_name = 'sales_transactions'
-   AND r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+   AND r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit, char(32, 9, 10, 11, 12, 13, 160)) = trim(COALESCE(p.unit_type, ''), char(32, 9, 10, 11, 12, 13, 160)) THEN 1.0
                          ELSE (SELECT c.ratio FROM unit_conversions c
                                 WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END
 UNION ALL
@@ -530,7 +536,7 @@ SELECT r.row_id
   JOIN purchase_transactions t ON t.id = r.row_id
   LEFT JOIN products p ON p.id = t.product_id
  WHERE r.table_name = 'purchase_transactions'
-   AND r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit) = trim(COALESCE(p.unit_type, '')) THEN 1.0
+   AND r.res IS NOT CASE WHEN t.unit IS NOT NULL AND trim(t.unit, char(32, 9, 10, 11, 12, 13, 160)) = trim(COALESCE(p.unit_type, ''), char(32, 9, 10, 11, 12, 13, 160)) THEN 1.0
                          ELSE (SELECT c.ratio FROM unit_conversions c
                                 WHERE c.product_id = t.product_id AND c.bsn_unit = t.unit) END;
 
