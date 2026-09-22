@@ -241,7 +241,9 @@ def parse_credit_notes(path):
             m = _DETAIL_RE.match(line)
             if m and current is not None:
                 qty = _to_float(m.group('qty'))
-                unit = m.group('unit') or m.group('unit_only')
+                # "2.00!หล": the '!' Express glues on flags an odd factor; it is
+                # not part of the unit (parse_weekly strips it the same way).
+                unit = (m.group('unit') or m.group('unit_only')).replace('!', '')
                 unit_price, discount, line_total = _parse_detail_tail(m.group('rest') or '')
                 current.lines.append(CreditNoteLine(
                     line_no=int(m.group('line_no')),

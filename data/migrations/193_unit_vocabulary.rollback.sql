@@ -27,9 +27,15 @@
 -- Bill lines are restored through the mig-173 declared-change path (a plain
 -- UPDATE would ABORT under *_change_needs_declaration).
 --
--- ⚠ express_sales_order_lines is replaced wholesale by every DBF upload, so
--- after one its snapshotted ids are gone and those rows report as changed:
--- the upload wrote words anyway (#610's writer), which is the state to keep.
+-- ⚠ express_sales_order_lines is NOT restored: 193 translates it without a
+-- snapshot, because every DBF upload replaces the register wholesale from
+-- TQUCOD. After this rollback those rows keep their words until the next
+-- upload rewrites them (raw codes if the code is rolled back too, words if not).
+--
+-- ⚠ Renaming a conversion back (e.g. ชุด5 -> ช5) is exact only BEFORE the next
+-- import. After one, the importer has stored new lines under the word; a
+-- conversion renamed back to the code no longer matches them, so those lines
+-- would stop resolving until the importer's own code is rolled back with it.
 --
 -- A second run fails on the missing migration_193_snapshot table and changes
 -- nothing.
@@ -64,8 +70,6 @@ SELECT s.table_name, s.column_name, s.row_id, s.old_value, s.new_value,
            THEN (SELECT qty_label FROM product_price_tiers WHERE id = s.row_id)
          WHEN 'unit_conversions.bsn_unit'
            THEN (SELECT bsn_unit FROM unit_conversions WHERE id = s.row_id)
-         WHEN 'express_sales_order_lines.unit'
-           THEN (SELECT unit FROM express_sales_order_lines WHERE id = s.row_id)
          WHEN 'express_credit_note_lines.unit'
            THEN (SELECT unit FROM express_credit_note_lines WHERE id = s.row_id)
          WHEN 'supplier_catalogue_items.unit'
@@ -212,13 +216,6 @@ UPDATE product_price_tiers
                        AND k.row_id = product_price_tiers.id)
  WHERE id IN (SELECT row_id FROM _mig193_rb_ok
                WHERE table_name = 'product_price_tiers' AND column_name = 'qty_label');
-
-UPDATE express_sales_order_lines
-   SET unit = (SELECT k.old_value FROM _mig193_rb_ok k
-                WHERE k.table_name = 'express_sales_order_lines' AND k.column_name = 'unit'
-                  AND k.row_id = express_sales_order_lines.id)
- WHERE id IN (SELECT row_id FROM _mig193_rb_ok
-               WHERE table_name = 'express_sales_order_lines' AND column_name = 'unit');
 
 UPDATE express_credit_note_lines
    SET unit = (SELECT k.old_value FROM _mig193_rb_ok k

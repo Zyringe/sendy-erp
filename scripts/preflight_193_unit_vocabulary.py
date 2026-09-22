@@ -12,7 +12,9 @@ It reports:
      stored unit still reading one of the five `!` codes 193 removes;
   2. whether the whole migration applies, the runner's way (executescript,
      rollback on error);
-  3. rows changed per table.column, conversions merged away, map rows added,
+  3. rows changed per table.column (express_sales_order_lines, which 193 does
+     not snapshot, from its unit distribution before vs after), conversions
+     merged away, map rows added,
      and the bill lines 193 leaves untranslated (migration_193_skipped) with
      what each resolves to now and would resolve to as the word;
   4. base quantities through the app's own bsn_sync._get_base_qty for every
@@ -184,6 +186,8 @@ def _run_on_copy(conn, sql, report):
 
         # 2. the migration, the runner's way
         before = _base_qtys(conn)
+        so_before = dict(conn.execute(
+            "SELECT unit, COUNT(*) FROM express_sales_order_lines GROUP BY 1"))
         try:
             conn.executescript(sql)
         except Exception as e:                    # noqa: BLE001 - reported, not hidden
@@ -234,6 +238,23 @@ def _run_on_copy(conn, sql, report):
         # 5. the invariant, on this DB's own rows
         books = {(t, c): b for t, c, b in COVERED}
         mismatch = []
+        # express_sales_order_lines has no snapshot: its distribution after 193
+        # must be the one before, pushed through bsn_units.
+        so_after = dict(conn.execute(
+            "SELECT unit, COUNT(*) FROM express_sales_order_lines GROUP BY 1"))
+        so_expected, so_pairs = Counter(), {}
+        for u, n in so_before.items():
+            w = bsn_units.normalize_unit(u, 'BSN5657', conn=conn)
+            so_expected[w] += n
+            if w != u:
+                so_pairs[f'{u} -> {w}'] = n
+        if so_pairs:
+            report['changed']['express_sales_order_lines.unit'] = sum(so_pairs.values())
+            report['changed_pairs']['express_sales_order_lines.unit'] = dict(
+                sorted(so_pairs.items(), key=lambda kv: -kv[1]))
+        if dict(so_expected) != so_after:
+            mismatch.append(['express_sales_order_lines', 'unit', 'distribution',
+                             so_after, dict(so_expected)])
         for t, c, old, new in conn.execute(
                 "SELECT table_name, column_name, old_value, new_value FROM migration_193_snapshot"):
             if c == 'qty_label':

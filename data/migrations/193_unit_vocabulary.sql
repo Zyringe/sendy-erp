@@ -23,7 +23,12 @@
 -- After it every code in both books' unit lists translates (49 + 34).
 -- REMOVED: the five `!` rows (!กล !คู !ลก !หด !หล, BSN5657), per #595's approved
 -- list: `!` is a warning mark Express prints in text reports, not part of a
--- unit, and the parsers strip it. Their exact rows go to
+-- unit. Every parser strips it before the map sees the unit: the weekly CSV
+-- (parse_weekly._QTY_UNIT_SEP), the sales/purchase history reports (their own
+-- unit_flag group), and, as of this PR, both credit-note parsers
+-- (parse_weekly._parse_detail_line, scripts/parse_express_credit_notes.py),
+-- which until now kept "2.00!หล" as `!หล` and relied on these rows as a safety
+-- net (#610 review). Their exact rows go to
 -- migration_193_unit_map_removed for the rollback. They match no stored row
 -- on prod; if one ever does, the bang_in_use precondition refuses (dropping
 -- the map row would make the next import rewrite that line, the #609 shape).
@@ -47,6 +52,8 @@
 --                     186 had to skip: express_sales_order_lines and
 --                     express_credit_note_lines (their writers translate as of
 --                     this PR, so the next upload writes the same word).
+--                     express_sales_order_lines is translated WITHOUT a
+--                     snapshot (see its step): the next DBF upload replaces it.
 --   source '*'        supplier_catalogue_items.unit and
 --                     supplier_catalogue_price_history.unit: Sendy spellings
 --                     only, never an Express code (64 prod rows of ขด mean a coil
@@ -567,9 +574,9 @@ UPDATE product_price_tiers
    SET qty_label = (SELECT new_label FROM _mig193_tier x WHERE x.id = product_price_tiers.id)
  WHERE id IN (SELECT id FROM _mig193_tier);
 
-INSERT INTO migration_193_snapshot (table_name, row_id, column_name, old_value, new_value)
-SELECT 'express_sales_order_lines', e.id, 'unit', e.unit, m.word
-  FROM express_sales_order_lines e JOIN _mig193_map m ON m.source = 'BSN5657' AND m.spelling = e.unit;
+-- NOT snapshotted: every DBF upload replaces this register wholesale from TQUCOD
+-- (the writer now translates), so a snapshot would only cost prod's small /data
+-- volume ~5 MB (48.5k rows) to restore codes the next upload replaces anyway.
 UPDATE express_sales_order_lines
    SET unit = (SELECT word FROM _mig193_map
                 WHERE source = 'BSN5657' AND spelling = express_sales_order_lines.unit)

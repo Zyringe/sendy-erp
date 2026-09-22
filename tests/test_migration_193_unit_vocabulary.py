@@ -548,9 +548,9 @@ def test_sales_order_lines_are_translated_without_a_snapshot(pre193_db):
         assert conn.execute("SELECT unit FROM express_sales_order_lines WHERE id=?", (so,)).fetchone()[0] == 'โหล'
         assert conn.execute("SELECT COUNT(*) FROM migration_193_snapshot "
                             "WHERE table_name = 'express_sales_order_lines'").fetchone()[0] == 0
-        assert conn.execute("SELECT old_value, new_value FROM migration_193_snapshot "
-                            "WHERE table_name = 'express_credit_note_lines' AND row_id = ?",
-                            (cn,)).fetchone() == ('หล', 'โหล')              # CONTROL
+        assert tuple(conn.execute("SELECT old_value, new_value FROM migration_193_snapshot "
+                                  "WHERE table_name = 'express_credit_note_lines' AND row_id = ?",
+                                  (cn,)).fetchone()) == ('หล', 'โหล')        # CONTROL
     finally:
         conn.close()
 
