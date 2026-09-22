@@ -441,18 +441,19 @@ ALLOWED = {
     # the import's actor around it.
     'models/imports.py::_import_weekly': {
         'DYNAMIC-TABLE': ('through_map',
-            'Calls bsn_units.normalize_unit(e.get("unit"), conn=conn) on '
-            'every row before the dynamic INSERT/UPDATE into '
+            'Calls bsn_units.normalize_unit(e.get("unit"), book, conn=conn) '
+            'on every row before the dynamic INSERT/UPDATE into '
             'sales_transactions/purchase_transactions — the shared choke '
             'point for the weekly CSV, the DBF-sourced sales/purchase '
             'entries (express_dbf_source.py::build_sales_entries / '
             'build_purchase_entries feed it the same shape), and the '
             'VAT-book build (vat_book_builder.py reuses this function '
-            'verbatim). CAVEAT: it never receives a `book=` argument, so '
-            'when reused for the xp5 VAT-book build it silently applies '
-            'BSN5657 meanings — #601 is the ticket that makes this call '
-            'book-aware; it is still a real bsn_units call today, so '
-            'through_map, not pending.'),
+            'verbatim). #601: `book` is now a real parameter (default '
+            'bsn_units.DEFAULT_BOOK/BSN5657, unchanged for every existing '
+            'caller), threaded from import_router.commit_express_dbf, which '
+            'vat_book_builder.build() calls with book=bsn_units.BOOK_XP5 — '
+            'so the VAT-book build reads its lines against xp5\'s own unit '
+            'list instead of silently applying BSN5657\'s.'),
     },
     'models/mapping.py::repoint_bsn_code': {
         # Review S2: the two labels below were SWAPPED in the previous
@@ -493,10 +494,12 @@ ALLOWED = {
     'vat_book_builder.py::seed_products_from_stmas': {
         'products.unit_type': ('through_map',
             'Calls bsn_units.normalize_unit(str(r.get("QUCOD")...), '
-            'conn=conn) before seeding products.unit_type from the '
-            'Express STMAS stock master, in the SEPARATE vat_book.db '
-            'build. Same book-unaware caveat as import_weekly above — '
-            '#601\'s job, not a raw write.'),
+            'bsn_units.BOOK_XP5, conn=conn) before seeding products.'
+            'unit_type from the Express STMAS stock master, in the '
+            'SEPARATE vat_book.db build. #601: now passes BOOK_XP5 '
+            'explicitly — STMAS.QUCOD is an xp5 unit code, and xp5\'s own '
+            'ISTAB disagrees with BSN5657 on `หอ` (หลอด, not ห่อ); reading '
+            'it against the default (BSN5657) book was the bug.'),
         'product_code_mapping.bsn_unit': ('exempt',
             'The mapping row this function inserts always writes bsn_unit '
             'as the literal empty string (the non-split catch-all row) — '

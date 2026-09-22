@@ -216,6 +216,14 @@ def test_the_other_express_book_is_untouched(pre190_db):
     """Meaning is per book (ADR 0018): an xp5 row for the same spelling keeps
     its own word."""
     conn = _open(pre190_db)
+    # Force the state rather than inheriting it (this fixture's own stated
+    # rule, above, for the BSN5657 rows): the live clone's book='xp5'/'*' rows
+    # for 'กร' are #601's concern (mig 192, which by construction always runs
+    # AFTER this one), not this test's — delete any pre-existing row for this
+    # spelling in the OTHER books before seeding the synthetic ones THIS test
+    # means to test the scoping against, so the test's own INSERT never
+    # collides with whatever the live DB happens to hold.
+    conn.execute("DELETE FROM unit_map WHERE book IN ('xp5', '*') AND spelling = 'กร'")
     conn.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('xp5','กร','ตัว')")
     conn.execute("INSERT INTO unit_map (book, spelling, word) VALUES ('*','กร','ตัว')")
     conn.commit(); conn.close()

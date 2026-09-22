@@ -36,7 +36,11 @@ def conn(tmp_path):
         CREATE TABLE unit_map (
             id INTEGER PRIMARY KEY, book TEXT NOT NULL,
             spelling TEXT NOT NULL, word TEXT NOT NULL);
-        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ตว', 'ตัว');
+        -- #601: seed_products_from_stmas reads STMAS.QUCOD (an xp5 unit
+        -- code) against book='xp5' — this is the VAT-book build's OWN
+        -- unit_map (a copy of the main db's, see _use_main_unit_map), which
+        -- holds both books' rows in production.
+        INSERT INTO unit_map (book, spelling, word) VALUES ('xp5', 'ตว', 'ตัว');
     """)
     yield c
     c.close()
@@ -94,7 +98,12 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     importers commit_express_dbf runs, which open their own connection.
 
     Real init_db, seed, commit_express_dbf and import_weekly; only reading the
-    DBF files is faked. `ขว` is in no dumped map; the main db names it."""
+    DBF files is faked. `ขว` is in no dumped map; the main db names it.
+
+    #601: the build now reads through book='xp5' (STMAS/STCRD carry xp5's own
+    unit codes), so the main db's map must carry an xp5 row for `ขว`, not a
+    BSN5657 one — the two books can disagree (`หอ` does), so a caller that
+    reads the wrong book's row for a code is exactly the bug #601 fixes."""
     import sys
     scripts = os.path.join(os.path.dirname(__file__), '..', 'scripts')
     if scripts not in sys.path:
@@ -117,7 +126,8 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
         CREATE TABLE unit_map (
             id INTEGER PRIMARY KEY, book TEXT NOT NULL,
             spelling TEXT NOT NULL, word TEXT NOT NULL);
-        INSERT INTO unit_map (book, spelling, word) VALUES ('BSN5657', 'ขว', 'ขวด');
+        INSERT INTO unit_map (book, spelling, word) VALUES
+            ('BSN5657', 'ขว', 'ขวด'), ('xp5', 'ขว', 'ขวด');
     """)
     c.commit()
     c.close()
@@ -161,10 +171,78 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     assert line_unit == [('ขวด',)]           # the importer path
     assert product_unit == [('ขวด',)]        # the STMAS seed path
     # exactly the main map: schema.sql's dumped rows were replaced, not topped up
-    assert rows == [('BSN5657', 'ขว', 'ขวด')]
+    assert sorted(rows) == [('BSN5657', 'ขว', 'ขวด'), ('xp5', 'ขว', 'ขวด')]
     leaked = sorted(m for m in set(sys.modules) - before
                     if getattr(sys.modules[m], 'DATABASE_PATH', None) == db_path)
     assert leaked == [], f'first imported inside the build, bound to the tmp db: {leaked}'
+
+
+def test_build_reads_hoo_as_xp5s_own_meaning_not_bsn5657s(tmp_path, monkeypatch):
+    """#601's actual acceptance criterion: `หอ` is the ONE code the two
+    books disagree on (ห่อ under BSN5657, หลอด under xp5 — a sealant/glue
+    tube). The main db's map carries BOTH rows (real production shape); a
+    build that read the wrong one would store every VAT-book tube as ห่อ."""
+    import sys
+    scripts = os.path.join(os.path.dirname(__file__), '..', 'scripts')
+    if scripts not in sys.path:
+        sys.path.append(scripts)
+    import datetime
+    import config
+    import database
+    import express_dbf_source as eds
+    import cashflow  # noqa: F401
+    import import_credit_notes  # noqa: F401
+    import payments_alloc  # noqa: F401
+
+    main_db = tmp_path / 'main.db'
+    c = sqlite3.connect(str(main_db))
+    c.executescript("""
+        CREATE TABLE unit_map (
+            id INTEGER PRIMARY KEY, book TEXT NOT NULL,
+            spelling TEXT NOT NULL, word TEXT NOT NULL);
+        INSERT INTO unit_map (book, spelling, word) VALUES
+            ('BSN5657', 'หอ', 'ห่อ'), ('xp5', 'หอ', 'หลอด');
+    """)
+    c.commit()
+    c.close()
+
+    db_path = str(tmp_path / 'build' / 'inventory.db')
+    monkeypatch.setattr(config, 'DATABASE_PATH', db_path)
+    monkeypatch.setattr(database, 'DATABASE_PATH', db_path)
+    monkeypatch.setenv('VAT_BOOK_BUILD', '1')
+    d = datetime.date(2026, 4, 1)
+    tables = {
+        'STMAS': [_stmas('T1', 'กาวซิลิโคน', qucod='หอ', unitpr=25.0)],
+        'STLOC': [], 'ISVAT': [], 'ISINFO': [],
+        'ARTRN': [], 'ARMAS': [], 'APMAS': [], 'ARTRNRM': [],
+        'ARRCPIT': [], 'APRCPIT': [],
+        'APTRN': [{'DOCNUM': 'RR2600002', 'RECTYP': '3', 'SUPCOD': 'S001',
+                   'FLGVAT': 0, 'DOCDAT': d}],
+        'STCRD': [{'DOCNUM': 'RR2600002', 'SEQNUM': 1, 'STKCOD': 'T1',
+                   'STKDES': 'กาวซิลิโคน', 'TRNQTY': 12.0, 'TQUCOD': 'หอ',
+                   'UNITPR': 25.0, 'DISC': '', 'TRNVAL': 300.0, 'NETVAL': 300.0,
+                   'RDOCNUM': ''}],
+    }
+
+    def fake_open(dataset_dir, name):
+        if name not in tables:
+            raise FileNotFoundError(name)
+        return tables[name]
+    monkeypatch.setattr(eds, 'open_table', fake_open)
+
+    vb.build(str(tmp_path / 'dbf'), snapshot_date='2026-09-19',
+             main_db_path=str(main_db))
+
+    built = sqlite3.connect(db_path)
+    try:
+        product_unit = built.execute(
+            "SELECT unit_type FROM products WHERE product_name = 'กาวซิลิโคน'").fetchall()
+        line_unit = built.execute(
+            "SELECT unit FROM purchase_transactions WHERE doc_no = 'RR2600002'").fetchall()
+    finally:
+        built.close()
+    assert product_unit == [('หลอด',)], 'STMAS seed read the wrong book'
+    assert line_unit == [('หลอด',)], 'the importer read the wrong book'
 
 
 def test_seed_blank_name_falls_back_to_code_and_dups_keep_first(conn):

@@ -116,11 +116,19 @@ def _doc_headers(dbf_dir):
     return docs
 
 
-def _doc_lines(dbf_dir, wanted_docs, conn):
+def _doc_lines(dbf_dir, wanted_docs, conn, book):
     """Line tuples (qty, price, unit_norm, code). The unit (STCRD.TQUCOD,
     normalized through bsn_units so both books' acronyms compare equal) is
     part of the match signature — equal numbers in DIFFERENT units must
-    never pair (plan's unit-normalized rule; Codex R4)."""
+    never pair (plan's unit-normalized rule; Codex R4).
+
+    `book`: the Express book `dbf_dir` was read from (#601) — a code's
+    meaning comes from the book it came from (ADR 0018), and the two books
+    disagree on `หอ` (ห่อ under BSN5657, หลอด under xp5). Reading BOTH sides
+    against the default book was why the ~707 matches whose main-book twin
+    is `หด` never paired: xp5's `หอ` normalised to ห่อ instead of หลอด, so
+    its signature never equalled BSN5657's already-correct `หลอด` line.
+    """
     lines = defaultdict(list)
     for r in eds.open_table(dbf_dir, 'STCRD'):
         doc = str(r.get('DOCNUM') or '').strip()
@@ -129,7 +137,7 @@ def _doc_lines(dbf_dir, wanted_docs, conn):
         code = str(r.get('STKCOD') or '').strip()
         qty = round(float(r.get('TRNQTY') or 0), 4)
         price = round(float(r.get('UNITPR') or 0), 4)
-        unit = bsn_units.normalize_unit(str(r.get('TQUCOD') or '').strip(), conn=conn) or ''
+        unit = bsn_units.normalize_unit(str(r.get('TQUCOD') or '').strip(), book, conn=conn) or ''
         if code:
             lines[doc].append((qty, price, unit, code))
     return lines
@@ -152,8 +160,9 @@ def layer2(xp5_dir, bsn_dir, code_map, product_names, already, *, conn):
         if len(cands) == 1 and xkey_count[key] == 1:
             pairs.append((xdoc, cands[0]))
 
-    xlines = _doc_lines(xp5_dir, {p[0] for p in pairs}, conn)
-    blines = _doc_lines(bsn_dir, {p[1] for p in pairs}, conn)
+    # #601: each side's lines translate against ITS OWN book.
+    xlines = _doc_lines(xp5_dir, {p[0] for p in pairs}, conn, bsn_units.BOOK_XP5)
+    blines = _doc_lines(bsn_dir, {p[1] for p in pairs}, conn, bsn_units.BOOK_BSN5657)
 
     votes = defaultdict(set)          # xp5_code → {(pid, doc_pair)}
     contradictions = defaultdict(set)  # xp5_code → {pid}

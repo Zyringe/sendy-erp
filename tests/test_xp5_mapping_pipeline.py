@@ -75,11 +75,17 @@ def test_apply_counts_conflicting_row_as_skipped_not_applied(conn):
 
 
 def _unit_map_conn(tmp_path):
-    """The two codes these layer-2 tests send, on their own throwaway DB."""
+    """The codes these layer-2 tests send, on their own throwaway DB. #601:
+    both `ผง`/`ตว` mean the same thing in both real Express books, so each
+    gets a row under BOTH — _doc_lines now reads xp5-side lines against
+    book='xp5' and bsn-side lines against book='BSN5657' (ADR 0018)."""
     c = sqlite3.connect(tmp_path / 'units.db')
     c.executescript("""
         CREATE TABLE unit_map (book TEXT, spelling TEXT, word TEXT);
-        INSERT INTO unit_map VALUES ('BSN5657', 'ผง', 'แผง'), ('BSN5657', 'ตว', 'ตัว');
+        INSERT INTO unit_map VALUES
+            ('BSN5657', 'ผง', 'แผง'), ('xp5', 'ผง', 'แผง'),
+            ('BSN5657', 'ตว', 'ตัว'), ('xp5', 'ตว', 'ตัว'),
+            ('BSN5657', 'หด', 'หลอด'), ('xp5', 'หอ', 'หลอด');
     """)
     return c
 
@@ -190,3 +196,43 @@ def test_layer2_signature_same_unit_pairs(monkeypatch, tmp_path):
         {'BC': (55, 'ชื่อ')}, {55: 'ชื่อ'}, set(), conn=_unit_map_conn(tmp_path))
     assert [a['xp5_code'] for a in auto] == ['XC']
     assert auto[0]['evidence_count'] == 2
+
+
+def test_layer2_keeps_the_hoo_hod_cross_book_match(monkeypatch, tmp_path):
+    """#601's own acceptance criterion: the xp5 side spells the unit `หอ`
+    (-> หลอด), the BSN5657 side spells the SAME unit `หด` (-> หลอด) — two
+    different Express codes for one word, one per book. Reading both sides
+    against the same default book used to normalise xp5's `หอ` to ห่อ,
+    which never equalled BSN5657's `หด` -> หลอด, so the line — and the
+    whole doc pair's product match — was silently discarded (~707 of these
+    on the real dataset, per #595/#601)."""
+    import express_dbf_source as eds
+    import datetime
+
+    def fake_open(dbf_dir, name):
+        which = os.path.basename(dbf_dir)
+        if name == 'ARTRN':
+            out = []
+            for i in (1, 2):
+                doc = f'IV260000{i}' if which == 'xp5' else f'IV690000{i}'
+                out.append({'DOCNUM': doc, 'RECTYP': '3',
+                            'DOCDAT': datetime.date(2026, 3, i), 'AFTDISC': 50.0 * i})
+            return out
+        rows = []
+        for i in (1, 2):
+            doc = f'IV260000{i}' if which == 'xp5' else f'IV690000{i}'
+            code = 'TUBE' if which == 'xp5' else 'BTUBE'
+            unit = 'หอ' if which == 'xp5' else 'หด'   # same หน่วย, different code per book
+            rows.append({'DOCNUM': doc, 'STKCOD': code, 'TRNQTY': i,
+                         'UNITPR': 50.0, 'TQUCOD': unit})
+        return rows
+
+    monkeypatch.setattr(eds, 'open_table', fake_open)
+    auto, review, stats = pl.layer2(
+        str(tmp_path / 'xp5'), str(tmp_path / 'bsn'),
+        {'BTUBE': (77, 'กาวซิลิโคน')}, {77: 'กาวซิลิโคน'}, set(),
+        conn=_unit_map_conn(tmp_path))
+    assert [a['xp5_code'] for a in auto] == ['TUBE']
+    assert auto[0]['product_id'] == 77
+    assert auto[0]['evidence_count'] == 2
+    assert review == []
