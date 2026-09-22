@@ -1,12 +1,16 @@
 """Migration 194: make stored purchase identity match the DBF/text writers."""
+import collections
 import datetime
 import os
 import sqlite3
+
+import pytest
 
 from express_dbf_source import build_purchase_entries
 
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+MIG = "194_purchase_line_seq_identity.sql"
 MIGRATION = os.path.join(
     REPO, "data", "migrations", "194_purchase_line_seq_identity.sql"
 )
@@ -320,66 +324,139 @@ def test_forward_is_rerunnable_without_rewriting_business_rows(empty_db_conn):
     ) == txn_before
 
 
-def test_runner_migrates_worktree_snapshot_without_stock_cost_or_quantity_move(tmp_db):
+@pytest.fixture
+def pre194_db(tmp_db):
+    """The true pre-194 state: once anything has booted this branch, the live
+    dev DB carries 194, so `tmp_db`'s clone does too and a bare init_db()
+    would skip the migration under test. The rollback also drops its snapshot
+    tables and its applied_migrations row, so this leaves a genuine pre-194
+    database either way."""
+    conn = sqlite3.connect(tmp_db)
+    try:
+        applied = {r[0] for r in conn.execute(
+            "SELECT filename FROM applied_migrations")}
+        if MIG in applied:
+            conn.executescript(_sql(ROLLBACK))
+            conn.commit()
+    finally:
+        conn.close()
+    return tmp_db
+
+
+def _purchase_identity(conn):
+    """{id: (doc_no, bsn_code, line_seq)} for every stored purchase line."""
+    return {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+        "SELECT id, doc_no, bsn_code, line_seq FROM purchase_transactions")}
+
+
+def _source_identity(conn, table):
+    """{id: (reference_no, source_bsn_code, source_line_seq)} for a ledger table."""
+    return {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+        f"SELECT id, reference_no, source_bsn_code, source_line_seq FROM {table}")}
+
+
+def _expected_line_seq(identity):
+    """What the migration must write, derived here instead of re-running its
+    SQL: the 1-based position within (doc_no, bsn_code) ordered by the stored
+    (line_seq, id) — the same rule express_dbf_source now emits from SEQNUM
+    order. Returns {id: new_line_seq}."""
+    groups = collections.defaultdict(list)
+    for row_id, (doc_no, code, seq) in identity.items():
+        groups[(doc_no, code)].append((seq, row_id))
+    out = {}
+    for rows in groups.values():
+        for ordinal, (_seq, row_id) in enumerate(sorted(rows), 1):
+            out[row_id] = ordinal
+    return out
+
+
+def test_runner_migrates_a_real_snapshot_without_stock_cost_or_quantity_move(pre194_db):
+    """Relations, not literals: this runs against whatever snapshot the dev DB
+    happens to be, before AND after 194 ships (the fixture rolls it back), so
+    no count from one particular day is pinned here."""
     import database
 
-    conn = sqlite3.connect(tmp_db)
+    conn = sqlite3.connect(pre194_db)
     conn.row_factory = sqlite3.Row
     try:
-        changed_before = [tuple(r) for r in conn.execute(
-            """
-            WITH ranked AS (
-                SELECT id, doc_no, bsn_code, product_id, line_seq AS old_seq,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY doc_no, bsn_code ORDER BY line_seq, id
-                       ) AS new_seq
-                  FROM purchase_transactions
-            )
-            SELECT id, doc_no, bsn_code, product_id, old_seq, new_seq
-              FROM ranked WHERE old_seq <> new_seq ORDER BY id
-            """
-        )]
-        assert len(changed_before) == 47
+        identity_before = _purchase_identity(conn)
+        txn_before = _source_identity(conn, "transactions")
+        mig156_before = _source_identity(conn, "migration_156_deleted_ledger")
         payload_before = _business_payload(conn)
     finally:
         conn.close()
 
-    # The real runner supplies the migration actor required by the #590 guard.
-    database.init_db(db_path=tmp_db)
+    expected = _expected_line_seq(identity_before)
+    changed = {i: expected[i] for i in expected
+               if expected[i] != identity_before[i][2]}
+    if not changed:
+        # Nothing to re-number: this DB cannot exercise the migration at all,
+        # and a green run would say nothing. The forced-fixture tests above
+        # cover the logic; this one is about a real snapshot.
+        pytest.skip("this DB snapshot holds no off-pattern purchase line")
 
-    conn = sqlite3.connect(tmp_db)
+    # A ledger row is re-pointed exactly when its stored source identity is one
+    # of the lines being re-numbered. Derived from the pre-state, not from the
+    # migration's own join.
+    old_key_to_new = {identity_before[i]: expected[i] for i in changed}
+
+    def _expected_repoint(before):
+        return {i: old_key_to_new[k] for i, k in before.items()
+                if k in old_key_to_new and k[2] != old_key_to_new[k]}
+
+    txn_expected = _expected_repoint(txn_before)
+    mig156_expected = _expected_repoint(mig156_before)
+
+    # The real runner supplies the migration actor required by the #590 guard.
+    database.init_db(db_path=pre194_db)
+
+    conn = sqlite3.connect(pre194_db)
+    conn.row_factory = sqlite3.Row
     try:
         assert conn.execute(
-            "SELECT COUNT(*) FROM applied_migrations "
-            "WHERE filename='194_purchase_line_seq_identity.sql'"
+            "SELECT COUNT(*) FROM applied_migrations WHERE filename=?", (MIG,)
         ).fetchone()[0] == 1
-        counts = tuple(conn.execute(
-            """
-            SELECT (SELECT COUNT(*) FROM migration_194_purchase_line_seq),
-                   (SELECT COUNT(*) FROM migration_194_transaction_source_line_seq),
-                   (SELECT COUNT(*) FROM migration_194_mig156_source_line_seq)
-            """
-        ).fetchone())
-        assert counts == (47, 47, 0)
-        scope = tuple(conn.execute(
-            """
-            SELECT COUNT(DISTINCT p.doc_no), COUNT(DISTINCT p.product_id)
-              FROM purchase_transactions p
-              JOIN migration_194_purchase_line_seq s ON s.id = p.id
-            """
-        ).fetchone())
-        assert scope == (25, 41)
-        assert conn.execute(
-            """
-            SELECT COUNT(*) FROM (
-                SELECT line_seq,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY doc_no, bsn_code ORDER BY line_seq, id
-                       ) AS wanted
-                  FROM purchase_transactions
-            ) WHERE line_seq <> wanted
-            """
-        ).fetchone()[0] == 0
+
+        identity_after = _purchase_identity(conn)
+        moved = {i: identity_after[i][2] for i in identity_after
+                 if identity_after[i][2] != identity_before[i][2]}
+        assert moved == changed, "re-numbered a different row set than the rule says"
+        assert {i: identity_after[i][2] for i in identity_after} == expected
+        assert all(identity_after[i][:2] == identity_before[i][:2]
+                   for i in identity_after), "a doc_no/bsn_code moved"
+
+        # The snapshot must hold exactly the rows that moved, with their old value.
+        snapshot = {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT id, old_line_seq, new_line_seq FROM migration_194_purchase_line_seq")}
+        assert set(snapshot) == set(changed)
+        assert all(snapshot[i] == (identity_before[i][2], changed[i]) for i in changed)
+
+        # Ledger rows: exactly the expected ones moved, to the expected value.
+        txn_after = _source_identity(conn, "transactions")
+        txn_moved = {i: txn_after[i][2] for i in txn_after
+                     if txn_after[i][2] != txn_before[i][2]}
+        assert txn_moved == txn_expected
+        assert {r[0] for r in conn.execute(
+            "SELECT id FROM migration_194_transaction_source_line_seq")} == set(txn_expected)
+        mig156_after = _source_identity(conn, "migration_156_deleted_ledger")
+        assert {i: mig156_after[i][2] for i in mig156_after
+                if mig156_after[i][2] != mig156_before[i][2]} == mig156_expected
+        assert {r[0] for r in conn.execute(
+            "SELECT id FROM migration_194_mig156_source_line_seq")} == set(mig156_expected)
+
         assert _business_payload(conn) == payload_before
+
+        conn.executescript(_sql(ROLLBACK))
+        assert _purchase_identity(conn) == identity_before
+        assert _source_identity(conn, "transactions") == txn_before
+        assert _source_identity(
+            conn, "migration_156_deleted_ledger") == mig156_before
+        assert _business_payload(conn) == payload_before
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'migration_194_%'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM applied_migrations WHERE filename=?", (MIG,)
+        ).fetchone()[0] == 0
     finally:
         conn.close()
