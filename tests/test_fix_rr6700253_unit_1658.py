@@ -14,7 +14,9 @@ import types
 
 import pytest
 
-_SCRIPT = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+import actor
+
+_SCRIPT =(pathlib.Path(__file__).resolve().parents[1] / "scripts"
            / "2026_09_21_fix_rr6700253_unit_1658.py")
 
 OPENING_NOTE = 'ยอดยกมา (back-solved)'
@@ -247,7 +249,7 @@ def test_refuses_when_the_map_cannot_translate(db, capsys):
 
 def _sql(*stmts):
     def apply(path):
-        c = sqlite3.connect(path)
+        c = actor.install(sqlite3.connect(path))   # #590: the cost drift needs an actor
         for s in stmts:
             c.execute(s)
         c.commit()

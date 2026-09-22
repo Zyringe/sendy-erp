@@ -358,7 +358,7 @@ def test_untouched_blank_box_preserves_purchase_driven_wacc(admin_client, monkey
 
     c, db = admin_client
     pid = _seed_product(db, cost=0.0)
-    conn = sqlite3.connect(db)
+    conn = actor.install(sqlite3.connect(db))     # #590: a cost write needs an actor
     conn.execute("UPDATE products SET cost_price=41.5 WHERE id=?", (pid,))
     conn.commit()
     conn.close()
