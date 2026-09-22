@@ -437,9 +437,9 @@ def test_wacc_against_live_db_smoke(tmp_db):
     Pick an active product from the temp copy of the live DB and verify
     recalculate_product_wacc runs without exceptions and returns a number.
     """
-    import models, sqlite3
+    import actor, models, sqlite3
 
-    conn = sqlite3.connect(tmp_db)
+    conn = actor.install(sqlite3.connect(tmp_db))   # #590: a rebuild needs an actor
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT id FROM products WHERE is_active=1 ORDER BY id LIMIT 1"

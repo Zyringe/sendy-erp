@@ -49,11 +49,13 @@ Modes:
             refuse-on-failure backup before the first write.
 
     python3 scripts/2026_09_20_rebase_gross_603.py --db /tmp/rehearse-603.db \\
-        --pids 1047,1048,1049,1052 --mode rehearse
+        --pids 1047,1048,1049,1052 --mode rehearse --operator put --reason "#603 rehearsal"
     python3 scripts/2026_09_20_rebase_gross_603.py --db /data/inventory.db \\
-        --pids 1047,1048,1049,1052 --mode live --confirm-live 1047,1048,1049,1052
+        --pids 1047,1048,1049,1052 --mode live --confirm-live 1047,1048,1049,1052 \\
+        --operator put --reason "#603 sandpapers gross -> piece"
 The hasps, once #599 and #600 are both on prod (the script refuses them before):
         --pids 1187,1188 ... --confirm-live 1187,1188
+--operator and --reason are required: the cost writes are signed with them (#590).
 """
 import argparse
 import importlib.util
@@ -564,6 +566,9 @@ def main(argv=None):
     ap.add_argument('--pids', required=True, help='comma list, each one in PLAN: %s' % sorted(PLAN))
     ap.add_argument('--mode', required=True, choices=['rehearse', 'live'])
     ap.add_argument('--confirm-live', help='live only: repeat --pids exactly')
+    ap.add_argument('--operator', required=True,
+                    help='who is running this (#590: cost writes are signed)')
+    ap.add_argument('--reason', required=True, help='why this rebase')
     a = ap.parse_args(argv)
 
     pids = _parse_pids(a.pids)
@@ -592,9 +597,11 @@ def main(argv=None):
         sys.path.insert(0, app_dir)
 
     today = date.today().isoformat()
-    conn = sqlite3.connect(a.db, timeout=15)
-    # as models.database.get_connection: the replay and the resolver index rows by NAME
-    conn.row_factory = sqlite3.Row
+    import database
+    # set up as models.database.get_connection is (the replay and the resolver index
+    # rows by NAME), with this run's operator and reason signing its cost writes (#590)
+    conn = database.script_connection(__file__, operator=a.operator, reason=a.reason,
+                                      db_path=a.db)
     conn.execute("PRAGMA busy_timeout=15000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("BEGIN IMMEDIATE")

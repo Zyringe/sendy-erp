@@ -437,7 +437,9 @@ def _function_source(path, qualname):
 
 ALLOWED = {
     # ── through_map: the function's OWN source calls bsn_units ───────────
-    'models/imports.py::import_weekly': {
+    # _import_weekly: the body of import_weekly, which since #590 only declares
+    # the import's actor around it.
+    'models/imports.py::_import_weekly': {
         'DYNAMIC-TABLE': ('through_map',
             'Calls bsn_units.normalize_unit(e.get("unit"), conn=conn) on '
             'every row before the dynamic INSERT/UPDATE into '

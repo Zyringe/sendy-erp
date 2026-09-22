@@ -244,7 +244,7 @@ CREATE TABLE conversion_cost_log (
                 total_input_cost  REAL    NOT NULL,
                 unit_cost         REAL    NOT NULL,
                 created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-            , writeoff_qty INTEGER NOT NULL DEFAULT 0, run_token TEXT);
+            , writeoff_qty INTEGER NOT NULL DEFAULT 0, run_token TEXT, written_by TEXT);
 
 CREATE TABLE conversion_formula_inputs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3626,6 +3626,21 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER audit_products_cost_update
+AFTER UPDATE OF cost_price, opening_cost ON products
+WHEN (OLD.cost_price IS NOT NEW.cost_price OR OLD.opening_cost IS NOT NEW.opening_cost)
+BEGIN
+    INSERT INTO audit_log (table_name, row_id, action, changed_fields,
+                           user, change_source, change_reason)
+    SELECT 'products', NEW.id, 'UPDATE',
+           json_group_object(field, json_array(old_v, new_v)),
+           sendy_actor('who'), sendy_actor('source'), sendy_actor('reason')
+    FROM (
+                  SELECT 'cost_price'   AS field, OLD.cost_price   AS old_v, NEW.cost_price   AS new_v WHERE OLD.cost_price   IS NOT NEW.cost_price
+        UNION ALL SELECT 'opening_cost',          OLD.opening_cost,          NEW.opening_cost          WHERE OLD.opening_cost IS NOT NEW.opening_cost
+    );
+END;
+
 CREATE TRIGGER audit_products_delete
 BEFORE DELETE ON products
 BEGIN
@@ -3668,7 +3683,6 @@ AFTER UPDATE ON products
 WHEN (
        OLD.product_name        IS NOT NEW.product_name
     OR OLD.unit_type           IS NOT NEW.unit_type
-    OR OLD.cost_price          IS NOT NEW.cost_price
     OR OLD.base_sell_price     IS NOT NEW.base_sell_price
     OR OLD.units_per_carton    IS NOT NEW.units_per_carton
     OR OLD.units_per_box       IS NOT NEW.units_per_box
@@ -3685,7 +3699,6 @@ BEGIN
     FROM (
         SELECT 'product_name'        AS field, OLD.product_name        AS old_v, NEW.product_name        AS new_v WHERE OLD.product_name        IS NOT NEW.product_name
         UNION ALL SELECT 'unit_type',           OLD.unit_type,           NEW.unit_type           WHERE OLD.unit_type           IS NOT NEW.unit_type
-        UNION ALL SELECT 'cost_price',          OLD.cost_price,          NEW.cost_price          WHERE OLD.cost_price          IS NOT NEW.cost_price
         UNION ALL SELECT 'base_sell_price',     OLD.base_sell_price,     NEW.base_sell_price     WHERE OLD.base_sell_price     IS NOT NEW.base_sell_price
         UNION ALL SELECT 'units_per_carton',    OLD.units_per_carton,    NEW.units_per_carton    WHERE OLD.units_per_carton    IS NOT NEW.units_per_carton
         UNION ALL SELECT 'units_per_box',       OLD.units_per_box,       NEW.units_per_box       WHERE OLD.units_per_box       IS NOT NEW.units_per_box
@@ -4407,6 +4420,51 @@ BEGIN
         'ห้ามเปลี่ยน salesperson_code ของกฎคอมมิชชั่นนี้ (เป็น primary key) — ให้ลบกฎเดิมแล้วสร้างกฎใหม่ให้พนักงานขายที่ถูกต้องแทน');
 END;
 
+CREATE TRIGGER conversion_cost_log_delete_needs_actor
+BEFORE DELETE ON conversion_cost_log
+WHEN sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
+END;
+
+CREATE TRIGGER conversion_cost_log_insert_needs_actor
+BEFORE INSERT ON conversion_cost_log
+WHEN sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
+END;
+
+CREATE TRIGGER conversion_cost_log_stamp
+AFTER INSERT ON conversion_cost_log
+BEGIN
+    UPDATE conversion_cost_log
+       SET written_by = json_object('who', sendy_actor('who'),
+                                    'source', sendy_actor('source'),
+                                    'reason', sendy_actor('reason'))
+     WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER conversion_cost_log_update_needs_actor
+BEFORE UPDATE ON conversion_cost_log
+WHEN sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
+END;
+
+CREATE TRIGGER conversion_cost_log_written_by_is_final
+BEFORE UPDATE OF written_by ON conversion_cost_log
+WHEN OLD.written_by IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'written_by is stamped once and never rewritten (#590)');
+END;
+
+CREATE TRIGGER conversion_cost_log_written_by_is_stamped
+BEFORE INSERT ON conversion_cost_log
+WHEN NEW.written_by IS NOT NULL
+BEGIN
+    SELECT RAISE(ABORT, 'written_by is stamped by the database; do not supply it (#590)');
+END;
+
 CREATE TRIGGER customer_crm_customer_code_immutable
 BEFORE UPDATE ON customer_crm
 WHEN NEW.customer_code IS NOT OLD.customer_code
@@ -4459,6 +4517,27 @@ BEGIN
     );
 END;
 
+CREATE TRIGGER product_cost_ledger_delete_needs_actor
+BEFORE DELETE ON product_cost_ledger
+WHEN sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
+END;
+
+CREATE TRIGGER product_cost_ledger_insert_needs_actor
+BEFORE INSERT ON product_cost_ledger
+WHEN sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
+END;
+
+CREATE TRIGGER product_cost_ledger_update_needs_actor
+BEFORE UPDATE ON product_cost_ledger
+WHEN sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
+END;
+
 CREATE TRIGGER product_families_display_format_check_insert
     BEFORE INSERT ON product_families
     WHEN NEW.display_format IS NOT NULL
@@ -4495,6 +4574,14 @@ BEGIN
         UNION ALL SELECT 'base_sell_price',             OLD.base_sell_price,             NEW.base_sell_price             WHERE OLD.base_sell_price     IS NOT NEW.base_sell_price
         UNION ALL SELECT 'low_stock_threshold',         OLD.low_stock_threshold,         NEW.low_stock_threshold         WHERE OLD.low_stock_threshold IS NOT NEW.low_stock_threshold
     );
+END;
+
+CREATE TRIGGER products_cost_needs_actor
+BEFORE UPDATE OF cost_price, opening_cost ON products
+WHEN (OLD.cost_price IS NOT NEW.cost_price OR OLD.opening_cost IS NOT NEW.opening_cost)
+ AND sendy_actor('who') IS NULL
+BEGIN
+    SELECT RAISE(ABORT, 'ต้องระบุตัวผู้แก้ต้นทุน (#590): เขียนผ่านหน้าเว็บ หรือเปิด connection ด้วย database.script_connection(__file__, operator=..., reason=...)');
 END;
 
 CREATE TRIGGER products_packaging_short_check_insert

@@ -18,6 +18,8 @@ import sqlite3
 
 import pytest
 
+import actor
+
 
 INITIAL_DATE = '2026-03-03'
 
@@ -243,7 +245,7 @@ def test_edit_form_shows_the_basis_labelled_as_the_basis(admin_client):
     # Diverge the two columns the way Put's product was, so an assertion on the
     # rendered value can actually tell them apart. Equal values would pass
     # whichever column the template reads.
-    conn = sqlite3.connect(db)
+    conn = actor.install(sqlite3.connect(db))     # #590: a cost write needs an actor
     conn.execute("UPDATE products SET cost_price=99.0 WHERE id=?", (pid,))
     conn.commit()
     conn.close()
@@ -356,7 +358,7 @@ def test_untouched_blank_box_preserves_purchase_driven_wacc(admin_client, monkey
 
     c, db = admin_client
     pid = _seed_product(db, cost=0.0)
-    conn = sqlite3.connect(db)
+    conn = actor.install(sqlite3.connect(db))     # #590: a cost write needs an actor
     conn.execute("UPDATE products SET cost_price=41.5 WHERE id=?", (pid,))
     conn.commit()
     conn.close()

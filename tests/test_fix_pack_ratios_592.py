@@ -20,6 +20,7 @@ import sqlite3
 import types
 
 import pytest
+from tests._pre_mig590 import sign_raw_connections  # noqa: E402
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "2026_09_19_fix_pack_ratios_592.py"
 
@@ -144,6 +145,13 @@ def _seed(conn):
         wacc.recalculate_product_wacc(pid, conn)
     conn.commit()
 
+
+
+@pytest.fixture(autouse=True)
+def _pre_mig590_world(monkeypatch):
+    """A dated one-off script's raw connections, in the world it ran in (#590).
+    See tests/_pre_mig590.py."""
+    sign_raw_connections(monkeypatch)
 
 @pytest.fixture()
 def db(empty_db, empty_db_conn):

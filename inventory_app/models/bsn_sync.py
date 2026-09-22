@@ -15,7 +15,7 @@ import bsn_units
 from .stock_filters import is_non_stock_code, non_stock_clause
 from .wacc import recalculate_product_wacc
 from .conversion_roles import component_product_id, ConversionRoleError
-from .system_alerts import record_conversion_role_alert
+from .system_alerts import record_conversion_role_alert, require_actor_or_alert
 
 # หน้าร้าน customer codes whose synced sales ALSO decrement platform_skus.stock
 # (see _sync_bsn_to_stock below). ONE definition, imported — ecommerce_overview
@@ -621,6 +621,8 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     refuses the ratio, or {'error': <msg>} when the rebuild could not replay
     every movement it removed (nothing is committed in that case)."""
     conn = get_connection()
+    # #590 A2: the ratio and the re-synced stock commit before the WACC replay.
+    require_actor_or_alert(conn, 'ratio_change', extra={'product_id': product_id})
 
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(new_ratio) != 1):
