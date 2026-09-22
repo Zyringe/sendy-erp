@@ -196,8 +196,8 @@ def write_book_meta(conn, source_dir, isinfo_rows, counts):
 def clear_build_audit(conn):
     """Empty the book's audit_log. The book is rebuilt from scratch on every
     upload, so every row in it is this build's own INSERT and records no
-    history. It was 45% of the file (54MB of 120MB), and publish() needs free
-    space on the data volume equal to the whole file."""
+    history. It was 45% of the file (54MB of 120MB, measured 2026-09-22), and
+    publish() needs free space on the data volume equal to the whole file."""
     conn.execute("DELETE FROM audit_log")
     conn.commit()
 
