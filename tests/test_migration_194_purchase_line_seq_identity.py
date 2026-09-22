@@ -273,7 +273,12 @@ def test_rollback_restores_rows_byte_for_byte(empty_db_conn):
 
 def test_forward_is_rerunnable_without_rewriting_business_rows(empty_db_conn):
     conn = empty_db_conn
-    _seed_pre194(conn)
+    seeded = _seed_pre194(conn)
+    pt_before = _rows(conn, "purchase_transactions", "doc_no LIKE 'HP637%'")
+    txn_before = _rows(
+        conn, "transactions", "id IN (?,?,?,?)",
+        (*seeded["txn_ids"], seeded["unmatched_txn"]),
+    )
     conn.executescript(_sql(MIGRATION))
     migrated_purchase = _rows(conn, "purchase_transactions", "doc_no LIKE 'HP637%'")
     migrated_transactions = _rows(
@@ -294,14 +299,25 @@ def test_forward_is_rerunnable_without_rewriting_business_rows(empty_db_conn):
         conn, "migration_156_deleted_ledger", "id=963700"
     ) == migrated_mig156
     assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == audit_count
-    empty_snapshots = tuple(conn.execute(
+
+    # The re-run must NOT drop its own rollback evidence: dropping and
+    # recreating the snapshots would leave them empty (the second run's remap
+    # is empty by construction) and silently disarm the rollback below.
+    kept_snapshots = tuple(conn.execute(
         """
         SELECT (SELECT COUNT(*) FROM migration_194_purchase_line_seq),
                (SELECT COUNT(*) FROM migration_194_transaction_source_line_seq),
                (SELECT COUNT(*) FROM migration_194_mig156_source_line_seq)
         """
     ).fetchone())
-    assert empty_snapshots == (0, 0, 0)
+    assert kept_snapshots == (2, 2, 1)
+
+    conn.executescript(_sql(ROLLBACK))
+    assert _rows(conn, "purchase_transactions", "doc_no LIKE 'HP637%'") == pt_before
+    assert _rows(
+        conn, "transactions", "id IN (?,?,?,?)",
+        (*seeded["txn_ids"], seeded["unmatched_txn"]),
+    ) == txn_before
 
 
 def test_runner_migrates_worktree_snapshot_without_stock_cost_or_quantity_move(tmp_db):

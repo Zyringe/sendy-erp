@@ -18,10 +18,13 @@
 -- stock trigger nor the audit trigger: both WHEN clauses ignore provenance.
 -- Updating purchase_transactions.line_seq uses mig 173's declared import path.
 --
--- The three persistent migration_194_* tables are rollback evidence. Per the
--- repository's drop-first migration convention, every CREATE below is preceded
--- by DROP ... IF EXISTS. A second forward run has an empty _mig194_remap and
--- performs no business-row UPDATE.
+-- The three persistent migration_194_* tables are rollback evidence, so they
+-- are created IF NOT EXISTS and never dropped here: the drop-first convention
+-- exists so a re-run cannot fail on an existing object, and DROPPING these
+-- would instead hand a re-run an empty snapshot and silently disarm the
+-- rollback. The transient TEMP table is the one object dropped first. A second
+-- forward run therefore has an empty _mig194_remap, writes no business row,
+-- and leaves the first run's snapshot intact.
 
 PRAGMA busy_timeout = 10000;
 
@@ -44,8 +47,7 @@ SELECT id, doc_no, bsn_code, old_line_seq, new_line_seq
   FROM ranked
  WHERE old_line_seq <> new_line_seq;
 
-DROP TABLE IF EXISTS migration_194_purchase_line_seq;
-CREATE TABLE migration_194_purchase_line_seq (
+CREATE TABLE IF NOT EXISTS migration_194_purchase_line_seq (
     id                INTEGER PRIMARY KEY,
     old_line_seq      INTEGER NOT NULL,
     new_line_seq      INTEGER NOT NULL,
@@ -55,15 +57,13 @@ CREATE TABLE migration_194_purchase_line_seq (
     old_change_token  TEXT
 );
 
-DROP TABLE IF EXISTS migration_194_transaction_source_line_seq;
-CREATE TABLE migration_194_transaction_source_line_seq (
+CREATE TABLE IF NOT EXISTS migration_194_transaction_source_line_seq (
     id           INTEGER PRIMARY KEY,
     old_line_seq INTEGER NOT NULL,
     new_line_seq INTEGER NOT NULL
 );
 
-DROP TABLE IF EXISTS migration_194_mig156_source_line_seq;
-CREATE TABLE migration_194_mig156_source_line_seq (
+CREATE TABLE IF NOT EXISTS migration_194_mig156_source_line_seq (
     id           INTEGER PRIMARY KEY,
     old_line_seq INTEGER NOT NULL,
     new_line_seq INTEGER NOT NULL

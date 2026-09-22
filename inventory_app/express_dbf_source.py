@@ -1215,6 +1215,9 @@ ERA_START = '2024-01-01'
 # derived identity ordinal within (doc_no, product code), not document payload.
 # Drift compares each document's semantic line multiset; a pure source-line
 # reorder moves neither money nor stock and must not become a drift finding.
+# Measured on prod while the two writers still disagreed (before #637 made this
+# builder emit the same ordinal parse_weekly does): including it took the drift
+# set from 116 documents to 1,005, of which 580 were line_seq alone.
 DRIFT_LINE_FIELDS = ('code', 'qty', 'unit', 'unit_price', 'total', 'net', 'discount')
 
 # Header fields, in the order _classify_fields reports them.
