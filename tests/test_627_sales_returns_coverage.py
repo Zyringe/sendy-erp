@@ -116,8 +116,8 @@ ALLOWED = {
         'receipt-driven and never read this sum.'),
     'models/pricing_ap.py::get_product_pricing': (9,
         'realised selling PRICE of one product (price evidence, #554\'s '
-        'question), not ยอดขาย. An SR line at its price is a known open item on '
-        'the revenue-filter allowlist, a pricing call for Put.'),
+        'question), not ยอดขาย. Its averages also take in SR lines (qty > 0 at '
+        'their price): a pricing call for Put, raised on the #627 PR.'),
     'models/pricing_ap.py::get_product_pricing_summary': (3,
         'same page, same price-evidence question as get_product_pricing.'),
     'models/marketplace.py::set_amount_review': (1,
