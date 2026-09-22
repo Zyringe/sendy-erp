@@ -33,9 +33,15 @@ APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 # rather than an oversight.
 ALLOWED = {
     'models/sales.py':
-        'Document ledger — /sales mirrors Express and must show every document '
-        'that exists, including ones invoiced in error. Its totals therefore '
-        'differ from /accounting by design (Put, 2026-07-30, option ก).',
+        'Two functions only: get_sales_summary (/sales) and '
+        'get_product_trade_summary (/products/<id>/trade) are the document '
+        'ledger — /sales mirrors Express and must show every document that '
+        'exists, including ones invoiced in error (Put, 2026-07-30, option ก). '
+        'Both are ยอดขาย net of returns (#627), not revenue, so their totals '
+        'differ from /accounting by design. get_trade_dashboard is NOT exempt: '
+        'it carries not_a_sale_clause (Put, 2026-09-22), which this file-level '
+        'sweep cannot tell apart, so test_627_sales_returns_coverage.py pins '
+        'the clause per function.',
     'blueprints/mobile.py':
         'Mobile view of the same document ledger as models/sales.py — same call.',
     'payments_alloc.py':
@@ -43,8 +49,8 @@ ALLOWED = {
     'call_card.py':
         'Sales-rep call card shows a customer purchase history, not a revenue '
         'report. Its /call spend is ยอดซื้อรวม (#494: credit notes subtracted, '
-        'HS kept, only the not-a-sale guard); the product lists stay on the '
-        'ledger for consistency with /sales.',
+        'HS kept, only the not-a-sale guard); the product lists are net of '
+        'returns and keep every document, like /sales (#627).',
     'models/payments.py':
         'AR-balance surfaces, not revenue reports. get_payment_status and '
         'get_payment_summary are the document ledger behind /ar?tab=รายบิล — '
@@ -92,7 +98,12 @@ _SUM_NET = re.compile(
     # The net→cash CASE moved into vat_math (2026-09-09, card 2). A call site
     # now reads SUM({vat_math.cash_sql()}) and carries no literal `net`, so the
     # pattern above would stop seeing a revenue surface that is still there.
-    r'|\{vat_math\.cash_sql\()',
+    r'|\{vat_math\.cash_sql\('
+    # Same blind spot for the net-of-returns helpers (#494, #627): a call site
+    # reading SUM({sales_filters.sales_net_sql()}) carries no literal `net`.
+    # Without this, call_card.py read as "no longer sums net" the moment its
+    # product list moved onto the helper.
+    r'|\{sales_filters\.(?:purchase|sales)_net_sql\()',
     re.IGNORECASE | re.DOTALL)
 
 
@@ -363,6 +374,8 @@ AGGREGATE_SHAPES = {
     'vat_math_owner':    'SUM({vat_math.cash_sql()})',
     'vat_math_aliased':  "SUM({vat_math.cash_sql('st')})",
     'vat_math_rounded':  'ROUND(SUM({vat_math.cash_sql()}), 2)',
+    'sales_net_owner':   "SUM({sales_filters.sales_net_sql('s')})",
+    'purchase_net_owner': 'SUM({sales_filters.purchase_net_sql()})',
 }
 
 NOT_AGGREGATES = {

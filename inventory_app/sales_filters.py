@@ -35,7 +35,9 @@ every row, and every revenue figure in the app would silently become 0. Same
 hazard cashflow.py documents for its own ar_writeoffs subquery.
 
 A customer's purchase total (ยอดซื้อรวม) is a different question from revenue
-and has its own single definition here too: purchase_net_sql() (#494).
+and has its own single definition here too: purchase_net_sql() (#494). The
+trade screens' ยอดขาย (#627) is the same per-line figure summed over every
+customer: sales_net_sql() / sales_qty_sql().
 
 ⚠ A THIRD, unrelated question lives here too: how much WE bought from a
 SUPPLIER, off `purchase_transactions` (a different table from the two
@@ -98,6 +100,37 @@ def purchase_net_sql(alias=''):
     """
     p = '{}.'.format(alias) if alias else ''
     return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}net ELSE {p}net END"
+            .format(p=p))
+
+
+# ── ยอดขาย on the trade screens, NET of returns (#627) ───────────────────────
+#
+# /sales, /trade-dashboard, /products/<id>/trade and the call card's product
+# ordering. Before #627 /sales and the product page summed a bare `net`, so a
+# credit note (stored POSITIVE) was ADDED as a sale, while the dashboard
+# dropped SR entirely: prod 2026 Jan-Sep read ฿2,900,927.44 vs ฿2,886,748.94,
+# the gap being exactly the 16 SR lines. Put's ruling 2026-09-22: subtract
+# a return, the same rule as ยอดซื้อ (#591) and ยอดซื้อรวม (#494). A product
+# or a month may go negative. This is NOT revenue: revenue_filter() still
+# leaves returns out of /accounting and /revenue (GL 41-01).
+#
+# Which documents count is the caller's WHERE: /sales and the product page
+# keep every document (option ก); only the dashboard adds not_a_sale_clause().
+
+def sales_net_sql(alias=''):
+    """SQL expression: one sales line's share of ยอดขาย on the trade screens,
+    NET of returns: a credit-note (SR) line is negated. Wrap in SUM()
+    yourself. It is the same per-line figure a customer's ยอดซื้อรวม sums, so
+    it delegates to purchase_net_sql(): one definition of the SR sign for
+    both sides of a sale."""
+    return purchase_net_sql(alias)
+
+
+def sales_qty_sql(alias=''):
+    """Same as sales_net_sql() but for qty: a returned quantity nets OUT of
+    what was sold (SR qty is stored positive too)."""
+    p = '{}.'.format(alias) if alias else ''
+    return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}qty ELSE {p}qty END"
             .format(p=p))
 
 

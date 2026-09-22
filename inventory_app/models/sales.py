@@ -66,7 +66,9 @@ def get_purchases_by_doc(doc_base, conn=None):
 
 
 def get_sales_summary(date_from=None, date_to=None, doc_no=None, conn=None):
-    """Returns totals split by vat_type."""
+    """Returns totals split by vat_type, NET of returns (#627): a credit
+    note subtracts. Every document counts, including ones invoiced in error
+    (Put, 2026-07-30, option ก); `txn_count` is the lines listed below."""
     owned = conn is None
     if owned:
         conn = get_connection()
@@ -84,8 +86,8 @@ def get_sales_summary(date_from=None, date_to=None, doc_no=None, conn=None):
     rows = conn.execute(f"""
         SELECT vat_type,
                COUNT(*)       AS txn_count,
-               SUM(qty)       AS total_qty,
-               SUM(net)       AS total_net
+               SUM({sales_filters.sales_qty_sql()}) AS total_qty,
+               SUM({sales_filters.sales_net_sql()}) AS total_net
         FROM sales_transactions
         WHERE {where}
         GROUP BY vat_type
@@ -136,15 +138,20 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
         date_from = '2000-01-01'
 
     # ── Summary this month ────────────────────────────────────────────────────
+    # Sales are NET of returns (#627): a credit note subtracts, so its rows are
+    # in the population, and every sales query here drops the documents
+    # invoiced in error (not_a_sale_clause, Put 2026-09-22). doc_count still
+    # counts invoices only, never a credit note.
     # Sales count doc_base (the invoice); doc_no is one LINE of it (#496).
     # Purchases below keep doc_no: on purchase_transactions it IS the document.
-    s = conn.execute("""
-        SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               COALESCE(SUM(net), 0)  AS total_net,
-               COALESCE(SUM(qty), 0)  AS total_qty
+    s = conn.execute(f"""
+        SELECT COUNT(DISTINCT CASE WHEN doc_base NOT LIKE 'SR%' THEN doc_base END)
+                                   AS doc_count,
+               COALESCE(SUM({sales_filters.sales_net_sql()}), 0) AS total_net,
+               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS total_qty
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
-          AND doc_no NOT LIKE 'SR%'
+          AND {sales_filters.not_a_sale_clause()}
     """, (date_from, date_to)).fetchone()
 
     p = conn.execute(f"""
@@ -156,12 +163,12 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     """, (date_from, date_to)).fetchone()
 
     # ── Weekly trend (within selected date range) ─────────────────────────────
-    weekly_sales = conn.execute("""
+    weekly_sales = conn.execute(f"""
         SELECT strftime('%Y-W%W', date_iso) AS week,
-               COALESCE(SUM(net), 0) AS net
+               COALESCE(SUM({sales_filters.sales_net_sql()}), 0) AS net
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
-          AND doc_no NOT LIKE 'SR%'
+          AND {sales_filters.not_a_sale_clause()}
         GROUP BY week ORDER BY week
     """, (date_from, date_to)).fetchall()
 
@@ -183,28 +190,29 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     ]
 
     # ── Top 10 สินค้าขายดี (by net) ──────────────────────────────────────────
-    top_products = conn.execute("""
+    top_products = conn.execute(f"""
         SELECT COALESCE(pr.product_name, s.product_name_raw) AS name,
                s.product_id,
-               SUM(s.qty)  AS total_qty,
-               SUM(s.net)  AS total_net
+               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net
         FROM sales_transactions s
         LEFT JOIN products pr ON pr.id = s.product_id
         WHERE s.date_iso >= ? AND s.date_iso <= ?
-          AND s.doc_no NOT LIKE 'SR%'
+          AND {sales_filters.not_a_sale_clause('s')}
         GROUP BY s.product_id, s.product_name_raw
         ORDER BY total_net DESC
         LIMIT 10
     """, (date_from, date_to)).fetchall()
 
     # ── Top 10 ลูกค้า ─────────────────────────────────────────────────────────
-    top_customers = conn.execute("""
+    top_customers = conn.execute(f"""
         SELECT customer,
-               COUNT(DISTINCT doc_base) AS doc_count,
-               SUM(net)               AS total_net
+               COUNT(DISTINCT CASE WHEN doc_base NOT LIKE 'SR%' THEN doc_base END)
+                                      AS doc_count,
+               SUM({sales_filters.sales_net_sql()}) AS total_net
         FROM sales_transactions
         WHERE date_iso >= ? AND date_iso <= ?
-          AND doc_no NOT LIKE 'SR%'
+          AND {sales_filters.not_a_sale_clause()}
           AND customer IS NOT NULL AND customer != ''
         GROUP BY customer
         ORDER BY total_net DESC
@@ -263,6 +271,12 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
     an invoice, and one invoice can carry this product on several lines (a
     paid line plus a ฿0 freebie, or two units) (#496). So the unit chips can
     add up to more than `all_units_doc_count`, the "ทั้งหมด" chip.
+
+    Money and qty are NET of returns (#627): a credit note's line subtracts,
+    so a product or a month can read negative, and a credit note's own row
+    in `docs` reads negative so the list sums to the header. Every document
+    counts, like /sales: dropping the ones invoiced in error is the
+    dashboard's rule only (Put, 2026-09-22).
     """
     conn = get_connection()
     conds = ['s.product_id = ?']
@@ -283,8 +297,8 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
 
     summary = conn.execute(f"""
         SELECT COUNT(DISTINCT s.doc_base) AS doc_count,
-               COALESCE(SUM(s.net), 0)  AS total_net,
-               COALESCE(SUM(s.qty), 0)  AS total_qty,
+               COALESCE(SUM({sales_filters.sales_net_sql('s')}), 0) AS total_net,
+               COALESCE(SUM({sales_filters.sales_qty_sql('s')}), 0) AS total_qty,
                MIN(s.date_iso)          AS first_date,
                MAX(s.date_iso)          AS last_date
         FROM sales_transactions s
@@ -293,8 +307,8 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
 
     top_customers = conn.execute(f"""
         SELECT s.customer,
-               SUM(s.qty)            AS total_qty,
-               SUM(s.net)            AS total_net,
+               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net,
                COUNT(DISTINCT s.doc_base) AS doc_count
         FROM sales_transactions s
         WHERE {where}
@@ -307,8 +321,8 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
     monthly = conn.execute(f"""
         SELECT strftime('%Y-%m', s.date_iso) AS month,
                COUNT(DISTINCT s.doc_base) AS doc_count,
-               SUM(s.qty)  AS total_qty,
-               SUM(s.net)  AS total_net
+               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net
         FROM sales_transactions s
         WHERE {where}
         GROUP BY month
@@ -320,7 +334,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
         SELECT s.doc_base,
                MAX(s.date_iso) AS date_iso,
                MAX(s.customer) AS customer,
-               SUM(s.net)      AS total_net
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net
         FROM sales_transactions s
         WHERE {where}
         GROUP BY s.doc_base
@@ -338,7 +352,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
         by_doc = {}
         for r in conn.execute(f"""
             SELECT s.doc_base, s.unit,
-                   SUM(s.qty) AS qty,
+                   SUM({sales_filters.sales_qty_sql('s')}) AS qty,
                    SUM(CASE WHEN s.qty > 0 AND (s.net IS NULL OR s.net = 0)
                              AND s.doc_base NOT LIKE 'SR%'
                             THEN s.qty ELSE 0 END) AS free_qty

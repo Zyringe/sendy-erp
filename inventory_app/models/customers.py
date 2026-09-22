@@ -125,12 +125,14 @@ def _customer_sales_aggregates(conn, where, params):
     summary['last_purchase_date'] = purchases['d']
     summary['purchase_doc_count'] = purchases['n']
 
+    # Money-ordered NET of returns (#627), like the trade screens: the call
+    # card's แบรนด์เด่น reads the first name.
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
                p.id AS product_id,
                s.unit,
-               SUM(s.qty)  AS total_qty,
-               SUM(s.net)  AS total_net,
+               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net,
                COUNT(DISTINCT s.doc_base) AS doc_count
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id

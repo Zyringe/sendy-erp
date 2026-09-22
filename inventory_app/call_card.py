@@ -614,26 +614,27 @@ def _assemble_products(conn, names, canon_code, today=None):
 
     today_str = today or dt.date.today().isoformat()
 
-    # Pull customer's top products by net revenue
-    product_rows = conn.execute("""
+    # Pull customer's top products by money, NET of returns (#627): a credit
+    # note subtracts from both the ranking key and the ซื้อรวม qty.
+    product_rows = conn.execute(f"""
         SELECT
             st.product_id,
             COALESCE(p.product_name, st.product_name_raw) AS product_name,
             st.unit,
-            SUM(st.qty)   AS total_qty,
-            SUM(st.net)   AS total_net,
+            SUM({sales_filters.sales_qty_sql('st')}) AS total_qty,
+            SUM({sales_filters.sales_net_sql('st')}) AS total_net,
             COUNT(DISTINCT st.doc_base) AS doc_count,   -- invoices, not lines (#496)
             MAX(st.date_iso) AS last_buy,
             p.base_sell_price,
             p.unit_type
         FROM sales_transactions st
         LEFT JOIN products p ON p.id = st.product_id
-        WHERE st.customer IN ({})
+        WHERE st.customer IN ({",".join("?" * len(names))})
           AND st.product_id IS NOT NULL
         GROUP BY st.product_id, st.unit
         ORDER BY total_net DESC
         LIMIT 30
-    """.format(",".join("?" * len(names))), names).fetchall()
+    """, names).fetchall()
 
     # C2: one epoch per (product_id, unit) PAIR — a product bought at two
     # units must not have one unit's epoch silently overwrite the other's.

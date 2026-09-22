@@ -50,17 +50,10 @@ ALLOWED = {
     'models/customers.py::_customer_documents': (1,
         'ยอดรวมเอกสาร: one row per DOCUMENT, VAT added on แยก VAT documents, a '
         'credit note negated in Python. A document total, VAT-inclusive by design.'),
-    'models/customers.py::_customer_sales_aggregates': (1,
-        'top_products: one row per product, money-ordered, and only its first '
-        'NAME is read (the call card\'s แบรนด์เด่น). The summary and monthly '
-        'queries in this function DO use the helper (MUST_USE_HELPER).'),
     'models/customers.py::_customer_product_cards': (1,
         'one row per (product, unit) over the price resolver\'s evidence '
         'population (paid invoice lines only), used to order the product cards '
         'by money. A per-product figure, never the customer\'s total.'),
-    'call_card.py::_assemble_products': (1,
-        'orders the call card\'s ซื้อประจำ list (top 30 products by money). A '
-        'per-product ranking key, never rendered as a customer total.'),
     # ── money owed (AR), not money spent ──
     'blueprints/mobile.py::sales_trip': (1,
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '
@@ -81,10 +74,6 @@ ALLOWED = {
     'commission.py::get_invoices_for_salesperson': (1,
         'the sales-rep commission tab: one row per INVOICE (IV/HS) with its '
         'customer. A document total, never summed per customer.'),
-    'models/sales.py::get_product_trade_summary': (2,
-        'the product trade page: who bought ONE product, per customer and per '
-        'document, off the document ledger. A product\'s history, not a '
-        'customer\'s purchase total.'),
     'models/pricing_ap.py::get_product_pricing': (1,
         'realised selling price of ONE product per customer (cash ÷ qty). Price '
         'evidence, not a purchase total.'),
@@ -99,11 +88,13 @@ ALLOWED = {
         '/revenue top customers answers the REVENUE question: revenue_filter() '
         'leaves returns and HS out rather than subtracting them. #494 leaves '
         'revenue alone (HS in revenue is #514).'),
-    'models/sales.py::get_trade_dashboard': (1,
-        'the trade dashboard\'s Top 10 ลูกค้า ranks one period\'s invoice net off '
-        'the document ledger (SR and HS left out, like the rest of that page). '
-        'Outside #494\'s five surfaces; raised with Put on the #494 PR.'),
 }
+# #627 moved four former entries off raw `net` and onto
+# sales_filters.sales_net_sql() (the trade screens' ยอดขาย, net of returns):
+# customers._customer_sales_aggregates' top_products, call_card._assemble_products,
+# and the per-customer queries of models/sales.py's get_product_trade_summary and
+# get_trade_dashboard. They are neither raw nor purchase_net_sql() here, so this
+# census no longer lists them; test_627_sales_returns_coverage.py pins them.
 
 # The surfaces #494 moved onto the helper, and how many aggregates each holds.
 # The call card is not listed: it reads _customer_sales_aggregates through
