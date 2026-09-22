@@ -18,6 +18,14 @@ seed_products_from_stmas) are already `through_map` below, because they
 already call bsn_units against the current default book; #599's job there
 is to make that book argument explicit, which lands as a reason-text
 update on shipping, not a status flip out of `pending`.
+  ✅ #599 SHIPPED (migration 190) and deliberately changed NO call site, so
+  no entry here moved. It had none `pending` to clear, and the explicit
+  `book=` argument it might have added would have been a no-op everywhere it
+  is CORRECT (BSN5657 is `bsn_units.DEFAULT_BOOK`) and actively harmful at the
+  one site where it is WRONG: `import_weekly` is reused verbatim by the xp5
+  VAT-book build, so hard-coding BSN5657 there would cement the very bug #601
+  exists to fix, while hiding it behind an argument that looks deliberate. The
+  book-awareness work stays whole, under #601.
 
 Prior art: tests/test_revenue_filter_coverage.py (file-level ALLOWED +
 guard-token-in-file) and tests/test_last_purchase_population_coverage.py
