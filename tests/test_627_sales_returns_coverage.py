@@ -103,6 +103,14 @@ ALLOWED = {
     # ── one document, one product's price, one order, one platform ──
     'models/customers.py::_customer_documents': (1,
         'one row per DOCUMENT, a credit note already negated in Python. A document list.'),
+    'models/customers.py::_returns_off_cards': (1,
+        'the ฿ of this customer\'s credit notes that the RENDERED cards do not '
+        'show (#646 footnote). A raw SUM(net) on purpose: the population is '
+        'already returns-only via price_lookup.returned_lines_filter, so every '
+        'row is a return and sales_net_sql would negate a figure that is '
+        'presented as a positive "there is this much more" amount. The netting '
+        'this sweep guards happens where it belongs, in _customer_product_cards '
+        'one entry below, and this number is the residual against it.'),
     'models/customers.py::_customer_product_cards': (4,
         'per (product, unit), and net of returns since #646 — but spelled as a '
         'CASE over price_lookup.returned_lines_filter rather than '

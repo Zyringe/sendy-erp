@@ -714,6 +714,17 @@
           </tbody>
         </table>
       </div>
+      {# #646: credit notes that never reach a card — a product this customer
+         never bought, a return booked in a different unit from the purchase,
+         or a card outside the top-20 union. The header above NETS these, so
+         without this line the two disagree with nothing saying why. Absent
+         entirely at 0, like the win-back overflow below. #}
+      {% if data.returns_off_cards %}
+      <div class="card-footer text-warning small" data-returns-off-cards="{{ data.returns_off_cards }}">
+        ↩ มีใบลดหนี้อีก {{ data.returns_off_cards | fmt_price }} ที่ไม่ได้อยู่ในรายการข้างบน
+        <span class="text-subtle">(สินค้าที่ลูกค้าไม่เคยซื้อ หรือคืนคนละหน่วยกับตอนซื้อ)</span>
+      </div>
+      {% endif %}
       {# #497: win-back items the top-40 union above never rendered at all
          (never double-counted with the badge on a visible row — see
          models.customers.get_customer_summary_by_code's winback_overflow_count).

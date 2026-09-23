@@ -389,6 +389,28 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     return out
 
 
+def _returns_off_cards(conn, where, params, cards):
+    """฿ of this customer's credit notes that the RENDERED cards do not show.
+
+    #646 nets a return onto its card, but three kinds never reach one: a
+    product this customer never bought (no card exists), a return booked in a
+    different unit from the purchase (different key), and a card that exists
+    but fell outside the top-20 union. Without this the page is silent about
+    them, which is the same "disagrees with itself" complaint one level up.
+    Measured on prod 2026-09-23: ฿46,197.68 over 44 lines and 12 customers,
+    against ฿83,339.09 that does land on a card.
+
+    Deliberately the residual against the cards ACTUALLY RENDERED, not against
+    the full aggregate: what the footnote promises is "this much is not in the
+    list above", so it has to be computed from that list."""
+    import price_lookup
+    total = conn.execute(f"""
+        SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
+        WHERE {where} AND {price_lookup.returned_lines_filter('s')}
+    """, params).fetchone()[0]
+    return round(total - sum(c['returned_net'] for c in cards), 2)
+
+
 def _customer_product_cards(conn, where, params, include_cost=False):
     """สินค้าที่ซื้อบ่อย, enriched (#493 slice 2, trimmed scope B): one row per
     (product, unit), keyed and populated by the price resolver's evidence
@@ -809,6 +831,9 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     summary, top_products, monthly, docs = _customer_sales_aggregates(
         conn, where, params)
     product_cards = _customer_product_cards(conn, where, params, include_cost=include_cost)
+    # Computed HERE, not in the returned dict below: this function closes `conn`
+    # before assembling it.
+    returns_off_cards = _returns_off_cards(conn, where, params, product_cards)
 
     # Win-back (#497): the ONE shared computation (winback.py), ALWAYS over
     # the customer's FULL history — a fresh, date-INDEPENDENT scope built
@@ -905,6 +930,7 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         'summary': dict(summary),
         'top_products': [dict(r) for r in top_products],
         'product_cards': product_cards,
+        'returns_off_cards': returns_off_cards,
         # Raw shared list (#497) — same shape call_card.get_card returns under
         # its own 'winback' key, so a caller comparing the two surfaces never
         # has to reach into product_cards to rebuild it.

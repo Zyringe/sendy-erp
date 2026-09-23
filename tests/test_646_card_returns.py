@@ -240,6 +240,66 @@ def test_returned_and_purchase_populations_are_disjoint_and_cover(tmp_db_conn):
     assert either == bought + returned
 
 
+def test_hygiene_applies_to_the_returns_side_too(cust):
+    """Found by review: `returned_lines_filter` sharing `_line_hygiene` with
+    the purchase side was asserted nowhere, so dropping hygiene from the
+    returns half went undetected. The disjoint/cover test cannot see it — both
+    halves shrink or grow together and the arithmetic still balances."""
+    conn, pid = cust
+    _line(conn, doc_base='IV64611', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=100, unit_price=10, net=1000.0)
+    _line(conn, doc_base='SR64611', suffix=1, pid=pid, date_iso='2026-02-05',
+          qty=10, unit_price=10, net=100.0)
+    # net = 0: a giveaway reversal, not money coming back.
+    _line(conn, doc_base='SR64612', suffix=1, pid=pid, date_iso='2026-02-06',
+          qty=7, unit_price=0, net=0.0)
+    # A marketplace row under the same customer_code. `_line_hygiene` keys the
+    # marketplace exclusion on the customer NAME, not the code.
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, "
+        " customer, customer_code, qty, unit, unit_price, vat_type, total, net) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        ('2026-02-07', 'SR64613-1', 'SR64613', pid, 'หน้าร้านS', TEST_CODE,
+         5, 'ตัว', 10, 1, 50.0, 50.0))
+    conn.commit()
+    card = _card(pid)
+    assert card['returned_qty'] == 10     # only SR64611, the hygienic one
+    assert card['total_qty'] == 90        # 100 - 10, the other two dropped
+
+
+def test_a_written_off_bill_still_counts_as_a_purchase(cust):
+    """Put, 2026-09-17, and the #554 split: `purchase_population_filter` keeps
+    an unflagged written-off bill (the goods moved, the customer engaged)
+    while `price_evidence_filter` drops the whole ar_writeoffs table.
+
+    Also found by review: without a written-off row in the fixture the two
+    halves answer the same count, so repointing times_bought at the PRICE
+    predicate passed unnoticed. This is the row that separates them."""
+    conn, pid = cust
+    _line(conn, doc_base='IV64614', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=10, unit_price=10, net=100.0)
+    _line(conn, doc_base='IV64615', suffix=1, pid=pid, date_iso='2026-03-05',
+          qty=10, unit_price=10, net=100.0)
+    conn.execute(
+        "INSERT INTO ar_writeoffs (doc_no, customer_code, amount, type, writeoff_date, "
+        " excludes_revenue) VALUES (?,?,?,?,?,0)",
+        ('IV64615', TEST_CODE, 100.0, 'expense', '2026-04-01'))
+    conn.commit()
+    try:
+        import price_lookup
+        n_purchase, n_price = (conn.execute(
+            "SELECT COUNT(DISTINCT doc_base) FROM sales_transactions s "
+            f"WHERE s.customer_code = ? AND {f}", (TEST_CODE,)).fetchone()[0]
+            for f in (price_lookup.purchase_population_filter('s'),
+                      price_lookup.price_evidence_filter('s')))
+        assert (n_purchase, n_price) == (2, 1), \
+            "control: the fixture must separate the two #554 halves"
+        assert _card(pid)['times_bought'] == 2
+    finally:
+        conn.execute("DELETE FROM ar_writeoffs WHERE doc_no = 'IV64615'")
+        conn.commit()
+
+
 def test_returned_lines_filter_keeps_only_credit_notes(cust):
     import price_lookup
     conn, pid = cust
@@ -290,3 +350,66 @@ def test_returned_card_renders_the_badge_and_a_clean_one_does_not(cust, tmp_db):
     # Control for the negative: the clean row DID render, with its own figures.
     assert '7 ครั้ง' not in _card_row(html, clean_pid)
     assert '1 ครั้ง' in _card_row(html, clean_pid)
+
+
+def test_returns_off_cards_names_what_the_cards_cannot_show(cust):
+    """The footnote's number: credit notes that reach no rendered card. The
+    customer never bought `orphan`, so it gets no card and its return would
+    otherwise vanish from the page while the header above still nets it."""
+    import models
+    conn, pid = cust
+    orphan = _mk_product(conn, name='สินค้าที่ไม่เคยซื้อ')
+    _line(conn, doc_base='IV64616', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=100, unit_price=10, net=1000.0)
+    _line(conn, doc_base='SR64616', suffix=1, pid=pid, date_iso='2026-02-05',
+          qty=10, unit_price=10, net=100.0)
+    _line(conn, doc_base='SR64617', suffix=1, pid=orphan, date_iso='2026-02-06',
+          qty=3, unit_price=250, net=750.0)
+    data = models.get_customer_summary_by_code(TEST_CODE)
+    assert _card(pid)['returned_net'] == 100.0   # control: this one IS on a card
+    assert data['returns_off_cards'] == 750.0    # and this one is not
+
+
+def test_returns_off_cards_is_zero_when_every_return_lands(cust):
+    """Control for the footnote: it must not render on an ordinary customer."""
+    import models
+    conn, pid = cust
+    _line(conn, doc_base='IV64618', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=100, unit_price=10, net=1000.0)
+    _line(conn, doc_base='SR64618', suffix=1, pid=pid, date_iso='2026-02-05',
+          qty=10, unit_price=10, net=100.0)
+    data = models.get_customer_summary_by_code(TEST_CODE)
+    assert data['product_cards'], "control: the customer must have cards at all"
+    assert data['returns_off_cards'] == 0
+
+
+def test_footnote_renders_only_when_a_return_misses_the_cards(cust, tmp_db):
+    """Seam 3 for the footnote. Scoped to the card block, with the SAME page
+    asserted both ways: the amount must be on the page for a customer whose
+    return misses the cards, and the whole element absent for one whose does
+    not. A page-wide substring would match the Thai word inside a product
+    name, so the assertion is on the element's own data attribute."""
+    from app import app as a
+    conn, pid = cust
+    orphan = _mk_product(conn, name='สินค้าที่ลูกค้าไม่เคยซื้อเลย')
+    _line(conn, doc_base='IV64619', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=100, unit_price=10, net=1000.0)
+    _line(conn, doc_base='SR64619', suffix=1, pid=orphan, date_iso='2026-02-06',
+          qty=3, unit_price=250, net=750.0)
+
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = 'admin'
+        s['role'] = 'admin'
+    html = c.get(f'/customer/code/{TEST_CODE}').get_data(as_text=True)
+    assert 'data-returns-off-cards="750.0"' in html
+    assert len(re.findall(r'data-returns-off-cards=', html)) == 1
+
+    # Same customer, that return removed: the element must disappear entirely.
+    conn.execute("DELETE FROM sales_transactions WHERE doc_base = 'SR64619'")
+    conn.commit()
+    html2 = c.get(f'/customer/code/{TEST_CODE}').get_data(as_text=True)
+    assert 'data-returns-off-cards' not in html2
+    assert 'productCardsTable' in html2, "control: the card block still rendered"
