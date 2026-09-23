@@ -89,7 +89,8 @@ def _customer_sales_aggregates(conn, where, params):
     and `commission_attribution` exist as single definitions.
 
     `total_net` in summary and monthly is ยอดซื้อรวม: before VAT, credit notes
-    subtracted (sales_filters.purchase_net_sql, #494).
+    subtracted (sales_filters.purchase_net_sql, #494). The summary's
+    `total_qty` (จำนวนชิ้น) follows the same rule (sales_qty_sql, #627).
 
     Returns (summary, top_products, monthly, docs).
     """
@@ -98,7 +99,7 @@ def _customer_sales_aggregates(conn, where, params):
     summary = dict(conn.execute(f"""
         SELECT COUNT(DISTINCT doc_base) AS doc_count,
                COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS total_net,
-               COALESCE(SUM(qty), 0)  AS total_qty,
+               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS total_qty,
                MIN(date_iso)          AS first_date,
                MAX(date_iso)          AS last_date
         FROM sales_transactions
@@ -125,17 +126,24 @@ def _customer_sales_aggregates(conn, where, params):
     summary['last_purchase_date'] = purchases['d']
     summary['purchase_doc_count'] = purchases['n']
 
+    # Money-ordered NET of returns (#627), like the trade screens: the call
+    # card's แบรนด์เด่น reads the first name. A MAPPED line groups on
+    # product_id alone — a credit note prints `product_name_raw` differently
+    # from the invoice it reverses often enough that keeping it in the key
+    # left the return as its own negative row (#627 review). An UNMAPPED line
+    # has no product to group on and keeps the raw name.
     top_products = conn.execute(f"""
         SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
                p.id AS product_id,
                s.unit,
-               SUM(s.qty)  AS total_qty,
-               SUM(s.net)  AS total_net,
+               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net,
                COUNT(DISTINCT s.doc_base) AS doc_count
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
         WHERE {where}
-        GROUP BY s.product_id, s.product_name_raw
+        GROUP BY s.product_id,
+                 CASE WHEN s.product_id IS NULL THEN s.product_name_raw END
         ORDER BY total_net DESC
         LIMIT 20
     """, params).fetchall()

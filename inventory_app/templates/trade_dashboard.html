@@ -38,10 +38,11 @@
         </div>
         <div>
           <div class="stat-card-label">ยอดขายรวม</div>
-          <div class="stat-card-value text-success">{{ stats.sales.total_net | fmt_price }}</div>
+          <div class="stat-card-value {{ 'text-danger' if (stats.sales.total_net or 0) < 0 else 'text-success' }}">{{ stats.sales.total_net | fmt_price }}</div>
         </div>
       </div>
       <div class="mt-2 text-subtle small">{{ stats.sales.doc_count | fmt_qty }} เอกสาร &middot; {{ stats.sales.total_qty | fmt_qty }} ชิ้น</div>
+      <div class="text-subtle small">หักรับคืนแล้ว · ไม่รวมบิลของแถมที่ออกผิด</div>
       <a href="{{ url_for('sales.sales_view') }}" class="btn btn-sm w-100 mt-2"
          style="background:#dcf2e0;color:#2e7d3a;border:none;font-weight:500">ดูรายละเอียด →</a>
     </div>
@@ -161,7 +162,7 @@
                 {% endif %}
               </td>
               <td class="text-end font-mono">{{ row.total_qty | fmt_qty }}</td>
-              <td class="text-end font-mono fw-600 text-success">{{ row.total_net | fmt_price }}</td>
+              <td class="text-end font-mono fw-600 {{ 'text-danger' if (row.total_net or 0) < 0 else 'text-success' }}">{{ row.total_net | fmt_price }}</td>
             </tr>
             {% else %}
             <tr><td colspan="4" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>
@@ -198,7 +199,7 @@
                    class="text-decoration-none text-main fw-500">{{ row.customer }}</a>
               </td>
               <td class="text-end font-mono text-subtle">{{ row.doc_count }}</td>
-              <td class="text-end font-mono fw-600 text-success">{{ row.total_net | fmt_price }}</td>
+              <td class="text-end font-mono fw-600 {{ 'text-danger' if (row.total_net or 0) < 0 else 'text-success' }}">{{ row.total_net | fmt_price }}</td>
             </tr>
             {% else %}
             <tr><td colspan="4" class="text-center text-subtle py-4">ไม่มีข้อมูล</td></tr>

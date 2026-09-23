@@ -82,13 +82,13 @@ def _ins_sale(conn, doc_base, customer, date_iso, net, line=1):
 def test_trade_dashboard_summary_counts_hs(empty_db_conn):
     c = empty_db_conn
     _ins_sale(c, 'IV5001', 'ลูกค้า514', '2026-06-10', 1000)   # control
-    _ins_sale(c, 'SR5001', 'ลูกค้า514', '2026-06-11', 200)    # control: still excluded
+    _ins_sale(c, 'SR5001', 'ลูกค้า514', '2026-06-11', 200)    # control: subtracted (#627)
     _ins_sale(c, 'HS5001', 'ลูกค้า514', '2026-06-12', 300)    # counted now
     c.commit()
 
     d = models.get_trade_dashboard('2026-06-01', '2026-06-30', conn=c)
-    assert d['sales']['total_net'] == 1300.0
-    assert d['sales']['doc_count'] == 2   # IV5001 + HS5001
+    assert d['sales']['total_net'] == 1100.0   # 1,000 − 200 + 300
+    assert d['sales']['doc_count'] == 2   # IV5001 + HS5001; a credit note is not an invoice
 
 
 def test_trade_dashboard_weekly_trend_counts_hs(empty_db_conn):

@@ -20,7 +20,7 @@
   <div class="col-md-4">
     <div class="stat-card" style="border-left:4px solid #2e7d3a">
       <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>{{ vat_label(1) }} &nbsp;<span class="badge badge-success">Type 1</span></div>
-      <div class="stat-card-value text-success mt-2">
+      <div class="stat-card-value {{ 'text-danger' if (vat_summary.get(1, {}).get('total_net', 0) or 0) < 0 else 'text-success' }} mt-2">
         ฿{{ vat_summary.get(1, {}).get('total_net', 0) | fmt_price }}
       </div>
       <div class="stat-card-sub">{{ vat_summary.get(1, {}).get('txn_count', 0) | fmt_qty }} รายการ</div>
@@ -48,6 +48,7 @@
     </div>
   </div>
 </div>
+<div class="text-subtle small mb-3">ยอดสุทธิ หักรับคืนแล้ว (ใบลดหนี้ SR) — แต่ละรายการด้านล่างยังโชว์ยอดเต็มของเอกสารนั้น</div>
 
 <!-- Filters -->
 <div class="card mb-3">

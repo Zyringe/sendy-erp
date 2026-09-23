@@ -65,7 +65,10 @@ SCRIPTS = os.path.join(_ROOT, 'scripts')
 # "when did this customer last buy" and "how many times did it buy".
 _STALE_AGG = re.compile(
     r'MAX\(\s*(?:\w+\.)?date_iso\s*\)'
-    r'|COUNT\(\s*DISTINCT\s*\(?\s*(?:\w+\.)?doc_base\s*\)',
+    r'|COUNT\(\s*DISTINCT\s*\(?\s*(?:\w+\.)?doc_base\s*\)'
+    # A document count that leaves some documents out inside the aggregate
+    # (#627: the dashboard counts invoices only, never a credit note).
+    r'|COUNT\(\s*DISTINCT\s+CASE\b[^()]{0,200}?\bdoc_base\s+END\s*\)',
     re.IGNORECASE)
 # The population, however it is spelled at the call site (`pl` or the full
 # name) and whichever of the two #554 predicates it is.
@@ -323,6 +326,8 @@ AGGREGATE_SHAPES = {
     'doc count':     'SELECT COUNT(DISTINCT doc_base) FROM sales_transactions WHERE customer = ?',
     'doc count alias': 'SELECT COUNT(DISTINCT s.doc_base) FROM sales_transactions s '
                        'WHERE s.customer_code = ?',
+    'doc count, some left out': "SELECT COUNT(DISTINCT CASE WHEN doc_base NOT LIKE 'SR%' "
+                                'THEN doc_base END) FROM sales_transactions WHERE customer = ?',
     'correlated subquery': 'SELECT c.code, (SELECT MAX(date_iso) FROM sales_transactions s '
                            'WHERE s.customer = c.name) FROM customers c',
     'grouped by code': 'SELECT customer_code, MAX(date_iso) FROM sales_transactions '

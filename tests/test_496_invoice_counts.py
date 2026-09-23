@@ -286,8 +286,9 @@ def test_product_trade_docs_one_row_per_invoice(seeded):
     # Another product on the invoice (P2) is not this product's quantity.
     assert docs['IV49602']['units'] == [{'unit': 'ตัว', 'qty': 5, 'free_qty': 0}]
     # A credit note's ฿0 line is a return, never แถม (prod stores SR positive).
-    assert docs['SR49601']['units'] == [{'unit': 'ตัว', 'qty': 3, 'free_qty': 0}]
-    assert docs['SR49601']['total_net'] == 320
+    # Its row reads NEGATIVE, qty and money alike (#627: net of returns).
+    assert docs['SR49601']['units'] == [{'unit': 'ตัว', 'qty': -3, 'free_qty': 0}]
+    assert docs['SR49601']['total_net'] == -320
     assert docs['IV49601']['customer'] == X_NAME and docs['IV49601']['date_iso'] == '2031-03-02'
 
 
@@ -369,7 +370,7 @@ def test_product_trade_page_shows_invoices(admin):
     assert by_doc['IV49601'][4] == '3,840.00'
     assert by_doc['IV49603'][3] == '2.0 แผง<br>4.0 ตัว'
     assert by_doc['IV49604'][3] == '11.0 ตัว (แถม 1.0)'
-    assert by_doc['SR49601'][3] == '3.0 ตัว'                  # its ฿0 line is no แถม
+    assert by_doc['SR49601'][3] == '-3.0 ตัว'                 # its ฿0 line is no แถม; #627 nets it
 
 
 # ── edge: a freebie-only invoice ──────────────────────────────────────────────

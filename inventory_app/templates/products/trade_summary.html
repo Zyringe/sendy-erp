@@ -60,9 +60,10 @@
         </div>
         <div>
           <div class="stat-card-label">ยอดขายรวม</div>
-          <div class="stat-card-value text-success">{{ data.summary.total_net | fmt_price }}</div>
+          <div class="stat-card-value {{ 'text-danger' if (data.summary.total_net or 0) < 0 else 'text-success' }}">{{ data.summary.total_net | fmt_price }}</div>
         </div>
       </div>
+      <div class="mt-2 text-subtle small">หักรับคืนแล้ว (ใบลดหนี้ SR)</div>
     </div>
   </div>
   <div class="col-sm-6 col-xl-3">
