@@ -397,8 +397,8 @@ def _returns_off_cards(conn, where, params, cards):
     different unit from the purchase (different key), and a card that exists
     but fell outside the top-20 union. Without this the page is silent about
     them, which is the same "disagrees with itself" complaint one level up.
-    Measured on prod 2026-09-23: ฿46,197.68 over 44 lines and 12 customers,
-    against ฿83,339.09 that does land on a card.
+    Measured on prod 2026-09-23: ฿46,365.68 over 45 lines and 12 customers,
+    against ฿83,171.09 that does land on a card.
 
     Deliberately the residual against the cards ACTUALLY RENDERED, not against
     the full aggregate: what the footnote promises is "this much is not in the
@@ -426,14 +426,15 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     is rendered nowhere and `total_net` only drives the ยอด sort, so without
     the badge this fix would be invisible on the page.
     `HAVING times_bought > 0` is what keeps a return-only (product, unit) from
-    becoming a negative card: prod 2026-09-23 holds 82 credit-note lines whose
-    customer has no invoice line for that product at all, and a
+    becoming a negative card: prod 2026-09-23 holds 40 countable credit-note
+    lines (฿43,330.96, 10 customers) for a product that customer has never
+    bought in the purchase population, and a
     "สินค้าที่ซื้อบ่อย" entry for something they never bought is worse than
     the gap it would close.
 
     ⚠ It also drops a return booked in a DIFFERENT unit from the purchase it
-    reverses, because the key is (product, unit). Prod 2026-09-23: 4 lines,
-    ฿2,866.72, 3 customers, every one bought by the โหล and returned by the
+    reverses, because the key is (product, unit). Prod 2026-09-23: 5 lines,
+    ฿3,034.72, 4 customers, every one bought by the โหล and returned by the
     piece, against 114 countable credit-note lines worth ฿164,222.77. Netting
     those needs the product's unit_conversions ratio and would print a
     fractional โหล on a card labelled โหล, so it is Put's call, not an

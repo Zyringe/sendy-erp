@@ -151,8 +151,9 @@ def test_a_card_with_no_return_reports_zero_not_none(cust):
 
 def test_a_product_only_ever_returned_gets_no_card(cust):
     """A return with no invoice behind it is not something the customer buys.
-    82 of prod's 272 mapped credit-note lines are this shape (measured
-    2026-09-23): the customer holds no non-SR line for that product at all."""
+    Measured 2026-09-23 against the purchase population: 40 countable
+    credit-note lines, ฿43,330.96, 10 customers, for a product that customer
+    has never bought."""
     conn, pid = cust
     other = _mk_product(conn, name='สินค้าที่คืนอย่างเดียว')
     _line(conn, doc_base='IV64603', suffix=1, pid=pid, date_iso='2026-01-05',
@@ -174,10 +175,16 @@ def test_a_return_in_a_different_unit_does_not_net_and_says_nothing(cust):
     fractional โหล on a card whose label says โหล, which is a modelling call
     for Put rather than something to infer here.
 
-    Measured on the 2026-09-23 prod snapshot: 4 lines, ฿2,866.72, 3 customers
-    (27ข01, 34ฟ01 x2, 34ส06), every one of them bought-by-โหล and returned by
-    the piece, out of 114 countable credit-note lines worth ฿164,222.77. If
-    that shape grows, this test is where the decision gets revisited."""
+    Measured on the 2026-09-23 prod snapshot: 5 lines, ฿3,034.72, 4 customers
+    (27ข01, 34ฟ01 twice, 19ป02, 34ส06), every one bought by the โหล and
+    returned by the piece, out of 114 countable credit-note lines worth
+    ฿164,222.77. If that shape grows, this is where the decision is revisited.
+
+    ⚠ Measure this bucket against the PURCHASE POPULATION, not against a raw
+    "a non-SR row exists". An earlier cut of this figure read 4 lines because
+    19ป02 holds a ฿0 line for pid 1325 in ลูก: raw, that looks like a purchase
+    to net against; hygienically (net > 0) it is not, so no card exists and the
+    ฿168 return is in this bucket after all. Caught in review."""
     conn, pid = cust
     _line(conn, doc_base='IV64609', suffix=1, pid=pid, date_iso='2026-01-05',
           qty=10, unit='โหล', unit_price=1200, net=12000.0)
