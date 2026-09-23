@@ -395,6 +395,20 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     predicate (the one definition of "a bill that counts") restricted to
     this customer — same population `resolve_price`'s customer.last uses.
 
+    #646 (Put, 2026-09-23): the MONEY and QUANTITY are net of credit notes,
+    the way the header above these cards has been since #494/#627. `times_bought`
+    and `last` stay on the purchase population alone — a credit note is not a
+    purchase, but the invoice it reverses still is (Put, 2026-09-17). The card
+    also carries `returned_qty`/`returned_net` so the template can say a return
+    happened rather than silently shrinking a number nobody prints; `total_qty`
+    is rendered nowhere and `total_net` only drives the ยอด sort, so without
+    the badge this fix would be invisible on the page.
+    `HAVING times_bought > 0` is what keeps a return-only (product, unit) from
+    becoming a negative card: prod 2026-09-23 holds 82 credit-note lines whose
+    customer has no invoice line for that product at all, and a
+    "สินค้าที่ซื้อบ่อย" entry for something they never bought is worse than
+    the gap it would close.
+
     ADDITIVE, not a replacement for `top_products`: the call card
     (`call_card.py::get_card` → `get_customer_summary`, name-keyed) reads
     `top_products[0].name` as "แบรนด์เด่น", money-ordered — changing that
@@ -423,13 +437,22 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     rows = [dict(r) for r in conn.execute(f"""
         SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
                s.unit,
-               COUNT(DISTINCT s.doc_base) AS times_bought,
-               SUM(s.qty) AS total_qty,
-               SUM(s.net) AS total_net
+               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
+                                   THEN s.doc_base END) AS times_bought,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.net ELSE 0 END), 0) AS returned_net,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.qty ELSE s.qty END) AS total_qty,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.net ELSE s.net END) AS total_net
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND {price_lookup.purchase_population_filter('s')}
+        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
+                           OR {price_lookup.returned_lines_filter('s')})
         GROUP BY s.product_id, s.unit
+        HAVING times_bought > 0
         ORDER BY s.product_id, s.unit
     """, params).fetchall()]
 

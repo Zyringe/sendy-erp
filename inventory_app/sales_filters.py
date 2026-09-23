@@ -78,6 +78,22 @@ def revenue_filter(alias=''):
             .format(p=p, not_a_sale=not_a_sale_clause(alias)))
 
 
+def return_filter(alias=''):
+    """revenue_filter's other half: the credit notes it excludes, over the same
+    real documents. `revenue_filter OR return_filter` is every real sale-side
+    document line, and the two never overlap.
+
+    A caller that only wants revenue keeps revenue_filter. This exists for the
+    surfaces that must SUBTRACT a return rather than drop it (#646) and so need
+    to name the rows being subtracted. Use purchase_net_sql/sales_qty_sql when
+    one signed expression over the un-split population is enough."""
+    p = '{}.'.format(alias) if alias else ''
+    return ("{p}doc_base IS NOT NULL "
+            "AND {p}doc_base LIKE 'SR%' "
+            "AND {not_a_sale}"
+            .format(p=p, not_a_sale=not_a_sale_clause(alias)))
+
+
 def purchase_net_sql(alias=''):
     """SQL expression: one line's share of a customer's ยอดซื้อรวม (#494).
 

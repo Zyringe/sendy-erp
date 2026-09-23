@@ -103,9 +103,16 @@ ALLOWED = {
     # ── one document, one product's price, one order, one platform ──
     'models/customers.py::_customer_documents': (1,
         'one row per DOCUMENT, a credit note already negated in Python. A document list.'),
-    'models/customers.py::_customer_product_cards': (2,
-        'per (product, unit) over purchase_population_filter, which excludes SR '
-        'outright: a credit note is never in this population.'),
+    'models/customers.py::_customer_product_cards': (4,
+        'per (product, unit), and net of returns since #646 — but spelled as a '
+        'CASE over price_lookup.returned_lines_filter rather than '
+        'sales_qty_sql/sales_net_sql, because the population here is split: '
+        'the same GROUP BY also computes times_bought over the PURCHASE half '
+        'alone (Put 2026-09-17), which one signed expression over an un-split '
+        'population cannot do. 2 of the 4 are the netted total_qty/total_net, '
+        'the other 2 the returned_qty/returned_net the badge renders. '
+        'test_646_card_returns.py asserts the netting end to end against the '
+        'header, which is the property sales_qty_sql exists to guarantee.'),
     'commission.py::get_invoices_for_salesperson': (1,
         'the commission tab\'s per-INVOICE rows (IV/HS only); payouts are '
         'receipt-driven and never read this sum.'),

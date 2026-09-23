@@ -589,6 +589,12 @@
                  its own grid item and scatter across both columns. #}
               <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle"><div>
                 {{ r.times_bought }} ครั้ง <span class="small">({{ r.unit }})</span>
+                {# #646: the card's qty/money are net of credit notes, and
+                   neither is printed — this line is the only place a return
+                   is visible, and the only reason the sort order moved. #}
+                {% if r.returned_qty %}
+                <div class="text-warning small">↩ คืน {{ r.returned_qty | fmt_qty }} {{ r.unit }}</div>
+                {% endif %}
               </div></td>
               <td data-label="ราคาล่าสุด" class="text-end"><div>
                 {% if r.last %}

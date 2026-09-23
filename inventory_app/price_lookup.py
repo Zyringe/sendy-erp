@@ -208,13 +208,38 @@ def _real_sale_lines(alias):
     Not a public predicate on purpose: a caller has to say WHICH question it
     is asking, because the two answers differ (see _WRITEOFF_SUBQUERY).
     """
+    return f"{sales_filters.revenue_filter(alias)} AND {_line_hygiene(alias)}"
+
+
+def _line_hygiene(alias):
+    """The row-level checks that hold whichever DIRECTION a document points:
+    a real quantity, a real amount, not a marketplace รายการหน้าร้าน row, not
+    a cost-basis dummy invoice. Factored out so `_real_sale_lines` and
+    `returned_lines_filter` cannot drift apart — they must stay exact
+    complements, which test_646_card_returns.py asserts against real rows."""
     p = f'{alias}.' if alias else ''
     return (
-        f"{sales_filters.revenue_filter(alias)} "
-        f"AND {p}qty > 0 AND {p}net > 0 "
+        f"{p}qty > 0 AND {p}net > 0 "
         f"AND {p}customer NOT LIKE 'หน้าร้าน%' "
         f"AND {p}doc_base NOT IN ('{_DUMMY_DOC_BASES[0]}','{_DUMMY_DOC_BASES[1]}','{_DUMMY_DOC_BASES[2]}')"
     )
+
+
+def returned_lines_filter(alias):
+    """RETURN: 'is this row a credit note reversing a line of a real sale?'
+
+    The exact complement of `purchase_population_filter` over the same hygienic
+    rows, so a caller can SUBTRACT a return instead of dropping it. #646: the
+    customer page's สินค้าที่ซื้อบ่อย cards summed the purchase population raw
+    while the header above them netted returns, so a returned product kept its
+    gross quantity and money (prod 2026-09-22: 56 customers, worst 194 ชิ้น).
+
+    A separate NAME rather than a flag on the purchase predicate, for the
+    reason the ar_writeoffs split records: a parameter is what lets call sites
+    drift, and `times_bought` must keep reading the purchase half even on the
+    same query (Put, 2026-09-17 — a credit note is not a purchase, but the
+    invoice it reverses still is). `alias` as for price_evidence_filter."""
+    return f"{sales_filters.return_filter(alias)} AND {_line_hygiene(alias)}"
 
 
 def price_evidence_filter(alias):
