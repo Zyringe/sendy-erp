@@ -189,14 +189,32 @@ def build_purchase_entries(aptrn_rows, stcrd_rows, apmas_rows, cutoff=None):
     """Build purchase entries — the SAME shape parse_weekly.parse_purchases
     emits — from already-read Express DBF rows. Pure: no file IO.
 
+    Purchase line identity is the 1-based position within (document, product),
+    ordered by Express SEQNUM. The text report groups by product and assigns
+    that same ordinal; raw SEQNUM instead counts every line on the document.
+
     cutoff: see build_sales_entries's docstring — same recency-window
     treatment on the APTRN header set."""
     headers = {r['DOCNUM']: r for r in aptrn_rows
                if r.get('RECTYP') in _SCOPE_RECTYP and _in_window(r, cutoff)}
     names = {r['SUPCOD']: r['SUPNAM'] for r in apmas_rows}
 
+    lines_by_product = defaultdict(list)
+    for input_pos, line in enumerate(stcrd_rows):
+        doc_no = line.get('DOCNUM')
+        if doc_no in headers:
+            lines_by_product[(doc_no, line.get('STKCOD') or '')].append(
+                (input_pos, line))
+
+    line_seq_by_pos = {}
+    for lines in lines_by_product.values():
+        for ordinal, (input_pos, _line) in enumerate(
+                sorted(lines, key=lambda item: (_int(item[1], 'SEQNUM', 1), item[0])),
+                1):
+            line_seq_by_pos[input_pos] = ordinal
+
     entries = []
-    for line in stcrd_rows:
+    for input_pos, line in enumerate(stcrd_rows):
         hdr = headers.get(line.get('DOCNUM'))
         if hdr is None:
             continue
@@ -204,7 +222,7 @@ def build_purchase_entries(aptrn_rows, stcrd_rows, apmas_rows, cutoff=None):
         entries.append({
             'date_iso':         _header_date_iso(hdr),
             'doc_no':           line['DOCNUM'],  # no line suffix, unlike sales
-            'line_seq':         _int(line, 'SEQNUM', 1),
+            'line_seq':         line_seq_by_pos[input_pos],
             'qty':              _num(line, 'TRNQTY'),
             'unit':             line.get('TQUCOD') or '',
             'unit_price':       _num(line, 'UNITPR'),
@@ -1193,13 +1211,13 @@ def split_era_findings(rows, era_start):
 #         + drop product_name_raw from the compare      167
 ERA_START = '2024-01-01'
 
-# The fields a line is compared on. `line_seq` is deliberately absent: Sendy's
-# value is a 1-based counter per (doc_no, product code) (parse_weekly.py) while
-# Express's SEQNUM is the physical line number, so they agree only on
-# single-line documents. Measured on prod: including it takes the drift set from
-# 116 documents to 1,005, of which 580 are line_seq alone. Sendy's value is not
-# derived from Express's, so comparing them could not detect a source change
-# even in principle, and it moves neither money nor stock.
+# The fields a line is compared on. `line_seq` is deliberately absent: it is a
+# derived identity ordinal within (doc_no, product code), not document payload.
+# Drift compares each document's semantic line multiset; a pure source-line
+# reorder moves neither money nor stock and must not become a drift finding.
+# Measured on prod while the two writers still disagreed (before #637 made this
+# builder emit the same ordinal parse_weekly does): including it took the drift
+# set from 116 documents to 1,005, of which 580 were line_seq alone.
 DRIFT_LINE_FIELDS = ('code', 'qty', 'unit', 'unit_price', 'total', 'net', 'discount')
 
 # Header fields, in the order _classify_fields reports them.

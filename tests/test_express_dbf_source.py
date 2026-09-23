@@ -271,7 +271,7 @@ def test_build_purchase_entries_hp_cash_line_is_in_scope():
     entries = build_purchase_entries(aptrn, stcrd, [])
 
     assert len(entries) == 2
-    assert {e['line_seq'] for e in entries} == {1, 2}
+    assert [e['line_seq'] for e in entries] == [1, 1]
     assert {e['doc_no'] for e in entries} == {'HP6900001'}
 
 

@@ -1007,11 +1007,30 @@ def _seed_rollback_fixture(conn):
     return twin, kg
 
 
+def _schema_193(conn):
+    """sqlite_master, minus the rollback evidence of OTHER migrations.
+
+    `_migrate()` runs the real runner, so every migration numbered above 193
+    is applied to this DB too, and a later one that keeps a persistent
+    snapshot table for its own rollback (194 keeps three) still has it after
+    193 is rolled back. That is correct and none of 193's business. 193's OWN
+    `migration_193_*` tables stay in scope: its rollback has to drop them.
+    """
+    return conn.execute(
+        """SELECT type, name, sql FROM sqlite_master
+            WHERE (name NOT LIKE 'migration\\_%' ESCAPE '\\'
+                   OR name LIKE 'migration\\_193\\_%' ESCAPE '\\')
+              AND (tbl_name NOT LIKE 'migration\\_%' ESCAPE '\\'
+                   OR tbl_name LIKE 'migration\\_193\\_%' ESCAPE '\\')
+            ORDER BY 1, 2"""
+    ).fetchall()
+
+
 def test_rollback_restores_data_exactly(pre193_db):
     conn = sqlite3.connect(pre193_db)
     _seed_rollback_fixture(conn)
     before = _state(conn)
-    schema = conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY 1, 2").fetchall()
+    schema = _schema_193(conn)
     conn.close()
 
     _migrate()
@@ -1024,7 +1043,7 @@ def test_rollback_restores_data_exactly(pre193_db):
         # the register the next DBF upload rewrites keeps its words (no snapshot)
         assert conn.execute("SELECT unit FROM express_sales_order_lines "
                             "WHERE so_no = 'SO193RB'").fetchone()[0] == 'โหล'
-        assert conn.execute("SELECT type, name, sql FROM sqlite_master ORDER BY 1, 2").fetchall() == schema
+        assert _schema_193(conn) == schema
     finally:
         conn.close()
 
