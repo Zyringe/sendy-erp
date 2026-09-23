@@ -110,10 +110,23 @@ def test_card_qty_and_money_are_net_of_returns(cust):
 
 def test_times_bought_still_counts_the_purchase_population_only(cust):
     """Put, 2026-09-17: a credit note is not a purchase, but the invoice it
-    reverses still is. Netting the money must not move this count either way."""
+    reverses still is. Netting the money must not move this count either way.
+
+    TWO invoices and ONE credit note, deliberately. With one of each, the
+    purchase predicate and the returns predicate both answer 1 and this test
+    passes with the count repointed at the wrong population — which is how the
+    first version of it came back green under exactly that mutation."""
     conn, pid = cust
-    _sold_and_returned(conn, pid)
-    assert _card(pid)['times_bought'] == 1
+    _line(conn, doc_base='IV64607', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=100, unit_price=10, net=1000.0)
+    _line(conn, doc_base='IV64608', suffix=1, pid=pid, date_iso='2026-03-05',
+          qty=50, unit_price=10, net=500.0)
+    _line(conn, doc_base='SR64607', suffix=1, pid=pid, date_iso='2026-02-05',
+          qty=40, unit_price=10, net=400.0)
+    card = _card(pid)
+    assert card['times_bought'] == 2          # the two invoices, not the SR
+    assert card['returned_qty'] == 40         # control: the SR did reach the row
+    assert card['total_qty'] == 110           # and it was subtracted
 
 
 def test_card_carries_the_returned_amounts(cust):
