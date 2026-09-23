@@ -409,6 +409,15 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     "สินค้าที่ซื้อบ่อย" entry for something they never bought is worse than
     the gap it would close.
 
+    ⚠ It also drops a return booked in a DIFFERENT unit from the purchase it
+    reverses, because the key is (product, unit). Prod 2026-09-23: 4 lines,
+    ฿2,866.72, 3 customers, every one bought by the โหล and returned by the
+    piece, against 114 countable credit-note lines worth ฿164,222.77. Netting
+    those needs the product's unit_conversions ratio and would print a
+    fractional โหล on a card labelled โหล, so it is Put's call, not an
+    inference. Pinned by test_646_card_returns.py::
+    test_a_return_in_a_different_unit_does_not_net_and_says_nothing.
+
     ADDITIVE, not a replacement for `top_products`: the call card
     (`call_card.py::get_card` → `get_customer_summary`, name-keyed) reads
     `top_products[0].name` as "แบรนด์เด่น", money-ordered — changing that

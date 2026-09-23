@@ -164,6 +164,31 @@ def test_a_product_only_ever_returned_gets_no_card(cust):
     assert other not in pids
 
 
+def test_a_return_in_a_different_unit_does_not_net_and_says_nothing(cust):
+    """A DECLARED GAP, pinned so it cannot change by accident.
+
+    Cards are keyed (product, unit), so a โหล purchase and an อัน return are
+    different groups: the return's own group has no purchase and HAVING drops
+    it, while the โหล card keeps its gross figure with no badge. Netting them
+    would mean dividing by the product's unit_conversions ratio and printing a
+    fractional โหล on a card whose label says โหล, which is a modelling call
+    for Put rather than something to infer here.
+
+    Measured on the 2026-09-23 prod snapshot: 4 lines, ฿2,866.72, 3 customers
+    (27ข01, 34ฟ01 x2, 34ส06), every one of them bought-by-โหล and returned by
+    the piece, out of 114 countable credit-note lines worth ฿164,222.77. If
+    that shape grows, this test is where the decision gets revisited."""
+    conn, pid = cust
+    _line(conn, doc_base='IV64609', suffix=1, pid=pid, date_iso='2026-01-05',
+          qty=10, unit='โหล', unit_price=1200, net=12000.0)
+    _line(conn, doc_base='SR64609', suffix=1, pid=pid, date_iso='2026-02-05',
+          qty=6, unit='อัน', unit_price=100, net=600.0)
+    card = _card(pid, unit='โหล')
+    assert card['total_qty'] == 10          # not netted: the units differ
+    assert card['returned_qty'] == 0        # and nothing claims otherwise
+    assert [c['unit'] for c in _cards()] == ['โหล']   # no อัน card was invented
+
+
 def test_a_fully_returned_product_falls_below_a_smaller_surviving_one(cust):
     """The behavioural point. `total_net` drives the ยอด sort and decides which
     products reach the top-20 union, so a gross figure ranked a product the
