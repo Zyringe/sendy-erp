@@ -593,7 +593,11 @@
                    neither is printed — this line is the only place a return
                    is visible, and the only reason the sort order moved. #}
                 {% if r.returned_qty %}
-                <div class="text-warning small">↩ คืน {{ r.returned_qty | fmt_qty }} {{ r.unit }}</div>
+                {# text-nowrap: the desktop ครั้งที่ซื้อ column is ~51px, which
+                   broke this onto three lines ("↩ คืน / 48.0 / แผง"). Measured
+                   safe on the phone, where the value column is 152px and the
+                   badge box is 152x18 on one line. #}
+                <div class="text-warning small text-nowrap">↩ คืน {{ r.returned_qty | fmt_qty }} {{ r.unit }}</div>
                 {% endif %}
               </div></td>
               <td data-label="ราคาล่าสุด" class="text-end"><div>
