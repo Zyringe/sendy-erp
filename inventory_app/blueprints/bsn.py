@@ -773,12 +773,17 @@ def unified_import_confirm():
         # AUTHORIZATION for the tick: a `force_older_N` for a row the preview did
         # not mark is a stale tab, a hand-built POST, or a mark that moved between
         # preview and confirm — ignored, not trusted, exactly as `removals_N` is.
+        # And, for the same reason `removals_N` requires it, the type must not have
+        # changed since: a ขาย preview's staleness verdict is about the ขาย mark, so
+        # after a switch to ซื้อ the tick would be authorizing a date the operator
+        # was never shown. Refusing costs them one re-preview.
         _entity, _export_at = _weekly_export_stamp(path, rtype)
         if _entity:
             _fresh, _latest = _claim_export_date(_export_at, entity=_entity)
             if not _fresh:
                 _incoming = _export_at.date().isoformat()
                 if not (row.get('stale_over')
+                        and rtype == row.get('detected')
                         and request.form.get(f'force_older_{i}')):
                     results.append({
                         'filename': row['filename'], 'ok': False,

@@ -378,6 +378,27 @@ def test_force_older_is_ignored_for_a_row_the_preview_did_not_mark_stale(
         'nothing was authorized, so nothing may be recorded as authorized'
 
 
+def test_the_tick_does_not_survive_a_type_change(
+        admin_client, tmp_db, spy_import_weekly):
+    """The preview marked this row against the ขาย mark. Submitted as ซื้อ, the
+    refusal is about a different mark and a different date, so the tick is
+    authorizing something the operator was never shown — refuse, as `removals_N`
+    does on a type change."""
+    _set_mark(tmp_db, SALES_ENTITY, '2026-09-25')
+    _set_mark(tmp_db, PURCHASE_ENTITY, '2026-09-25')
+    _, token = _stage(admin_client, [(_csv(ARCHIVED_SALES), 'ขาย_archived.csv')])
+    with admin_client.session_transaction() as sess:
+        assert sess['import_stage']['rows'][0]['stale_over'] == '2026-09-25', \
+            'precondition: the preview must have marked this row as ขาย'
+
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'purchase',
+                            'force_older_0': 'on'})
+
+    assert spy_import_weekly == []
+    assert not _forced_audit_rows(tmp_db)
+
+
 # ── the guard must not touch the types that do not replace ledger lines ─────
 
 # A การรับชำระหนี้ export, the shape test_backup_routes.py uses. Its date range is
