@@ -971,6 +971,60 @@ UNIT_COLUMNS = (('sales_transactions', 'unit'), ('purchase_transactions', 'unit'
                 ('supplier_catalogue_price_history', 'unit'))
 
 
+def _later_claims(conn):
+    """What a migration numbered ABOVE 193 owns: (table, row_id, column) triples
+    it changed, and the unit_map (book, spelling) rows it added.
+
+    This is `_schema_193`'s reasoning applied to DATA. `_migrate()` runs the real
+    runner, so every migration above 193 is applied here too, and a later
+    unit-vocabulary migration is correct to translate one of these columns —
+    193's rollback must not undo it, so comparing those rows would assert
+    something that is none of 193's business. Without this, 195 (#641 item 1,
+    the supplier price-list spellings) turns
+    `test_rollback_restores_data_exactly` red for no defect, and so would every
+    unit migration after it.
+
+    Discovered from sqlite_master, not hard-coded, so the next one does not break
+    this again. Only tables shaped like 193's own snapshot are read, which is why
+    194's three (keyed `id, old_line_seq`) are correctly ignored: its rows are
+    still compared here, column for column.
+    """
+    rows, maps = set(), set()
+    for (name,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name LIKE 'migration\\_%' ESCAPE '\\'"):
+        parts = name.split('_')
+        if len(parts) < 2 or not parts[1].isdigit() or int(parts[1]) <= 193:
+            continue
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({name})")}
+        if {'table_name', 'row_id', 'column_name'} <= cols:
+            rows |= {tuple(r) for r in conn.execute(
+                f"SELECT table_name, row_id, column_name FROM {name}")}
+        if {'book', 'spelling'} <= cols:
+            maps |= {tuple(r) for r in conn.execute(f"SELECT book, spelling FROM {name}")}
+    return rows, maps
+
+
+def _without_later_claims(state, claimed, claimed_maps):
+    """`state` with the rows a LATER migration owns removed.
+
+    Applied to BOTH sides at COMPARISON time, never at capture time: the `before`
+    snapshot is taken while no later migration has run, so its claim set is empty
+    and filtering it then would leave the two sides different lengths. (That is
+    exactly the bug the first version of this helper had.)
+    """
+    out = {}
+    for key, rows in state.items():
+        if key == 'unit_map':
+            out[key] = [r for r in rows if (r[1], r[2]) not in claimed_maps]
+        elif '.' in key:
+            t, c = key.split('.', 1)
+            out[key] = [r for r in rows if (t, r[0], c) not in claimed]
+        else:
+            out[key] = rows
+    return out
+
+
 def _state(conn):
     out = {f'{t}.{c}': conn.execute(f"SELECT id, {c} FROM {t} ORDER BY id").fetchall()
            for t, c in UNIT_COLUMNS}
@@ -1039,7 +1093,13 @@ def test_rollback_restores_data_exactly(pre193_db):
     try:
         assert _state(conn) != before, 'migration made no change -- rollback check would be vacuous'
         assert _run_rollback(conn) == []
-        assert _state(conn) == before
+        # Compare only what 193 owns. A migration numbered above it may translate
+        # one of these columns too (195, #641 item 1, translates the two supplier
+        # ones), and 193's rollback is right not to undo that — see
+        # `_later_claims`. Both sides are filtered with the SAME claim set.
+        claims = _later_claims(conn)
+        assert (_without_later_claims(_state(conn), *claims)
+                == _without_later_claims(before, *claims))
         # the register the next DBF upload rewrites keeps its words (no snapshot)
         assert conn.execute("SELECT unit FROM express_sales_order_lines "
                             "WHERE so_no = 'SO193RB'").fetchone()[0] == 'โหล'
