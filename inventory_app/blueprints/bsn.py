@@ -27,6 +27,7 @@ import db_backup
 import express_registers
 import form_options
 import models
+import parse_weekly
 import review_rules as rr
 import sales_filters
 from database import get_connection
@@ -542,6 +543,42 @@ _IMPORT_STAGE_DIR = 'import-stage'   # under UPLOAD_FOLDER
 _REPORT_LABELS = report_types.labels()
 
 
+# Which weekly mark a report type claims in `express_import_watermark`.
+#
+# ONLY ขาย and ซื้อ: they are the two types that REPLACE ledger lines (a
+# re-uploaded doc rebuilds each line's stock legs and reverses the ones that
+# vanished), and the only two commit_file runs the history gate for. Every other
+# report either appends or is keyed by its own document, and several — a
+# การรับชำระหนี้ export especially — legitimately carry a wide date range, so a
+# date-ordering rule would refuse correct files.
+#
+# TWO marks, not one: the two reports are exported independently, so ซื้อ is
+# routinely older than ขาย on the same day. One shared mark would make each
+# report refuse the other's.
+_WEEKLY_WATERMARK_ENTITIES = {'sales': 'BSN:weekly:sales',
+                              'purchase': 'BSN:weekly:purchase'}
+
+
+def _weekly_export_stamp(path, rtype):
+    """(entity, export_at) for a weekly report whose date the watermark can
+    compare, else (None, None).
+
+    A report date that cannot be read is NOT this guard's problem: commit_file
+    refuses such a sales/purchase file outright via
+    `parse_weekly.date_filter_is_readable`, with a message that tells the
+    operator to re-export. Inventing "today" for it here — as the DBF route does
+    for a zip with no readable timestamp — would instead advance the mark to
+    today and lock out every legitimate weekly behind it.
+    """
+    entity = _WEEKLY_WATERMARK_ENTITIES.get(rtype)
+    if not entity:
+        return None, None
+    report_date = parse_weekly.export_report_date(path)
+    if not report_date:
+        return None, None
+    return entity, datetime.datetime.combine(report_date, datetime.time.min)
+
+
 # Every dataset commit_express_dbf() isolates behind its own try/except, i.e.
 # every one that can come back as {'error': ...} while the ledger commits fine.
 # Each MUST be read back after the import or its failure is swallowed and the
@@ -596,7 +633,12 @@ def unified_import():
                    # removal is offered and honoured only for such a row: the
                    # operator must have seen the parsed count and the deletion
                    # count before they can ask for deletions.
-                   'removals_ok': False}
+                   'removals_ok': False,
+                   # The date this file would be importing OVER, when it is older
+                   # than the weekly export already imported (#648). Set here so
+                   # the operator sees it before confirming; /confirm re-checks it
+                   # live and this flag only authorizes the override checkbox.
+                   'stale_over': None}
             if rtype in import_router.RETIRED_REPORT_TYPES:
                 # Recognised, and refused with the reason. Marked `blocked` so the
                 # verdict rides the session into /confirm — the type dropdown is
@@ -614,6 +656,15 @@ def unified_import():
                     # into a deletion they cannot see (Task 2 shipped inert
                     # until this line included it).
                     row['removals_ok'] = rtype in report_types.removal_capable_keys()
+                    # Older than the weekly already imported? Read-only here
+                    # (advance=False): the preview must not claim a mark for a
+                    # file the operator has not confirmed yet.
+                    _entity, _export_at = _weekly_export_stamp(path, rtype)
+                    if _entity:
+                        _fresh, _latest = _claim_export_date(
+                            _export_at, entity=_entity, advance=False)
+                        if not _fresh:
+                            row['stale_over'] = _latest
                 except import_router.HistoryExportBlocked as exc:
                     # Policy A: full history goes through the Express ZIP module
                     # only. Flagged (not just errored) so the template can point
@@ -628,15 +679,19 @@ def unified_import():
         # silently dropped and /confirm 'เซสชันหมดอายุ'. The staged preview is
         # rendered from the in-memory `rows` (full detail) in THIS request;
         # /confirm only needs idx/filename/saved/detected, so store slim rows.
-        # `blocked` and `removals_ok` are the PREVIEW'S VERDICT and must survive
-        # into /confirm: the type dropdown is operator-supplied, so a decision
-        # keyed on the submitted type alone can be re-routed around (a blocked
-        # history file submitted as payments_in reached models.import_payments).
-        # Both are small scalars — the ~4KB cookie limit that forced this list to
-        # be slimmed was about per-row diff LISTS, not flags.
+        # `blocked`, `removals_ok` and `stale_over` are the PREVIEW'S VERDICT and
+        # must survive into /confirm: the type dropdown is operator-supplied, so a
+        # decision keyed on the submitted type alone can be re-routed around (a
+        # blocked history file submitted as payments_in reached
+        # models.import_payments). All three are small scalars — the ~4KB cookie
+        # limit that forced this list to be slimmed was about per-row diff LISTS,
+        # not flags. ⚠ This list is EXPLICIT: a verdict missing from it never
+        # reaches /confirm, and its guard is inert while looking implemented
+        # (tests/test_import_stale_file_watermark.py pins each one).
         slim = [{'idx': r['idx'], 'filename': r['filename'], 'saved': r['saved'],
                  'detected': r['detected'], 'blocked': r.get('blocked'),
-                 'removals_ok': r['removals_ok']} for r in rows]
+                 'removals_ok': r['removals_ok'],
+                 'stale_over': r.get('stale_over')} for r in rows]
         session['import_stage'] = {'token': token, 'rows': slim}
         return render_template('import_box.html', staged=True, rows=rows, token=token,
                                report_labels=_REPORT_LABELS, results=None)
@@ -708,6 +763,37 @@ def unified_import_confirm():
         apply_removals = (bool(request.form.get(f'removals_{i}'))
                           and bool(row.get('removals_ok'))
                           and rtype == row.get('detected'))
+        # Stale-export guard for the two ledger-REPLACING reports, the text-path
+        # counterpart of what the DBF route has done since 2026-08-18. Claimed
+        # BEFORE the import and compared strictly-older, so a retry of the SAME
+        # file still passes while an older one is refused; see
+        # _claim_export_date's docstring for why that order is deliberate.
+        #
+        # The live claim is what decides. `stale_over` is only the preview's
+        # AUTHORIZATION for the tick: a `force_older_N` for a row the preview did
+        # not mark is a stale tab, a hand-built POST, or a mark that moved between
+        # preview and confirm — ignored, not trusted, exactly as `removals_N` is.
+        _entity, _export_at = _weekly_export_stamp(path, rtype)
+        if _entity:
+            _fresh, _latest = _claim_export_date(_export_at, entity=_entity)
+            if not _fresh:
+                _incoming = _export_at.date().isoformat()
+                if not (row.get('stale_over')
+                        and request.form.get(f'force_older_{i}')):
+                    results.append({
+                        'filename': row['filename'], 'ok': False,
+                        'msg': (f'ไฟล์นี้เป็นรายงานของวันที่ {_incoming} ซึ่งเก่ากว่าไฟล์ '
+                                f'{_REPORT_LABELS.get(rtype, rtype)} ที่นำเข้าไปแล้ว '
+                                f'({_latest}) — ข้ามไฟล์นี้ ไม่มีการนำเข้า. '
+                                f'อัปโหลดไฟล์ export ล่าสุดจาก Express แทน '
+                                f'(ถ้าตั้งใจจะนำเข้าทับด้วยไฟล์เก่าจริงๆ ให้ติ๊ก '
+                                f'"นำเข้าทับแม้ไฟล์เก่ากว่า" ตอนตรวจสอบ)')})
+                    continue
+                # Authorized. Recorded before the write, the same way the DBF
+                # route records it, and the mark deliberately stays where it is —
+                # importing an older file does not make it the newest.
+                _audit_forced_import_authorization(
+                    _incoming, _latest, {'filename': row['filename']})
         try:
             out = import_router.commit_file(path, rtype, filename=row['filename'],
                                             apply_removals=apply_removals)
@@ -958,7 +1044,11 @@ def _audit_forced_import_authorization(incoming, overrode, upload_meta):
 def _snapshot_derived_watermark(conn):
     """Pre-mig-166 fallback: the newest stored outstanding snapshot. Used only
     when express_import_watermark has no row yet, so a DB that has not run 166's
-    seed is not treated as "never imported"."""
+    seed is not treated as "never imported".
+
+    ⚠ Meaningful for entity 'BSN' (the Express zip) ONLY — it is that import
+    that writes these snapshots. For any other entity the answer is a date from
+    somebody else's import, which is why `_claim_export_date` gates the call."""
     row = conn.execute(
         "SELECT MAX(d) FROM ("
         "  SELECT MAX(snapshot_date_iso) d FROM express_ar_outstanding WHERE entity='BSN'"
@@ -994,8 +1084,16 @@ def _claim_export_date(export_at, entity='BSN', *, advance=True):
     Advancing before the import is deliberate. If the import then fails, a retry
     of the SAME zip is still accepted (the comparison is strictly-older) while an
     OLDER one stays refused — the right answer in both cases.
+
+    `entity` is the mark being claimed: 'BSN' for the Express zip, and one of
+    `_WEEKLY_WATERMARK_ENTITIES` for a weekly text export. A mark with no row yet
+    reads as "never imported" (None) for every entity EXCEPT 'BSN', which keeps
+    its snapshot-derived fallback — see `_snapshot_derived_watermark`. Without
+    that gate a brand-new weekly mark would inherit the newest AR/AP snapshot
+    date and refuse a perfectly current weekly exported days earlier.
     """
     incoming = export_at.date().isoformat()
+    fallback = _snapshot_derived_watermark if entity == 'BSN' else (lambda _conn: None)
     conn = get_connection()
     try:
         conn.execute("PRAGMA busy_timeout=10000")
@@ -1004,7 +1102,7 @@ def _claim_export_date(export_at, entity='BSN', *, advance=True):
             row = conn.execute(
                 "SELECT last_export_date FROM express_import_watermark WHERE entity = ?",
                 (entity,)).fetchone()
-            previous = row['last_export_date'] if row else _snapshot_derived_watermark(conn)
+            previous = row['last_export_date'] if row else fallback(conn)
             have_table = True
         except sqlite3.OperationalError as exc:
             # ONLY the one condition this fallback exists for: mig 166 rolled
@@ -1014,7 +1112,7 @@ def _claim_export_date(export_at, entity='BSN', *, advance=True):
             # opposite of what a money-path guard should do when it is confused.
             if 'no such table: express_import_watermark' not in str(exc).lower():
                 raise
-            previous = _snapshot_derived_watermark(conn)
+            previous = fallback(conn)
             have_table = False
         if previous and incoming < previous:
             conn.rollback()
