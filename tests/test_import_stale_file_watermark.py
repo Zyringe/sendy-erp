@@ -399,6 +399,68 @@ def test_the_tick_does_not_survive_a_type_change(
     assert not _forced_audit_rows(tmp_db)
 
 
+# ── the un-gated case: an unreadable report date must be REFUSED elsewhere ──
+#
+# `_weekly_export_stamp` returns nothing when the header carries no report date,
+# so such a file is not watermark-gated at all. That is only safe because
+# `commit_file`'s sales/purchase branch runs `_reject_history_export(path)` as its
+# FIRST statement, and that refuses a file for which `date_filter_is_readable` is
+# False — which requires the SAME report date, read through the same
+# `_read_header_dates`. The two checks cannot disagree about a file.
+#
+# Both tests below drive the route with the marks set AHEAD, so a file that got
+# past both checks would be importing over a newer export — the #648 damage.
+
+# A range Express could read, and NO "วันที่ :" line: readable filter, unreadable
+# report date. The mirror of test_bsn_weekly_import_hardening's _NO_DATE_FILTER.
+_NO_REPORT_DATE_SALES = [
+    '"(BSN)บจก.บุญสวัสดิ์นำชัย                หน้า   :        1"',
+    '"  รายงานประวัติการขาย\xa0แยกตามลูกค้า"',
+    '"รหัสลูกค้า          ถึง  Zหน้าร้าน"',
+    '"วันที่จาก   12\xa0เม.ย.\xa02569         ถึง  31\xa0ธ.ค.\xa02569"',
+    '"------------------------------------------------------------"',
+    '"  ลูกค้าทดสอบ\xa0/01ท01"',
+    '"   ใบตัดเพชร\xa04\xa0#GL-888(แดง)\xa0/031บ4120"',
+    '"      04/04/69   IV6900503-  1        24.00 ใบ          160.00  1                  3840.00                  3840.00"',
+]
+
+# No recognisable title → detected 'unknown', never previewed, so the operator's
+# dropdown is the ONLY thing that says "sales". This is the override path.
+_UNTITLED_SALES = ['"ไม่มีหัวรายงาน"'] + _NO_REPORT_DATE_SALES[4:]
+
+
+def test_a_sales_file_with_no_report_date_is_refused_not_silently_ungated(
+        admin_client, tmp_db, spy_import_weekly):
+    _set_mark(tmp_db, SALES_ENTITY, '2026-09-25')
+    _, token = _stage(admin_client,
+                      [(_csv(_NO_REPORT_DATE_SALES), 'ขาย_ไม่มีวันที่รายงาน.csv')])
+
+    resp = admin_client.post('/import-data/confirm',
+                             data={'token': token, 'type_0': 'sales'})
+
+    assert spy_import_weekly == [], \
+        'an un-gated file reached import_weekly over a newer export'
+    assert 'วันที่จาก' in resp.data.decode('utf-8'), (
+        'the operator must get the unreadable-header message, the one branch that '
+        "refuses this file (a bare 'it was skipped' would mean something else "
+        'caught it, and the reason shown would be wrong)')
+
+
+def test_the_dropdown_cannot_route_an_undated_file_into_the_sales_importer(
+        admin_client, tmp_db, spy_import_weekly):
+    """The override path the watermark cannot see: a file the preview never
+    classified, submitted as ขาย by hand. `commit_file` refuses it on the type
+    the OPERATOR submitted, so there is no door around the readable-header rule."""
+    _set_mark(tmp_db, SALES_ENTITY, '2026-09-25')
+    body, token = _stage(admin_client, [(_csv(_UNTITLED_SALES), 'ปริศนา.csv')])
+    assert 'ตรวจไม่พบชนิด' in body, 'precondition: this file must detect as unknown'
+
+    admin_client.post('/import-data/confirm',
+                      data={'token': token, 'type_0': 'sales'})
+
+    assert spy_import_weekly == []
+
+
 # ── the guard must not touch the types that do not replace ledger lines ─────
 
 # A การรับชำระหนี้ export, the shape test_backup_routes.py uses. Its date range is
