@@ -384,9 +384,16 @@ def test_force_older_is_ignored_for_a_row_the_preview_did_not_mark_stale(
 # deliberately WIDE (2567–2569): receipts clear invoices of any age, which is why
 # the history gate does not run for this type and why the weekly marks must not
 # either.
+#
+# ⚠ It carries a READABLE report date (2026-07-20, older than the mark the test
+# sets) on purpose. Without one, `_weekly_export_stamp` returns nothing for any
+# type and the test cannot see a gate added here at all — measured: adding
+# payments_in to `_WEEKLY_WATERMARK_ENTITIES` left this test green until the
+# "วันที่ :" line was added.
 _PAYMENTS_IN = [
     '"(BSN)บจก.บุญสวัสดิ์นำชัย                หน้า   :        1"',
     '"  รายงานการรับชำระหนี้ เรียงตามวันที่ของใบเสร็จ"',
+    '"รหัสลูกค้า        ถึง  Zหน้าร้าน        วันที่ : 20/07/69"',
     '"วันที่จาก   1 ม.ค. 2567  ถึง  31 ธ.ค. 2569"',
     '">>>> จบรายงาน <<<<"',
 ]
