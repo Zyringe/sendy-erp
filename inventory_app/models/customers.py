@@ -389,11 +389,57 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     return out
 
 
+def _returns_off_cards(conn, where, params, cards):
+    """฿ of this customer's credit notes that the RENDERED cards do not show.
+
+    #646 nets a return onto its card, but three kinds never reach one: a
+    product this customer never bought (no card exists), a return booked in a
+    different unit from the purchase (different key), and a card that exists
+    but fell outside the top-20 union. Without this the page is silent about
+    them, which is the same "disagrees with itself" complaint one level up.
+    Measured on prod 2026-09-23: ฿46,365.68 over 45 lines and 12 customers,
+    against ฿83,171.09 that does land on a card.
+
+    Deliberately the residual against the cards ACTUALLY RENDERED, not against
+    the full aggregate: what the footnote promises is "this much is not in the
+    list above", so it has to be computed from that list."""
+    import price_lookup
+    total = conn.execute(f"""
+        SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
+        WHERE {where} AND {price_lookup.returned_lines_filter('s')}
+    """, params).fetchone()[0]
+    return round(total - sum(c['returned_net'] for c in cards), 2)
+
+
 def _customer_product_cards(conn, where, params, include_cost=False):
     """สินค้าที่ซื้อบ่อย, enriched (#493 slice 2, trimmed scope B): one row per
     (product, unit), keyed and populated by the price resolver's evidence
     predicate (the one definition of "a bill that counts") restricted to
     this customer — same population `resolve_price`'s customer.last uses.
+
+    #646 (Put, 2026-09-23): the MONEY and QUANTITY are net of credit notes,
+    the way the header above these cards has been since #494/#627. `times_bought`
+    and `last` stay on the purchase population alone — a credit note is not a
+    purchase, but the invoice it reverses still is (Put, 2026-09-17). The card
+    also carries `returned_qty`/`returned_net` so the template can say a return
+    happened rather than silently shrinking a number nobody prints; `total_qty`
+    is rendered nowhere and `total_net` only drives the ยอด sort, so without
+    the badge this fix would be invisible on the page.
+    `HAVING times_bought > 0` is what keeps a return-only (product, unit) from
+    becoming a negative card: prod 2026-09-23 holds 40 countable credit-note
+    lines (฿43,330.96, 10 customers) for a product that customer has never
+    bought in the purchase population, and a
+    "สินค้าที่ซื้อบ่อย" entry for something they never bought is worse than
+    the gap it would close.
+
+    ⚠ It also drops a return booked in a DIFFERENT unit from the purchase it
+    reverses, because the key is (product, unit). Prod 2026-09-23: 5 lines,
+    ฿3,034.72, 4 customers, every one bought by the โหล and returned by the
+    piece, against 114 countable credit-note lines worth ฿164,222.77. Netting
+    those needs the product's unit_conversions ratio and would print a
+    fractional โหล on a card labelled โหล, so it is Put's call, not an
+    inference. Pinned by test_646_card_returns.py::
+    test_a_return_in_a_different_unit_does_not_net_and_says_nothing.
 
     ADDITIVE, not a replacement for `top_products`: the call card
     (`call_card.py::get_card` → `get_customer_summary`, name-keyed) reads
@@ -423,13 +469,22 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     rows = [dict(r) for r in conn.execute(f"""
         SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
                s.unit,
-               COUNT(DISTINCT s.doc_base) AS times_bought,
-               SUM(s.qty) AS total_qty,
-               SUM(s.net) AS total_net
+               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
+                                   THEN s.doc_base END) AS times_bought,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.net ELSE 0 END), 0) AS returned_net,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.qty ELSE s.qty END) AS total_qty,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.net ELSE s.net END) AS total_net
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND {price_lookup.purchase_population_filter('s')}
+        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
+                           OR {price_lookup.returned_lines_filter('s')})
         GROUP BY s.product_id, s.unit
+        HAVING times_bought > 0
         ORDER BY s.product_id, s.unit
     """, params).fetchall()]
 
@@ -777,6 +832,9 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
     summary, top_products, monthly, docs = _customer_sales_aggregates(
         conn, where, params)
     product_cards = _customer_product_cards(conn, where, params, include_cost=include_cost)
+    # Computed HERE, not in the returned dict below: this function closes `conn`
+    # before assembling it.
+    returns_off_cards = _returns_off_cards(conn, where, params, product_cards)
 
     # Win-back (#497): the ONE shared computation (winback.py), ALWAYS over
     # the customer's FULL history — a fresh, date-INDEPENDENT scope built
@@ -873,6 +931,7 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
         'summary': dict(summary),
         'top_products': [dict(r) for r in top_products],
         'product_cards': product_cards,
+        'returns_off_cards': returns_off_cards,
         # Raw shared list (#497) — same shape call_card.get_card returns under
         # its own 'winback' key, so a caller comparing the two surfaces never
         # has to reach into product_cards to rebuild it.

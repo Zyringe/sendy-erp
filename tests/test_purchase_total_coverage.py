@@ -50,10 +50,15 @@ ALLOWED = {
     'models/customers.py::_customer_documents': (1,
         'ยอดรวมเอกสาร: one row per DOCUMENT, VAT added on แยก VAT documents, a '
         'credit note negated in Python. A document total, VAT-inclusive by design.'),
-    'models/customers.py::_customer_product_cards': (1,
-        'one row per (product, unit) over the price resolver\'s evidence '
-        'population (paid invoice lines only), used to order the product cards '
-        'by money. A per-product figure, never the customer\'s total.'),
+    'models/customers.py::_customer_product_cards': (2,
+        'one row per (product, unit), used to order the product cards by money '
+        'and to decide which reach the top-20 union. A per-product figure, '
+        'never the customer\'s total. #646 made it net of credit notes, so it '
+        'agrees with the header purchase_net_sql produces; the second '
+        'aggregate is returned_net, the amount the card\'s badge names. Both '
+        'are CASE expressions over price_lookup.returned_lines_filter rather '
+        'than purchase_net_sql, because times_bought in the same GROUP BY must '
+        'keep reading the purchase population alone.'),
     # ── money owed (AR), not money spent ──
     'blueprints/mobile.py::sales_trip': (1,
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '

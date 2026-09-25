@@ -589,6 +589,16 @@
                  its own grid item and scatter across both columns. #}
               <td data-label="ครั้งที่ซื้อ" class="text-end font-mono text-subtle"><div>
                 {{ r.times_bought }} ครั้ง <span class="small">({{ r.unit }})</span>
+                {# #646: the card's qty/money are net of credit notes, and
+                   neither is printed — this line is the only place a return
+                   is visible, and the only reason the sort order moved. #}
+                {% if r.returned_qty %}
+                {# text-nowrap: the desktop ครั้งที่ซื้อ column is ~51px, which
+                   broke this onto three lines ("↩ คืน / 48.0 / แผง"). Measured
+                   safe on the phone, where the value column is 152px and the
+                   badge box is 152x18 on one line. #}
+                <div class="text-warning small text-nowrap">↩ คืน {{ r.returned_qty | fmt_qty }} {{ r.unit }}</div>
+                {% endif %}
               </div></td>
               <td data-label="ราคาล่าสุด" class="text-end"><div>
                 {% if r.last %}
@@ -708,6 +718,17 @@
           </tbody>
         </table>
       </div>
+      {# #646: credit notes that never reach a card — a product this customer
+         never bought, a return booked in a different unit from the purchase,
+         or a card outside the top-20 union. The header above NETS these, so
+         without this line the two disagree with nothing saying why. Absent
+         entirely at 0, like the win-back overflow below. #}
+      {% if data.returns_off_cards %}
+      <div class="card-footer text-warning small" data-returns-off-cards="{{ data.returns_off_cards }}">
+        ↩ มีใบลดหนี้อีก {{ data.returns_off_cards | fmt_price }} ที่ไม่ได้อยู่ในรายการข้างบน
+        <span class="text-subtle">(สินค้าที่ลูกค้าไม่เคยซื้อ หรือคืนคนละหน่วยกับตอนซื้อ)</span>
+      </div>
+      {% endif %}
       {# #497: win-back items the top-40 union above never rendered at all
          (never double-counted with the badge on a visible row — see
          models.customers.get_customer_summary_by_code's winback_overflow_count).
