@@ -140,7 +140,8 @@
                    previewed, so offering it there would let them reverse lines they
                    never saw — the confirm handler enforces the same rule, so this is
                    not display-only. #}
-                {% if row.removals_ok and not row.blocked %}
+                {% set offer_removals = row.removals_ok and not row.blocked %}
+                {% if offer_removals %}
                   <div class="form-check">
                     <input class="form-check-input" type="checkbox"
                            name="removals_{{ row.idx }}" id="removals_{{ row.idx }}">
@@ -151,7 +152,25 @@
                       {% endif %}
                     </label>
                   </div>
-                {% else %}<span class="text-subtle">—</span>{% endif %}
+                {% endif %}
+                {# Stale-export override. Rendered ONLY for a row the preview found
+                   OLDER than the ขาย/ซื้อ export already imported: re-importing an
+                   archived weekly replaces its ledger lines and reverts hand fixes
+                   (#648). Confirm re-checks the date live and honours this tick only
+                   for a row it marked here, so this is not display-only. #}
+                {% if row.stale_over %}
+                  <div class="form-check mt-1">
+                    <input class="form-check-input" type="checkbox"
+                           name="force_older_{{ row.idx }}" id="force_older_{{ row.idx }}">
+                    <label class="form-check-label text-danger" for="force_older_{{ row.idx }}">
+                      นำเข้าทับแม้ไฟล์เก่ากว่า — ไฟล์นี้เก่ากว่าไฟล์ที่นำเข้าไปแล้ว
+                      (<span class="fw-600">{{ row.stale_over }}</span>)
+                    </label>
+                  </div>
+                {% endif %}
+                {% if not offer_removals and not row.stale_over %}
+                  <span class="text-subtle">—</span>
+                {% endif %}
               </td>
               <td class="small text-subtle">
                 {% if row.blocked == 'history' %}

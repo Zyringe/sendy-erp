@@ -441,6 +441,20 @@ def date_filter_is_readable(filepath: str) -> bool:
     return bool(filter_start and report_date)
 
 
+def export_report_date(filepath: str):
+    """The date Express printed the report ("วันที่ :"), as a `datetime.date`,
+    or None when the header does not carry a readable one.
+
+    This is WHEN the file was exported, not what it covers. `/import-data` reads
+    it to refuse a weekly older than one already imported (#648) — re-importing
+    an archived weekly replaces its ledger lines and reverts hand fixes.
+
+    ⚠ Do not reach for this to tell a weekly from a history dump. That question
+    is start-vs-report, and `is_history_export()` owns it; a report date on its
+    own says nothing about how far back the file reaches."""
+    return _read_header_dates(filepath)[1]
+
+
 def is_history_export(filepath: str) -> bool:
     """
     Return True when the file is a full-history Express export

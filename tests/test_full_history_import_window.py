@@ -28,16 +28,23 @@ weekly passes cleanly. Measured: a purchase weekly with report date 20/07/69 and
 filter start 13 ก.ค. 2569 gives `is_history_export=False` and
 `_reject_history_export` ACCEPTS it, while the same filter start on a file dated
 25/09/69 is refused. That archived file covers 2026-07-17 and therefore contains
-HP6900041. `/import-data/confirm` also has no export-date watermark — the DBF
-route's `_claim_export_date` / `forced_older` logic has no counterpart there — so
-an older file is accepted silently.
+HP6900041.
 
-So the live vector is a re-upload of an archived weekly text export, not a
+So the live vector was a re-upload of an archived weekly text export, not a
 full-history dump. `test_an_archived_weekly_is_accepted_and_is_the_live_vector`
-below pins that as an executable fact rather than leaving it in prose, and
-`test_the_text_confirm_path_has_no_export_date_watermark` pins the asymmetry that
-lets it through. Neither is a wish: they assert what the code does TODAY, so if
-someone closes the door they go red and have to be rewritten deliberately.
+below pins that as an executable fact rather than leaving it in prose: the history
+gate still accepts such a file, because a date-RANGE gate is the wrong instrument
+for "this export is old".
+
+✅ **The route-level half of that vector was closed 2026-09-25** by giving
+`/import-data/confirm` the export-date watermark the DBF route has had since
+2026-08-18 (`_claim_export_date`, marks `BSN:weekly:sales` and
+`BSN:weekly:purchase`, plus a per-row "นำเข้าทับแม้ไฟล์เก่ากว่า" tick).
+`test_both_import_paths_claim_an_export_date` below replaced the test that pinned
+the asymmetry, and `tests/test_import_stale_file_watermark.py` drives the refusal
+end to end. What is NOT closed, and why this file still exists: the guard is per
+export DATE, so it orders uploads rather than bounding what a single accepted file
+may rewrite. The window is still the invariant.
 
 What this canNOT see, stated so nobody reads it as more than it is:
   * a window passed in a variable or `**kwargs` — the sweep records the source
@@ -275,13 +282,22 @@ def test_an_archived_weekly_is_accepted_and_is_the_live_vector(tmp_path):
         import_router._reject_history_export(fresh)
 
 
-def test_the_text_confirm_path_has_no_export_date_watermark():
-    """The asymmetry that lets the archived file through unnoticed.
+def test_both_import_paths_claim_an_export_date():
+    """The asymmetry that let the archived file through, now closed.
 
-    The DBF route claims the export timestamp (`_claim_export_date`) and makes the
-    operator tick a box to import over a newer one. The text confirm path has no
-    such call, so an older file is accepted silently. Pinned so that adding the
-    watermark is a deliberate act that turns this red."""
+    ⚠ REWRITTEN 2026-09-25, deliberately, which is what the previous version asked
+    for. It was `test_the_text_confirm_path_has_no_export_date_watermark` and
+    asserted `unified_import_confirm` was NOT among the claimers — "pinned so that
+    adding the watermark is a deliberate act that turns this red". It went red the
+    hour the watermark shipped. The behaviour is now the opposite and is pinned as
+    such: both the DBF route and the text confirm path claim an export date and
+    make the operator tick a box to import over a newer one. The text path claims
+    `BSN:weekly:sales` / `BSN:weekly:purchase`, separate marks from the zip's
+    'BSN', because the two weekly reports are exported independently.
+
+    This is a source-level census of WHICH functions claim, so it cannot see
+    whether the claim decides anything.
+    tests/test_import_stale_file_watermark.py drives the route for that."""
     path = os.path.join(REPO, "inventory_app", "blueprints", "bsn.py")
     with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read())
@@ -291,9 +307,9 @@ def test_the_text_confirm_path_has_no_export_date_watermark():
                         for c in ast.walk(n))}
     assert "express_dbf_upload" in claimers, (
         f"the DBF route no longer claims an export date; claimers={claimers}")
-    assert "unified_import_confirm" not in claimers, (
-        "the text confirm path now claims an export date — the #648 vector is "
-        "narrower than this file says. Update the module docstring.")
+    assert "unified_import_confirm" in claimers, (
+        "the text confirm path no longer claims an export date — re-uploading an "
+        f"archived weekly can revert a hand re-point again (#648). claimers={claimers}")
 
 
 def test_import_weekly_is_not_called_outside_the_router():

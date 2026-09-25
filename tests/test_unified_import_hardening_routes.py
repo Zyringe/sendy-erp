@@ -134,11 +134,12 @@ def test_staged_session_stays_slim(admin_client):
     _stage(admin_client, [(_csv(SALES_SAMPLE_LINES), 'ขาย_x.csv')])
     with admin_client.session_transaction() as sess:
         row = sess['import_stage']['rows'][0]
-    # `blocked` and `removals_ok` are the preview's VERDICT and must survive to
-    # /confirm (the submitted type cannot be trusted). Both are small scalars —
-    # the ~4KB limit that forced this slimming was about per-row diff LISTS.
+    # `blocked`, `removals_ok` and `stale_over` (the stale-export verdict, #648)
+    # are the preview's VERDICT and must survive to /confirm (the submitted type
+    # cannot be trusted). All three are small scalars — the ~4KB limit that forced
+    # this slimming was about per-row diff LISTS.
     assert set(row) == {'idx', 'filename', 'saved', 'detected',
-                        'blocked', 'removals_ok'}
+                        'blocked', 'removals_ok', 'stale_over'}
     assert all(not isinstance(v, (list, dict)) for v in row.values()), \
         'staged rows must stay scalar — no diff lists back in the signed cookie'
 
