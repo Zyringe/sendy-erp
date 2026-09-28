@@ -47,6 +47,24 @@ def test_manual_additions_and_deductions_survive_regenerate(tmp_db_conn_hr_clean
     assert after['carried_out'] == edited['carried_out']
 
 
+def test_carried_deduction_that_overdraws_keeps_the_same_carried_out(
+        tmp_db_conn_hr_clean):
+    c = tmp_db_conn_hr_clean
+    eid = _mk_employee(c, 'T660_N', 'regen overdraw', '2026-01-01',
+                       monthly_salary=13000.0)
+    run = _gen(c)
+    edited = hr.update_payroll_item(
+        _item(c, run['id'], eid)['id'], other_deductions=20000.0,
+        other_deductions_note='ค่าเสียหาย', conn=c)
+    assert edited['net_pay'] == 0.0
+    assert edited['carried_out'] > 0
+
+    run = _gen(c)
+    after = _item(c, run['id'], eid)
+    assert after['other_deductions'] == 20000.0
+    assert after['net_pay'] == 0.0
+    assert after['carried_out'] == edited['carried_out']
+
 def test_leave_added_after_the_edit_still_recomputes(tmp_db_conn_hr_clean):
     c = tmp_db_conn_hr_clean
     eid = _mk_employee(c, 'T660_B', 'regen recomputes', '2026-01-01',
