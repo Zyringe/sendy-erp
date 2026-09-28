@@ -533,8 +533,11 @@ def payroll_generate():
         return redirect(url_for("hr.payroll_list"))
     created_by = session.get("user_id", 0)
     try:
-        run = hr_mod.generate_run(year_month, int(company_id), created_by)
+        run, kept = hr_mod.generate_run_counting_kept(
+            year_month, int(company_id), created_by)
         flash(f"สร้าง/อัปเดต payroll run #{run['id']} เรียบร้อย", "success")
+        if kept:
+            flash(f"คงยอดแก้มือไว้ {kept} แถว", "info")
         return redirect(url_for("hr.payroll_detail", run_id=run["id"]))
     except Exception as e:
         flash(f"ไม่สามารถสร้าง payroll: {e}", "danger")
