@@ -1672,9 +1672,14 @@ def generate_run(year_month: str, company_id: int, created_by: int,
     (re)build payroll_items for every active employee of that company who is
     on payroll during the month. Returns the payroll_runs row.
 
-    Re-runnable: existing items for the run are replaced (preserving nothing
-    — generation is the baseline; admin edits happen afterwards via
-    update_payroll_item). A finalized run is left untouched.
+    Re-runnable: existing items for the run are rebuilt from source, so
+    salary, leave, diligence, SSO, advances, carry-forward and WHT all
+    re-derive. The admin's edits made via update_payroll_item survive per
+    employee: bonus, other_additions(+note), other_deductions(+note) and a
+    'late' diligence forfeit (a rebuilt 'leave' forfeit keeps its reason).
+    A per-line WHT override does NOT survive (employee_wht_history is the
+    source, mig 157). A newly added employee starts with defaults (#660).
+    A finalized run is left untouched.
     """
     period_start, period_end = _month_bounds(year_month)
 
@@ -1726,9 +1731,32 @@ def generate_run(year_month: str, company_id: int, created_by: int,
             if added:
                 raise ValueError(_added_employees_message(c, added))
 
+        manual = {
+            r["employee_id"]: r
+            for r in c.execute(
+                """SELECT employee_id, bonus, other_additions,
+                          other_additions_note, other_deductions,
+                          other_deductions_note, diligence_forfeit_reason
+                     FROM payroll_items WHERE run_id = ?""",
+                (run_id,),
+            )
+        }
         c.execute("DELETE FROM payroll_items WHERE run_id = ?", (run_id,))
         for emp in emps:
             d = _build_item(c, emp, year_month, cfg, run_id=run_id)
+            # WHT is deliberately NOT carried: employee_wht_history is its
+            # single source of truth (mig 157), so _build_item re-derives it.
+            m = manual.get(emp["id"])
+            if m is not None:
+                for k in ("bonus", "other_additions", "other_additions_note",
+                          "other_deductions", "other_deductions_note"):
+                    d[k] = m[k]
+                # Same rule as update_payroll_item(late=True), except a
+                # data-derived forfeit ('leave') rebuilt above wins over 'late'.
+                if (m["diligence_forfeit_reason"] == "late"
+                        and not d["diligence_forfeited"]):
+                    d["diligence_forfeited"] = 1
+                    d["diligence_forfeit_reason"] = "late"
             _recompute_totals(d)
             c.execute(
                 """INSERT INTO payroll_items
