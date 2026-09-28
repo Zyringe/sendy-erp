@@ -466,6 +466,12 @@
   employee's month advances + total outstanding + net salary (an over-advance guard). See ADR 0008
   + mig 128.
 
+- **เบิกได้อีก (advance headroom)** — the month's pay ceiling (`collectable`) minus advances
+  already recorded in that month. An **estimate**: bonus, WHT, and other admin-edit deductions
+  are unknown until that month's payroll run actually exists. Shown inline on `/cashbook/new`
+  while keying an advance, and it's the same figure the save-time over-advance confirm checks
+  against.
+
 - **Payout-sourced row (มาร์เก็ตเพลสลงให้)** — a `LEX` (Lazada) / `SPX` (Shopee) income row that
   `cashbook_payout_mirror.mirror_platform()` wrote from a `marketplace_payouts` row, after every
   marketplace import/reconcile: category `ยอดขายของ`, dated the payout's deposit date, described

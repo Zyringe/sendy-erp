@@ -114,6 +114,104 @@ def test_advance_history_target_month_finalized_true_when_run_closed(migrated_db
     assert data["target_month_finalized"] is True
 
 
+# ── #658: bank/headroom fields for the cashbook/new inline advance-info panel ──
+
+def _mk_employee(conn, emp_code, full_name, company_id=1, bank_name=None,
+                 bank_account_no=None, bank_account_name=None,
+                 start_date='2020-01-01', monthly_salary=None):
+    cur = conn.execute(
+        """INSERT INTO employees
+             (emp_code, full_name, gender, company_id, start_date, probation_days,
+              sso_enrolled, diligence_allowance, is_active,
+              bank_name, bank_account_no, bank_account_name)
+           VALUES (?, ?, 'M', ?, ?, 90, 1, 0, 1, ?, ?, ?)""",
+        (emp_code, full_name, company_id, start_date,
+         bank_name, bank_account_no, bank_account_name),
+    )
+    eid = cur.lastrowid
+    if monthly_salary is not None:
+        conn.execute(
+            """INSERT INTO employee_salary_history
+                 (employee_id, effective_date, monthly_salary, reason)
+               VALUES (?, ?, ?, 'initial')""",
+            (eid, start_date, monthly_salary),
+        )
+    conn.commit()
+    return eid
+
+
+def test_advance_history_bank_grouped_and_digits(migrated_db):
+    conn = sqlite3.connect(migrated_db)
+    emp = _mk_employee(
+        conn, 'T658A', 'ทดสอบ บัญชี', bank_name='ธนาคารกสิกรไทย',
+        bank_account_no='1234567890', bank_account_name='ทดสอบ บัญชี',
+    )
+    conn.close()
+
+    resp = _client().get(f"/cashbook/advance-history/{emp}?month=2099-07")
+    data = resp.get_json()
+
+    assert data["bank"] is not None
+    assert data["bank"]["bank_name"] == 'ธนาคารกสิกรไทย'
+    assert data["bank"]["account_no_display"] == '123-4-56789-0'
+    assert data["bank"]["account_no_digits"] == '1234567890'
+    assert data["bank"]["account_name"] == 'ทดสอบ บัญชี'
+
+
+def test_advance_history_copy_digits_strip_legacy_separators(migrated_db):
+    # Rows saved before hr_queries normalised to bare digits can still hold dashes.
+    conn = sqlite3.connect(migrated_db)
+    emp = _mk_employee(conn, 'T658E', 'บัญชีมีขีด', bank_name='ธนาคารกสิกรไทย',
+                       bank_account_no='123-4-56789-0')
+    conn.close()
+
+    data = _client().get(f"/cashbook/advance-history/{emp}?month=2099-07").get_json()
+
+    assert data["bank"]["account_no_digits"] == '1234567890'
+
+
+def test_advance_history_bank_none_when_no_account(migrated_db):
+    conn = sqlite3.connect(migrated_db)
+    emp = _mk_employee(conn, 'T658B', 'ไม่มีบัญชี')
+    conn.close()
+
+    resp = _client().get(f"/cashbook/advance-history/{emp}?month=2099-07")
+    data = resp.get_json()
+
+    assert data["bank"] is None
+
+
+def test_advance_history_no_salary_means_no_remaining(migrated_db):
+    conn = sqlite3.connect(migrated_db)
+    emp = _mk_employee(conn, 'T658C', 'ไม่มีเงินเดือน')
+    conn.close()
+
+    resp = _client().get(f"/cashbook/advance-history/{emp}?month=2099-07")
+    data = resp.get_json()
+
+    assert data["has_salary"] is False
+    assert data["remaining"] is None
+
+
+def test_advance_history_remaining_matches_collectable_minus_month_total(migrated_db):
+    conn = sqlite3.connect(migrated_db)
+    emp = _mk_employee(conn, 'T658D', 'มีเงินเดือน', monthly_salary=15000.0)
+    conn.execute(
+        "INSERT INTO salary_advances (employee_id, advance_date, amount) VALUES (?, '2099-07-05', 2000)",
+        (emp,),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = _client().get(f"/cashbook/advance-history/{emp}?month=2099-07")
+    data = resp.get_json()
+
+    assert data["has_salary"] is True
+    assert data["month_advance_total"] == 2000
+    assert data["collectable"] > 2000
+    assert data["remaining"] == pytest.approx(data["collectable"] - 2000, abs=0.01)
+
+
 def test_advance_history_collectable_is_lower_with_carried_in(migrated_db):
     """Sanity check that collectable is computed via hr.collectable_this_month
     (shares the carry source with the payslip), not hardcoded."""
@@ -137,3 +235,14 @@ def test_advance_history_collectable_is_lower_with_carried_in(migrated_db):
     with_carry = _client().get(f"/cashbook/advance-history/{emp['id']}?month=2099-11").get_json()
     assert with_carry["collectable"] < no_carry["collectable"]
     assert with_carry["collectable"] == pytest.approx(no_carry["collectable"] - 950, abs=0.01)
+
+
+# ── front-end contract: /cashbook/new renders the advance-info element ─────
+
+def test_new_page_renders_advance_info_in_row_template(migrated_db):
+    import re
+    html = _client().get("/cashbook/new").get_data(as_text=True)
+    tpl = re.search(r'<template id="row-template">(.*?)</template>', html, re.S)
+    assert tpl, "row template rendered"
+    assert 'advance-emp-select"' in tpl.group(1), "control: template holds the employee picker"
+    assert '<div class="advance-info' in tpl.group(1), "rows added in bulk mode get the panel too"

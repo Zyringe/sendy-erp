@@ -28,6 +28,7 @@ from markupsafe import Markup
 
 import access_control
 import database
+import filters
 from paging import paging
 import hr as hr_mod
 import hr_queries as hrq
@@ -583,7 +584,9 @@ def advance_history(employee_id):
     conn = database.get_connection()
     try:
         emp = conn.execute(
-            "SELECT id, COALESCE(nickname, full_name) AS name FROM employees WHERE id=?",
+            """SELECT id, COALESCE(nickname, full_name) AS name,
+                      bank_name, bank_account_no, bank_account_name
+                 FROM employees WHERE id=?""",
             (employee_id,),
         ).fetchone()
         if emp is None:
@@ -631,6 +634,22 @@ def advance_history(employee_id):
         ).fetchone() is not None
     finally:
         conn.close()
+
+    # Inline advance-info panel on /cashbook/new (#658): the SAME two facts
+    # (bank account + this-month headroom) this modal already computes, just
+    # also handed back for the panel to render without its own click.
+    if emp["bank_account_no"]:
+        bank = {
+            "bank_name": emp["bank_name"],
+            "account_no_display": filters.bank_account(emp["bank_account_no"], emp["bank_name"]),
+            "account_no_digits": "".join(c for c in emp["bank_account_no"] if c.isdigit()),
+            "account_name": emp["bank_account_name"],
+        }
+    else:
+        bank = None
+    has_salary = bool(cap_status and cap_status["salary_rate"] > 0)
+    remaining = round(cap_status["collectable"] - month_total, 2) if has_salary else None
+
     return jsonify(
         employee={"id": emp["id"], "name": emp["name"]},
         month=month,
@@ -645,6 +664,10 @@ def advance_history(employee_id):
         collectable=cap_status["collectable"] if cap_status else None,
         target_month=month,
         target_month_finalized=target_finalized,
+        bank=bank,
+        has_salary=has_salary,
+        remaining=remaining,
+        hr_url=url_for("hr.employee_detail", id=employee_id),
     )
 
 
