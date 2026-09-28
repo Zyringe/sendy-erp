@@ -414,16 +414,41 @@
     return a;
   }
 
+  // Y = X minus every advance row currently on the form for this SAME
+  // employee + month (including this row) — not-yet-saved siblings, so
+  // adding a second advance row for the same person updates both live.
+  function advanceSiblingsTotal(empId, month) {
+    var total = 0;
+    rowEls().forEach(function (row) {
+      if (!isAdvanceRow(row)) return;
+      var sel = row.querySelector('.advance-emp-select');
+      if (!sel || sel.value !== String(empId)) return;
+      if (advanceRowMonth(row) !== month) return;
+      var amtInput = row.querySelector('input[name$="-amount"]');
+      total += Number((amtInput && amtInput.value) || 0);
+    });
+    return total;
+  }
+
   // Builds the two-line panel with textContent/createElement only — every
   // string here (bank name, account name) comes from the DB.
   function renderAdvanceInfo(container, d, empId, month) {
+    // Rebuilding on every blur would swap out the 📋 button between its
+    // mousedown and click (the amount box's 'change' fires first), so a tap
+    // right after typing would copy nothing.
+    var sig = JSON.stringify([d, advanceSiblingsTotal(empId, month)]);
+    if (container.dataset.sig === sig) return;
+    container.dataset.sig = sig;
     container.textContent = '';
 
     var line1 = document.createElement('div');
     if (d.bank) {
-      var bankParts = [d.bank.bank_name, d.bank.account_no_display, d.bank.account_name]
-        .filter(function (p) { return p; });
-      line1.appendChild(document.createTextNode(bankParts.join(' · ') + ' '));
+      if (d.bank.bank_name) line1.appendChild(document.createTextNode(d.bank.bank_name + ' · '));
+      var accNo = document.createElement('span');
+      accNo.className = 'fw-semibold text-nowrap';
+      accNo.textContent = d.bank.account_no_display;
+      line1.appendChild(accNo);
+      line1.appendChild(document.createTextNode((d.bank.account_name ? ' · ' + d.bank.account_name : '') + ' '));
       var copyBtn = document.createElement('button');
       copyBtn.type = 'button';
       copyBtn.className = 'btn btn-link btn-sm p-0 align-baseline';
@@ -447,25 +472,13 @@
       line2.appendChild(document.createTextNode('ยังไม่มีเงินเดือนในระบบ '));
       line2.appendChild(hrLink(d.hr_url));
     } else {
-      // Y = X minus every advance row currently on the form for this SAME
-      // employee + month (including this row) — not-yet-saved siblings, so
-      // adding a second advance row for the same person updates both live.
-      var siblingsTotal = 0;
-      rowEls().forEach(function (row) {
-        if (!isAdvanceRow(row)) return;
-        var sel = row.querySelector('.advance-emp-select');
-        if (!sel || sel.value !== String(empId)) return;
-        if (advanceRowMonth(row) !== month) return;
-        var amtInput = row.querySelector('input[name$="-amount"]');
-        siblingsTotal += Number((amtInput && amtInput.value) || 0);
-      });
-      var x = d.remaining, y = x - siblingsTotal;
+      var x = d.remaining, y = x - advanceSiblingsTotal(empId, month);
       var xSpan = document.createElement('span');
       xSpan.textContent = fmtBaht(x);
-      if (x < 0) xSpan.className = 'text-danger';
+      xSpan.className = 'text-nowrap' + (x < 0 ? ' text-danger' : '');
       var ySpan = document.createElement('span');
       ySpan.textContent = fmtBaht(y);
-      if (y < 0) ySpan.className = 'text-danger';
+      ySpan.className = 'text-nowrap' + (y < 0 ? ' text-danger' : '');
 
       line2.appendChild(document.createTextNode('เบิกได้อีก (ประมาณการ) '));
       line2.appendChild(xSpan);
