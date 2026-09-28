@@ -119,6 +119,9 @@
                   <i class="bi bi-clock-history"></i>
                 </button>
               </div>
+              {# Inline headroom + bank account (#658): filled by refreshAdvanceInfo(),
+                 visible only while this row is an advance row with an employee chosen. #}
+              <div class="advance-info small mt-1" style="display:none; overflow-wrap:anywhere"></div>
               {# Salary / in-engine-commission: hard-blocked at save, so the ผู้ใช้
                  cell shows a redirect instead of a "ดูประวัติ" modal (decision C6). #}
               <div class="salary-redirect-wrap mt-1" style="display:none">
@@ -191,6 +194,7 @@
                     <i class="bi bi-clock-history"></i>
                   </button>
                 </div>
+                <div class="advance-info small mt-1" style="display:none; overflow-wrap:anywhere"></div>
                 <div class="salary-redirect-wrap mt-1" style="display:none">
                   <a href="{{ url_for('hr.payroll_list') }}" class="btn btn-sm btn-outline-warning w-100">
                     <i class="bi bi-box-arrow-up-right"></i> ไปหน้าเงินเดือน (HR)
@@ -386,6 +390,149 @@
     return '฿' + Number(n || 0).toLocaleString('th-TH', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   }
 
+  // ── Inline advance-info panel (#658): the same bank-account + headroom
+  // facts the "ดูประวัติ" modal fetches, shown under the employee picker
+  // without a click. Cached per (employee_id, month) — typing an amount on
+  // one row must not refetch every other row for the same employee/month.
+  var advanceInfoCache = {};   // "empId|month" -> JSON from /advance-history, or null while a fetch is in flight
+
+  function advanceRowMonth(tr) {
+    var dateInput = tr.querySelector('.row-date-input');
+    var dateVal = (dateInput && dateInput.value) || topDateInput.value || '';
+    return dateVal ? dateVal.slice(0, 7) : '';
+  }
+
+  function isAdvanceRow(tr) {
+    var catVal = tr.querySelector('.category-combo .combo-value');
+    return !!catVal && catVal.value === ADVANCE_CAT;
+  }
+
+  function hrLink(hrUrl) {
+    var a = document.createElement('a');
+    a.href = hrUrl;
+    a.textContent = 'ไปหน้า HR';
+    return a;
+  }
+
+  // Builds the two-line panel with textContent/createElement only — every
+  // string here (bank name, account name) comes from the DB.
+  function renderAdvanceInfo(container, d, empId, month) {
+    container.textContent = '';
+
+    var line1 = document.createElement('div');
+    if (d.bank) {
+      var bankParts = [d.bank.bank_name, d.bank.account_no_display, d.bank.account_name]
+        .filter(function (p) { return p; });
+      line1.appendChild(document.createTextNode(bankParts.join(' · ') + ' '));
+      var copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn btn-link btn-sm p-0 align-baseline';
+      copyBtn.title = 'คัดลอกเลขบัญชี';
+      copyBtn.textContent = '📋';
+      copyBtn.addEventListener('click', function () {
+        navigator.clipboard.writeText(d.bank.account_no_digits).then(function () {
+          copyBtn.textContent = 'คัดลอกแล้ว';
+          setTimeout(function () { copyBtn.textContent = '📋'; }, 1500);
+        });
+      });
+      line1.appendChild(copyBtn);
+    } else {
+      line1.appendChild(document.createTextNode('ยังไม่มีบัญชีในระบบ '));
+      line1.appendChild(hrLink(d.hr_url));
+    }
+    container.appendChild(line1);
+
+    var line2 = document.createElement('div');
+    if (!d.has_salary) {
+      line2.appendChild(document.createTextNode('ยังไม่มีเงินเดือนในระบบ '));
+      line2.appendChild(hrLink(d.hr_url));
+    } else {
+      // Y = X minus every advance row currently on the form for this SAME
+      // employee + month (including this row) — not-yet-saved siblings, so
+      // adding a second advance row for the same person updates both live.
+      var siblingsTotal = 0;
+      rowEls().forEach(function (row) {
+        if (!isAdvanceRow(row)) return;
+        var sel = row.querySelector('.advance-emp-select');
+        if (!sel || sel.value !== String(empId)) return;
+        if (advanceRowMonth(row) !== month) return;
+        var amtInput = row.querySelector('input[name$="-amount"]');
+        siblingsTotal += Number((amtInput && amtInput.value) || 0);
+      });
+      var x = d.remaining, y = x - siblingsTotal;
+      var xSpan = document.createElement('span');
+      xSpan.textContent = fmtBaht(x);
+      if (x < 0) xSpan.className = 'text-danger';
+      var ySpan = document.createElement('span');
+      ySpan.textContent = fmtBaht(y);
+      if (y < 0) ySpan.className = 'text-danger';
+
+      line2.appendChild(document.createTextNode('เบิกได้อีก (ประมาณการ) '));
+      line2.appendChild(xSpan);
+      line2.appendChild(document.createTextNode(' → หลังรายการนี้ '));
+      line2.appendChild(ySpan);
+    }
+    container.appendChild(line2);
+
+    if (d.has_salary && d.target_month_finalized) {
+      var warn = document.createElement('div');
+      warn.className = 'text-danger';
+      warn.textContent = 'รอบเดือนนี้ปิดแล้ว เงินจะไปหักรอบถัดไป';
+      container.appendChild(warn);
+    }
+  }
+
+  // Recomputes EVERY advance row (siblingsTotal above needs to see them
+  // all), fetching only the (employee, month) combos not already cached.
+  function refreshAdvanceInfo() {
+    var toFetch = {};   // key -> [empId, month]
+    rowEls().forEach(function (tr) {
+      var infoEl = tr.querySelector('.advance-info');
+      if (!infoEl) return;
+      var sel = tr.querySelector('.advance-emp-select');
+      var empId = sel && sel.value;
+      var month = advanceRowMonth(tr);
+      if (!isAdvanceRow(tr) || !empId || !month) {
+        infoEl.style.display = 'none';
+        return;
+      }
+      infoEl.style.display = '';
+      var key = empId + '|' + month;
+      if (!(key in advanceInfoCache)) toFetch[key] = [empId, month];
+    });
+
+    var keys = Object.keys(toFetch);
+    if (keys.length === 0) { renderAllAdvanceInfo(); return; }
+    keys.forEach(function (key) { advanceInfoCache[key] = null; });   // mark in-flight so a second call doesn't refetch
+    var pending = keys.length;
+    keys.forEach(function (key) {
+      var empId = toFetch[key][0], month = toFetch[key][1];
+      var url = '/cashbook/advance-history/' + encodeURIComponent(empId) +
+                '?month=' + encodeURIComponent(month);
+      fetch(url).then(function (r) { return r.json(); })
+        .then(function (d) { advanceInfoCache[key] = d; })
+        .catch(function () { delete advanceInfoCache[key]; })
+        .then(function () {
+          pending--;
+          if (pending === 0) renderAllAdvanceInfo();
+        });
+    });
+  }
+
+  function renderAllAdvanceInfo() {
+    rowEls().forEach(function (tr) {
+      if (!isAdvanceRow(tr)) return;
+      var infoEl = tr.querySelector('.advance-info');
+      var sel = tr.querySelector('.advance-emp-select');
+      var empId = sel && sel.value;
+      var month = advanceRowMonth(tr);
+      if (!infoEl || !empId || !month) return;
+      var d = advanceInfoCache[empId + '|' + month];
+      if (!d) return;   // still in-flight, or the fetch failed
+      renderAdvanceInfo(infoEl, d, empId, month);
+    });
+  }
+
   // ดูประวัติ: fetch that employee's month advances + outstanding + salary and
   // show the modal, so you don't over-advance.
   function showAdvanceHistory(tr) {
@@ -490,6 +637,7 @@
     applyCategoryMode(newRow);   // fresh row starts non-advance; keep state consistent
     nextIndex++;
     applyBulkVisibility();
+    refreshAdvanceInfo();   // row add/remove (#658 trigger list)
   });
 
   body.addEventListener('click', function (e) {
@@ -499,6 +647,7 @@
     if (!btn) return;
     var tr = btn.closest('tr');
     if (tr) tr.remove();
+    refreshAdvanceInfo();   // row add/remove (#658 trigger list)
   });
 
   body.addEventListener('change', function (e) {
@@ -513,10 +662,23 @@
       // in commission mode, a recipient) is picked/typed.
       applyCategoryMode(tr);
     }
+    // Covers the remaining #658 triggers on this delegated listener: employee
+    // select change, category change (via applyCategoryMode above), row date
+    // change — cheap to call unconditionally, the cache absorbs no-op calls.
+    refreshAdvanceInfo();
   });
+
+  // Amount is a live 'input' (types per keystroke), not 'change' (fires on blur).
+  body.addEventListener('input', function (e) {
+    if (e.target.matches('input[name$="-amount"]')) refreshAdvanceInfo();
+  });
+
+  topDateInput.addEventListener('change', refreshAdvanceInfo);
+  topDateInput.addEventListener('input', refreshAdvanceInfo);
 
   applyBulkVisibility();
   rowEls().forEach(applyCategoryMode);   // error re-renders may already hold a salary/advance/commission row
+  refreshAdvanceInfo();   // same — an error re-render may already hold an advance row
 })();
 </script>
 {% endblock %}
