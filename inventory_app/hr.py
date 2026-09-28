@@ -1668,9 +1668,19 @@ def _dropped_employees_message(c, dropped_ids) -> str:
 def generate_run(year_month: str, company_id: int, created_by: int,
                   conn: Optional[sqlite3.Connection] = None,
                   db_path: Optional[str] = None):
+    """generate_run_counting_kept without the count. Returns the payroll_runs row."""
+    return generate_run_counting_kept(year_month, company_id, created_by,
+                                      conn=conn, db_path=db_path)[0]
+
+
+def generate_run_counting_kept(year_month: str, company_id: int,
+                               created_by: int,
+                               conn: Optional[sqlite3.Connection] = None,
+                               db_path: Optional[str] = None):
     """Upsert the draft payroll_runs row for (year_month, company_id) and
     (re)build payroll_items for every active employee of that company who is
-    on payroll during the month. Returns the payroll_runs row.
+    on payroll during the month. Returns (payroll_runs row, kept) where kept
+    = how many rebuilt items carried at least one manual value over.
 
     Re-runnable: existing items for the run are rebuilt from source, so
     salary, leave, diligence, SSO, advances, carry-forward and WHT all
@@ -1708,7 +1718,7 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                 c.commit()
                 return c.execute(
                     "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
-                ).fetchone()
+                ).fetchone(), 0
 
         # active employees of this company who overlap the payroll month
         emps = _active_employees_for_month(c, company_id, period_start, period_end)
@@ -1742,14 +1752,17 @@ def generate_run(year_month: str, company_id: int, created_by: int,
             )
         }
         c.execute("DELETE FROM payroll_items WHERE run_id = ?", (run_id,))
+        kept = 0
         for emp in emps:
             d = _build_item(c, emp, year_month, cfg, run_id=run_id)
             # WHT is deliberately NOT carried: employee_wht_history is its
             # single source of truth (mig 157), so _build_item re-derives it.
             m = manual.get(emp["id"])
             if m is not None:
-                for k in ("bonus", "other_additions", "other_additions_note",
-                          "other_deductions", "other_deductions_note"):
+                manual_keys = ("bonus", "other_additions", "other_additions_note",
+                               "other_deductions", "other_deductions_note")
+                carried = any(m[k] for k in manual_keys)
+                for k in manual_keys:
                     d[k] = m[k]
                 # Same rule as update_payroll_item(late=True), except a
                 # data-derived forfeit ('leave') rebuilt above wins over 'late'.
@@ -1757,6 +1770,8 @@ def generate_run(year_month: str, company_id: int, created_by: int,
                         and not d["diligence_forfeited"]):
                     d["diligence_forfeited"] = 1
                     d["diligence_forfeit_reason"] = "late"
+                    carried = True
+                kept += carried
             _recompute_totals(d)
             c.execute(
                 """INSERT INTO payroll_items
@@ -1800,7 +1815,7 @@ def generate_run(year_month: str, company_id: int, created_by: int,
         c.commit()
         return c.execute(
             "SELECT * FROM payroll_runs WHERE id = ?", (run_id,)
-        ).fetchone()
+        ).fetchone(), kept
 
 
 # ── edit one payroll item then recompute its totals ──────────────────────────
