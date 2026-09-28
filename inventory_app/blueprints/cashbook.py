@@ -642,7 +642,7 @@ def advance_history(employee_id):
         bank = {
             "bank_name": emp["bank_name"],
             "account_no_display": filters.bank_account(emp["bank_account_no"], emp["bank_name"]),
-            "account_no_digits": emp["bank_account_no"],
+            "account_no_digits": "".join(c for c in emp["bank_account_no"] if c.isdigit()),
             "account_name": emp["bank_account_name"],
         }
     else:

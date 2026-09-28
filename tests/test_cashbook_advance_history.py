@@ -158,6 +158,18 @@ def test_advance_history_bank_grouped_and_digits(migrated_db):
     assert data["bank"]["account_name"] == 'ทดสอบ บัญชี'
 
 
+def test_advance_history_copy_digits_strip_legacy_separators(migrated_db):
+    # Rows saved before hr_queries normalised to bare digits can still hold dashes.
+    conn = sqlite3.connect(migrated_db)
+    emp = _mk_employee(conn, 'T658E', 'บัญชีมีขีด', bank_name='ธนาคารกสิกรไทย',
+                       bank_account_no='123-4-56789-0')
+    conn.close()
+
+    data = _client().get(f"/cashbook/advance-history/{emp}?month=2099-07").get_json()
+
+    assert data["bank"]["account_no_digits"] == '1234567890'
+
+
 def test_advance_history_bank_none_when_no_account(migrated_db):
     conn = sqlite3.connect(migrated_db)
     emp = _mk_employee(conn, 'T658B', 'ไม่มีบัญชี')
@@ -195,7 +207,9 @@ def test_advance_history_remaining_matches_collectable_minus_month_total(migrate
     data = resp.get_json()
 
     assert data["has_salary"] is True
-    assert data["remaining"] == pytest.approx(data["collectable"] - data["month_advance_total"], abs=0.01)
+    assert data["month_advance_total"] == 2000
+    assert data["collectable"] > 2000
+    assert data["remaining"] == pytest.approx(data["collectable"] - 2000, abs=0.01)
 
 
 def test_advance_history_collectable_is_lower_with_carried_in(migrated_db):
@@ -221,3 +235,14 @@ def test_advance_history_collectable_is_lower_with_carried_in(migrated_db):
     with_carry = _client().get(f"/cashbook/advance-history/{emp['id']}?month=2099-11").get_json()
     assert with_carry["collectable"] < no_carry["collectable"]
     assert with_carry["collectable"] == pytest.approx(no_carry["collectable"] - 950, abs=0.01)
+
+
+# ── front-end contract: /cashbook/new renders the advance-info element ─────
+
+def test_new_page_renders_advance_info_in_row_template(migrated_db):
+    import re
+    html = _client().get("/cashbook/new").get_data(as_text=True)
+    tpl = re.search(r'<template id="row-template">(.*?)</template>', html, re.S)
+    assert tpl, "row template rendered"
+    assert 'advance-emp-select"' in tpl.group(1), "control: template holds the employee picker"
+    assert '<div class="advance-info' in tpl.group(1), "rows added in bulk mode get the panel too"
