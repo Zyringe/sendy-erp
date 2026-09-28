@@ -10,6 +10,7 @@ fields still recompute, WHT is re-derived from employee_wht_history on purpose.
 """
 import hr
 
+from tests.test_bp_hr_routes import admin_client  # noqa: F401  (fixture)
 from tests.test_hr_payroll import _add_leave, _item, _mk_employee
 
 MONTH = '2026-10'
@@ -151,3 +152,40 @@ def test_new_hire_gets_defaults_while_others_keep_edits(tmp_db_conn_hr_clean):
     assert n['other_deductions_note'] is None
     assert n['diligence_forfeited'] == 0
     assert _item(c, run['id'], old)['bonus'] == 500.0
+
+
+KEPT_FLASH = 'คงยอดแก้มือไว้'
+
+
+def _regen_via_route(client):
+    resp = client.post('/hr/payroll/generate',
+                       data={'year_month': MONTH, 'company_id': '1'},
+                       follow_redirects=True)
+    assert resp.status_code == 200
+    return resp.get_data(as_text=True)
+
+
+def test_route_flashes_how_many_rows_kept_edits(tmp_db_conn_hr_clean,
+                                                 admin_client):
+    c = tmp_db_conn_hr_clean
+    eid = _mk_employee(c, 'T660_R', 'route kept', '2026-01-01',
+                       monthly_salary=13000.0)
+    run = _gen(c)
+    hr.update_payroll_item(_item(c, run['id'], eid)['id'],
+                           other_additions=433.33,
+                           other_additions_note='อนุโลม', conn=c)
+
+    html = _regen_via_route(admin_client)
+    assert 'สร้าง/อัปเดต payroll run' in html
+    assert f'{KEPT_FLASH} 1 แถว' in html
+
+
+def test_route_does_not_flash_kept_when_nothing_was_edited(
+        tmp_db_conn_hr_clean, admin_client):
+    c = tmp_db_conn_hr_clean
+    _mk_employee(c, 'T660_S', 'route plain', '2026-01-01')
+    _gen(c)
+
+    html = _regen_via_route(admin_client)
+    assert 'สร้าง/อัปเดต payroll run' in html
+    assert KEPT_FLASH not in html
