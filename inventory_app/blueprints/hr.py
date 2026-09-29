@@ -463,6 +463,23 @@ def leave_reject(rid: int):
     return redirect(url_for("hr.leave_list"))
 
 
+@bp_hr.route("/leave/<int:rid>/waive", methods=["POST"])
+def leave_waive(rid: int):
+    """อนุโลม on/off for one approved request (hr.set_pay_waiver)."""
+    on = request.form.get("on") == "1"
+    try:
+        draft_months = hr_mod.set_pay_waiver(rid, on, actor=session.get("username"))
+    except ValueError as e:
+        flash(str(e), "warning")
+        return redirect(url_for("hr.leave_list"))
+    msg = "อนุโลมวันลานี้แล้ว (ไม่หักเงินเดือน)" if on else "ยกเลิกอนุโลมแล้ว"
+    if draft_months:
+        msg += (f" · รอบเงินเดือน {', '.join(draft_months)} ยังเป็น draft — "
+                f"มีผลเมื่อกด \"สร้างรอบใหม่\" (regenerate)")
+    flash(msg, "success")
+    return redirect(url_for("hr.leave_list"))
+
+
 @bp_hr.route("/leave/<int:id>/delete", methods=["POST"])
 def leave_delete(id: int):
     try:

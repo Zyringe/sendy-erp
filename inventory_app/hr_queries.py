@@ -674,12 +674,23 @@ def update_leave_request(req_id: int, data: dict,
             # applies. Raised BEFORE the UPDATE, so a rejected edit leaves the
             # row exactly as it was.
             valid = validate_leave_payload(data)
+            # อนุโลม (pay_waived) was granted for THIS who/what/when. Changing
+            # any of them clears it, in the same statement: SET expressions
+            # read the row as it was before this UPDATE. The audit trigger
+            # (mig 196) records the flag's change alongside the edit.
             c.execute(
                 """UPDATE leave_requests SET
+                     pay_waived = CASE
+                       WHEN employee_id IS NOT ? OR leave_type_id IS NOT ?
+                         OR start_date IS NOT ? OR end_date IS NOT ?
+                         OR days IS NOT ?
+                       THEN 0 ELSE pay_waived END,
                      employee_id=?, leave_type_id=?, start_date=?, end_date=?,
                      days=?, reason=?, has_medical_cert=?, status=?
                    WHERE id=?""",
                 (
+                    int(data["employee_id"]), int(data["leave_type_id"]),
+                    valid["start_date"], valid["end_date"], valid["days"],
                     data["employee_id"], data["leave_type_id"],
                     valid["start_date"], valid["end_date"], valid["days"],
                     data.get("reason"),

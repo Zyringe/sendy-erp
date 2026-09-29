@@ -591,6 +591,55 @@ def _waiver_note(code: str, start: date, days: float) -> str:
             f"ไม่หัก {days:g} วัน")
 
 
+def set_pay_waiver(req_id: int, on: bool, actor: str,
+                   conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None):
+    """Mark (or unmark) one APPROVED leave request อนุโลม: payroll stops
+    deducting salary for its unpaid days. Returns the touched months that
+    have a DRAFT run for the employee's company — those change only on the
+    next regenerate, and the caller says so.
+
+    Read, check, write and audit are one BEGIN IMMEDIATE on one connection,
+    so a finalize or an approval change cannot land between the check and the
+    write. Refuses (ValueError, nothing written) unless the request is
+    approved, and when any month it touches (`_split_by_month`) already has a
+    finalized run for the employee's company: that payslip is issued.
+    """
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        req = c.execute(
+            """SELECT lr.status, lr.start_date, lr.end_date, lr.days,
+                      lr.pay_waived, e.company_id
+                 FROM leave_requests lr
+                 JOIN employees e ON e.id = lr.employee_id
+                WHERE lr.id = ?""",
+            (req_id,),
+        ).fetchone()
+        if req is None:
+            raise ValueError("ไม่พบคำขอลานี้")
+        if req["status"] != "approved":
+            raise ValueError("อนุโลมได้เฉพาะคำขอลาที่อนุมัติแล้ว")
+        months = [ym for ym, _ in _split_by_month(
+            _to_date(req["start_date"]), _to_date(req["end_date"]),
+            float(req["days"] or 0))]
+        closed = _runs_with_status(c, req["company_id"], months, "finalized")
+        if closed:
+            raise ValueError(
+                f"เดือนนี้ปิดรอบแล้ว ต้อง reopen ก่อน ({', '.join(closed)})")
+        new = 1 if on else 0
+        if req["pay_waived"] != new:
+            c.execute("UPDATE leave_requests SET pay_waived = ? WHERE id = ?",
+                      (new, req_id))
+            c.execute(
+                """INSERT INTO audit_log
+                     (table_name, row_id, action, changed_fields, user)
+                   VALUES ('leave_requests', ?, 'UPDATE', ?, ?)""",
+                (req_id,
+                 json.dumps({"pay_waived": [req["pay_waived"], new]}),
+                 actor),
+            )
+        return _runs_with_status(c, req["company_id"], months, "draft")
+
+
 def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
                          year_month: str, period_start: date,
                          period_end: date):
@@ -1171,6 +1220,22 @@ def collectable_this_month(c: sqlite3.Connection, employee_id: int,
     }
 
 
+def _runs_with_status(c: sqlite3.Connection, company_id, months, status: str):
+    """The subset of `months` (sorted) that has a payroll run of `company_id`
+    in `status`. One lookup shared by the advance cap and the leave waiver, so
+    "is this month closed" has a single answer."""
+    months = sorted(set(months))
+    if not months:
+        return []
+    marks = ",".join("?" * len(months))
+    return [r["year_month"] for r in c.execute(
+        f"""SELECT DISTINCT year_month FROM payroll_runs
+             WHERE company_id = ? AND status = ? AND year_month IN ({marks})
+             ORDER BY year_month""",
+        [company_id, status, *months],
+    ).fetchall()]
+
+
 class AdvanceCapWarning(Exception):
     """A salary-advance entry would exceed what year_month can actually pay
     this employee, OR lands in a month whose payroll run is already
@@ -1213,12 +1278,8 @@ def check_advance_cap(c: sqlite3.Connection, employee_id: int, target_month: str
     emp_row = c.execute(
         "SELECT company_id FROM employees WHERE id = ?", (employee_id,)
     ).fetchone()
-    target_finalized = c.execute(
-        """SELECT 1 FROM payroll_runs
-            WHERE year_month = ? AND company_id = ? AND status = 'finalized'
-            LIMIT 1""",
-        (target_month, emp_row["company_id"]),
-    ).fetchone() is not None
+    target_finalized = bool(
+        _runs_with_status(c, emp_row["company_id"], [target_month], "finalized"))
 
     over_cap = projected > status["collectable"]
     if not over_cap and not target_finalized:
