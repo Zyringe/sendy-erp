@@ -220,6 +220,11 @@ SCRIPT_WRITERS = {
         {('UPDATE', '%s'), ('UPDATE', 'product_cost_ledger'), ('UPDATE', 'products')},
         'dated, but rebase() is an engine another script loads: main() opens '
         'database.script_connection with --operator/--reason', 'script'),
+    'scripts/2026_09_29_rebase_gloves_650.py': ({('UPDATE', '%s')},
+        'dated + ticketed #650 (\u0e16\u0e38\u0e07\u0e21\u0e37\u0e2d onto a \u0e04\u0e39\u0e48 base), run on prod 2026-09-29; the only '
+        'dynamic write resets synced_to_stock on sales/purchase before the replay, and the '
+        'cost itself is rebuilt by models.wacc.recalculate_product_wacc on '
+        'database.script_connection with --operator/--reason, never transformed in place', 'script'),
     'scripts/2026_09_21_fix_rr6700253_unit_1658.py': ({('UPDATE', '%s')},
         'dated #632 fix for pid 1658: resets synced_to_stock on sales/purchase, then replays '
         'and recalculates on database.script_connection', 'script'),
@@ -276,7 +281,7 @@ def test_every_entry_carries_a_reason():
 
 def test_scripts_recorded_as_signed_really_open_a_script_connection():
     signed = [n for n, e in SCRIPT_WRITERS.items() if e[2] == 'script']
-    assert len(signed) == 3
+    assert len(signed) == 4
     for name in signed:
         with open(os.path.join(REPO, name), encoding='utf-8') as f:
             body = normalise(f.read())
@@ -296,6 +301,13 @@ ENGINE_CALLERS = {
     'scripts/2026_09_20_rebase_gross_603.py': ('script',
         'LIVE until 1187/1188 are rebased (Put, 2026-09-19); drives the gross_to_piece '
         'engine on database.script_connection with --operator/--reason'),
+    'scripts/2026_09_28_rebase_dozen_649.py': ('script',
+        'dated + ticketed #649, run on prod 2026-09-28; drives the gross_to_piece engine '
+        'on database.script_connection with --operator/--reason'),
+    'scripts/2026_09_29_rebase_gloves_650.py': ('script',
+        'dated + ticketed #650, run on prod 2026-09-29 (1364/1365) with 1368 to follow; '
+        'calls recalculate_product_wacc to REBUILD the cost ledger from the corrected '
+        'bills, on database.script_connection with --operator/--reason'),
     'scripts/merge_product.py': ('script',
         'LIVE tool: recalculates WACC for both products on its script_connection'),
     'scripts/remap_bsn_code.py': ('script',

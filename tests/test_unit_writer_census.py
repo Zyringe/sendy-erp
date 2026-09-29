@@ -1004,6 +1004,24 @@ ALLOWED = {
     'scripts/2026_09_20_rebase_gross_603.py::main': {
         'products.unit_type': ('exempt', 'Same #603 one-off. It names the product\'s CURRENT base by its true word (GROSS = กุรุส) inside the rebase transaction, so the engine re-denominates กุรุส to the piece unit Put ruled; the piece word itself comes from PLAN, which is Put\'s per-product ruling recorded on issue #603.'),
     },
+    # The three one-off unit rebases of 2026-09-28/29. The first two shipped
+    # with this census already red — nothing declared them, so it has been
+    # failing on main since #662 merged. Declaring all three together is what
+    # puts it back to work; a census left red for a reason nobody is acting on
+    # cannot tell anyone about the next writer.
+    'scripts/2026_09_28_rebase_dozen_649.py::main': {
+        'unit_conversions.bsn_unit': ('exempt', 'One-off, dated + ticketed #649 (831 and 1867-1870 from \u0e42\u0e2b\u0e25 onto an \u0e2d\u0e31\u0e19 base), already run on prod 2026-09-28. The word inserted is the module constant OLD_UNIT = \u0e42\u0e2b\u0e25, giving 831 the \u0e42\u0e2b\u0e25 = 12 row the replay needs; a hardcoded literal, never an Express code.'),
+        'product_price_tiers.qty_label': ('exempt', 'Same #649 one-off. The label is the module constant TIER_LABEL = "1 \u0e42\u0e2b\u0e25"; only the price varies, per product, from PLAN.'),
+    },
+    'scripts/2026_09_29_rebase_gloves_650.py::rebase_one': {
+        'products.unit_type': ('exempt', "One-off, dated + ticketed #650 (\u0e16\u0e38\u0e07\u0e21\u0e37\u0e2d 1364/1365/1368 onto a \u0e04\u0e39\u0e48 base), run on prod 2026-09-29. The word written is the module constant NEW_UNIT = \u0e04\u0e39\u0e48, Put's ruling that a glove's base unit is a pair, not anything read off a bill."),
+        'unit_conversions.bsn_unit': ('exempt', 'Same #650 one-off. Structurally safe too: the write is "UPDATE unit_conversions SET ratio=1.0 WHERE product_id=? AND bsn_unit=?" \u2014 bsn_unit is a WHERE key, only ratio is SET. The tier write is a DELETE keyed on qty_label, likewise never a SET.'),
+        'DYNAMIC-TABLE': ('exempt', 'Same #650 one-off. The %-format dynamic write ("UPDATE %s SET synced_to_stock=0 WHERE product_id=?" % table) only ever sets synced_to_stock, never a unit column.'),
+    },
+    'scripts/2026_09_29_glove_pair_word.py::apply_one': {
+        'unit_conversions.bsn_unit': ('exempt', "One-off, dated 2026-09-29, the companion to #650: eight gloves gain a \u0e04\u0e39\u0e48 = 1 row so the resolver stops raising on the word. The word is the module constant PAIR_UNIT = \u0e04\u0e39\u0e48 and the ratio the literal 1.0 \u2014 Put's ruling that \u0e15\u0e31\u0e27 on these products already denominates a pair. Nothing is read off a bill, and the script refuses any product whose bills are not all in \u0e42\u0e2b\u0e25."),
+        'product_price_tiers.qty_label': ('exempt', 'Same one-off. The single tier it inserts is the module constant NEW_TIER = ("1 \u0e42\u0e2b\u0e25", 77.0), the dozen price the 2026 catalogue prints for 1362, written for that one product only.'),
+    },
     'scripts/apply_platform_overview_mapping.py::create_stub_product': {
         'products.unit_type': ('exempt', 'Own docstring: "DEPRECATED: one-off from 2026-05-17. Kept for audit trail. Do not re-run."'),
     },
