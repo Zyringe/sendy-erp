@@ -148,12 +148,14 @@ def test_toggle_refused_unless_approved(db, status):
     assert _audit_since(db, since, rid) == []
 
 
-def test_toggle_refused_on_a_finalized_month(db):
-    """A request straddling Feb/Mar is refused when EITHER month is closed."""
+@pytest.mark.parametrize('closed_month', ['2026-02', '2026-03'])
+def test_toggle_refused_on_a_finalized_month(db, closed_month):
+    """A request straddling Feb/Mar is refused when EITHER month is closed —
+    the end month too, not only the start month."""
     c = _connect(db)
-    eid = _mk_employee(c, 'WT_FIN')
+    eid = _mk_employee(c, f'WT_FIN_{closed_month}')
     rid = _add_leave(c, eid, start='2026-02-27', end='2026-03-03', days=5)
-    _plant_run(c, '2026-02', 'finalized')
+    _plant_run(c, closed_month, 'finalized')
     c.close()
     since = _max_audit(db)
     with pytest.raises(ValueError, match='เดือนนี้ปิดรอบแล้ว ต้อง reopen ก่อน'):
