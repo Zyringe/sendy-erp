@@ -84,6 +84,28 @@ def test_audit_trigger_records_pay_waived(pre196_conn):
     assert [json.loads(r[0]) for r in rows] == [{"pay_waived": [0, 1]}]
 
 
+MIG_073 = os.path.join(REPO, "data", "migrations", "073_audit_hr_trigger_gaps.sql")
+
+
+def _trigger_073():
+    """The leave_requests UPDATE trigger exactly as mig 073 wrote it — an
+    oracle independent of 196's rollback (the fixture already ran that)."""
+    with open(MIG_073, encoding="utf-8") as f:
+        src = f.read()
+    start = src.index("CREATE TRIGGER audit_leave_requests_update")
+    return src[start:src.index("END;", start) + len("END")]
+
+
+def test_rollback_restores_the_073_trigger_byte_identical(pre196_conn):
+    c = pre196_conn
+    _apply(c, MIG)
+    _apply(c, ROLLBACK)
+    got = c.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='audit_leave_requests_update'").fetchone()[0]
+    assert got == _trigger_073()
+    assert "pay_waived" not in got
+
+
 def test_rollback_restores_schema_byte_identical_and_reruns(pre196_conn):
     c = pre196_conn
     before = _master(c)
