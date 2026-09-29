@@ -6,7 +6,7 @@ That has already happened once (the /accounting v2 double-subtraction of
 returns, 2026-07-21), which is why the rule now is: one definition, imported.
 
 Exclusions, in the order they were introduced:
-  doc_base LIKE 'SR%'   sales returns / credit notes
+  SR documents          sales returns / credit notes (document_kind owns the prefix)
   excludes_revenue      documents invoiced in error — no sale ever happened
                         (migration 142; today: the three วรสวัสดิ์ giveaway
                         invoices). Distinct from bad debt, which WAS a sale
@@ -51,6 +51,9 @@ Python 3.9 — no `X | None` syntax.
 # The COGS base-qty SQL lives in unit_conversion (ADR 0019). Re-exported so
 # the dated rebase scripts and the tests that import it from here keep working.
 from unit_conversion import base_qty_sql, unit_conversion_join, unratioed_line_sql  # noqa: F401
+# Which prefix is a return (SR sales / GR purchase) is document_kind's to say;
+# this module never types it.
+from document_kind import is_return_sql, not_return_sql
 
 # Documents that were invoiced but are not sales. Joined on the BASE document
 # number: sales_transactions carries a per-line '-N' suffix in doc_no, while
@@ -76,9 +79,10 @@ def revenue_filter(alias=''):
     presented as revenue."""
     p = '{}.'.format(alias) if alias else ''
     return ("{p}doc_base IS NOT NULL "
-            "AND {p}doc_base NOT LIKE 'SR%' "
+            "AND {not_return} "
             "AND {not_a_sale}"
-            .format(p=p, not_a_sale=not_a_sale_clause(alias)))
+            .format(p=p, not_return=not_return_sql(alias, 'sales'),
+                    not_a_sale=not_a_sale_clause(alias)))
 
 
 def return_filter(alias=''):
@@ -92,9 +96,10 @@ def return_filter(alias=''):
     one signed expression over the un-split population is enough."""
     p = '{}.'.format(alias) if alias else ''
     return ("{p}doc_base IS NOT NULL "
-            "AND {p}doc_base LIKE 'SR%' "
+            "AND {is_return} "
             "AND {not_a_sale}"
-            .format(p=p, not_a_sale=not_a_sale_clause(alias)))
+            .format(p=p, is_return=is_return_sql(alias, 'sales'),
+                    not_a_sale=not_a_sale_clause(alias)))
 
 
 def purchase_net_sql(alias=''):
@@ -118,8 +123,8 @@ def purchase_net_sql(alias=''):
     not_a_sale_clause().
     """
     p = '{}.'.format(alias) if alias else ''
-    return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}net ELSE {p}net END"
-            .format(p=p))
+    return ("CASE WHEN {ret} THEN -{p}net ELSE {p}net END"
+            .format(p=p, ret=is_return_sql(alias, 'sales')))
 
 
 # ── ยอดขาย on the trade screens, NET of returns (#627) ───────────────────────
@@ -149,8 +154,8 @@ def sales_qty_sql(alias=''):
     """Same as sales_net_sql() but for qty: a returned quantity nets OUT of
     what was sold (SR qty is stored positive too)."""
     p = '{}.'.format(alias) if alias else ''
-    return ("CASE WHEN {p}doc_base LIKE 'SR%' THEN -{p}qty ELSE {p}qty END"
-            .format(p=p))
+    return ("CASE WHEN {ret} THEN -{p}qty ELSE {p}qty END"
+            .format(p=p, ret=is_return_sql(alias, 'sales')))
 
 
 # ── purchase_transactions: how much WE bought from a supplier (#591) ─────────
@@ -171,14 +176,13 @@ def not_a_purchase_return_clause(alias=''):
     window in `blueprints/bsn.py::mapping`. `alias` as for not_a_sale_clause().
 
     NULL-safe on purpose: `doc_base` is a nullable column, and a bare
-    `doc_base NOT LIKE 'GR%'` in a WHERE clause evaluates to NULL — not TRUE —
+    a bare `NOT LIKE` on the GR prefix in a WHERE clause evaluates to NULL — not TRUE —
     for a NULL doc_base, which would silently drop a real purchase with
     unknown doc_base from the "latest purchase" window instead of just
     failing to recognize it as GR. (supplier_net_sql()/supplier_qty_sql()'s
     CASE below does not need this: its ELSE branch already falls through
     correctly on NULL.)"""
-    p = '{}.'.format(alias) if alias else ''
-    return "COALESCE({p}doc_base, '') NOT LIKE 'GR%'".format(p=p)
+    return not_return_sql(alias, 'purchase', null_safe=True)
 
 
 def supplier_net_sql(alias=''):
@@ -187,16 +191,16 @@ def supplier_net_sql(alias=''):
     yourself, same contract as purchase_net_sql(). `alias` as for
     not_a_sale_clause()."""
     p = '{}.'.format(alias) if alias else ''
-    return ("CASE WHEN {p}doc_base LIKE 'GR%' THEN -{p}net ELSE {p}net END"
-            .format(p=p))
+    return ("CASE WHEN {ret} THEN -{p}net ELSE {p}net END"
+            .format(p=p, ret=is_return_sql(alias, 'purchase')))
 
 
 def supplier_qty_sql(alias=''):
     """Same as supplier_net_sql() but for qty — a GR's returned quantity must
     also net OUT of a supplier's purchased quantity, not add to it."""
     p = '{}.'.format(alias) if alias else ''
-    return ("CASE WHEN {p}doc_base LIKE 'GR%' THEN -{p}qty ELSE {p}qty END"
-            .format(p=p))
+    return ("CASE WHEN {ret} THEN -{p}qty ELSE {p}qty END"
+            .format(p=p, ret=is_return_sql(alias, 'purchase')))
 
 
 # ── COGS: WHICH cost, as well as how much of it ──────────────────────────────
