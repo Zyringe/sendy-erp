@@ -22,6 +22,7 @@ import re
 import pytest
 
 import sales_filters
+from tests import _census
 
 
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -45,21 +46,15 @@ EXEMPT = {
 def _cogs_readers():
     """Files that convert a bill qty to base units, i.e. cost sales lines."""
     hits = []
-    for root, _dirs, files in os.walk(APP):
-        for fn in files:
-            if not fn.endswith('.py'):
-                continue
-            path = os.path.join(root, fn)
-            rel = os.path.relpath(path, APP)
-            # sales_filters owns cogs_unit_cost_sql; unit_conversion DEFINES
-            # base_qty_sql (and sales_filters re-exports it). Neither reads a
-            # cost, so neither is a COGS reader.
-            if rel in ('sales_filters.py', 'unit_conversion.py'):
-                continue
-            with open(path, encoding='utf-8') as fh:
-                src = fh.read()
-            if 'base_qty_sql' in src:
-                hits.append((rel, src))
+    for rel, path in _census.py_files():
+        # sales_filters owns cogs_unit_cost_sql; unit_conversion DEFINES
+        # base_qty_sql (and sales_filters re-exports it). Neither reads a
+        # cost, so neither is a COGS reader.
+        if rel in ('sales_filters.py', 'unit_conversion.py'):
+            continue
+        src = _census.read(path)
+        if 'base_qty_sql' in src:
+            hits.append((rel, src))
     return hits
 
 

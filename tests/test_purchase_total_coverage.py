@@ -22,11 +22,12 @@ one string, the SUM in another), files outside inventory_app/ (scripts/), and
 any figure computed in Python from fetched rows. The cross-surface test in
 test_494_purchase_total.py is the behavioural half; this is the census.
 """
-import ast
 import os
 import re
 
 import pytest
+
+from tests import _census
 
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    'inventory_app')
@@ -112,72 +113,17 @@ MUST_USE_HELPER = {
 }
 
 
-def _render(node):
-    """Source text of a string expression, f-string holes kept as {expr}."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return ''.join(v.value if isinstance(v, ast.Constant)
-                       else '{' + ast.unparse(v.value) + '}' for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _render(node.left), _render(node.right)
-        if left is not None and right is not None:
-            return left + right
-    return None
-
-
-def _queries(src):
-    """(function qualname, text) for every string VALUE in `src`. A docstring
-    or any other bare string statement is prose, never a query."""
-    out = []
-
-    def visit(node, scope):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, scope + [child.name])
-            elif isinstance(child, ast.Expr) and _render(child.value) is not None:
-                continue
-            elif _render(child) is not None:
-                out.append(('.'.join(scope) or '<module>', _render(child)))
-            else:
-                visit(child, scope)
-
-    visit(ast.parse(src), [])
-    return out
+def _customer_scoped(func, sql):
+    return bool(_CUSTOMER_KEY.search(sql) or 'customer' in func.lower())
 
 
 def _per_function(src, pattern):
     """{function: hits of `pattern` in its per-customer sales_transactions queries}"""
-    counts = {}
-    for func, sql in _queries(src):
-        if 'sales_transactions' not in sql:
-            continue
-        if not (_CUSTOMER_KEY.search(sql) or 'customer' in func.lower()):
-            continue
-        n = len(pattern.findall(sql))
-        if n:
-            counts[func] = counts.get(func, 0) + n
-    return counts
-
-
-def _py_files():
-    for root, _dirs, names in os.walk(APP):
-        if any(part in root for part in ('__pycache__', 'instance', 'static')):
-            continue
-        for n in names:
-            if n.endswith('.py'):
-                path = os.path.join(root, n)
-                yield os.path.relpath(path, APP).replace(os.sep, '/'), path
+    return _census.per_function(src, pattern, 'sales_transactions', _customer_scoped)
 
 
 def _app_counts(pattern):
-    out = {}
-    for rel, path in _py_files():
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
-        for func, n in _per_function(src, pattern).items():
-            out[f'{rel}::{func}'] = n
-    return out
+    return _census.app_counts(pattern, 'sales_transactions', _customer_scoped)
 
 
 # ── The census ───────────────────────────────────────────────────────────────
