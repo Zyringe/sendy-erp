@@ -17,6 +17,7 @@ import sys
 from collections import Counter
 
 import bsn_units
+import marketplace_match
 import sales_filters
 
 # parse_sku_names.py is in sendy_erp/scripts/, sibling of inventory_app/
@@ -93,6 +94,73 @@ def _fuzzy_match(bsn_name: str, products: list) -> list:
 
     scored.sort(key=lambda r: -r['score'])
     return scored[:TOP_N]
+
+
+def _marketplace_evidence(conn, bsn_code: str) -> list:
+    """Products a marketplace order already says this code was sold as (#674).
+
+    A sale billed to a marketplace customer code is linked by
+    `marketplace_order_invoice` to the platform order, whose items carry
+    `internal_product_id`. That mapping was made against the listing, so it is
+    stronger evidence than any name match.
+
+    An IV can hold several lines and its order several items. An item counts
+    only when it is the ONE item left after removing the products the IV's
+    other, already-mapped lines account for; anything more ambiguous is
+    dropped rather than guessed.
+    """
+    codes = list(marketplace_match.MARKETPLACE_CODES)
+    rows = conn.execute(
+        f"""SELECT st.customer_code, moi.order_sn, mi.internal_product_id AS pid
+              FROM sales_transactions st
+              JOIN marketplace_order_invoice moi ON moi.doc_base = st.doc_base
+              JOIN marketplace_order_items mi
+                ON mi.platform = moi.platform AND mi.order_sn = moi.order_sn
+             WHERE st.bsn_code = ?
+               AND st.customer_code IN ({','.join('?' * len(codes))})
+               AND mi.internal_product_id IS NOT NULL
+               AND mi.internal_product_id NOT IN (
+                     SELECT o.product_id FROM sales_transactions o
+                      WHERE o.doc_base = st.doc_base AND o.bsn_code <> st.bsn_code
+                        AND o.product_id IS NOT NULL)""",
+        (bsn_code, *codes),
+    ).fetchall()
+
+    per_order = {}
+    for r in rows:
+        per_order.setdefault((r['order_sn'], r['customer_code']), set()).add(r['pid'])
+    per_product = {}
+    for (order_sn, customer_code), pids in sorted(per_order.items()):
+        if len(pids) == 1:
+            per_product.setdefault(pids.pop(), []).append(
+                (marketplace_match.MARKETPLACE_CODES[customer_code], order_sn))
+    if not per_product:
+        return []
+
+    out = []
+    for p in conn.execute(
+        f"""SELECT p.id, p.product_name, p.unit_type,
+                   COALESCE(s.quantity, 0) AS stock
+              FROM products p
+              LEFT JOIN stock_levels s ON s.product_id = p.id
+             WHERE p.is_active = 1
+               AND p.id IN ({','.join('?' * len(per_product))})""",
+        list(per_product),
+    ):
+        orders = per_product[p['id']]
+        channel, order_sn = orders[0]
+        more = f' (+{len(orders) - 1} ออเดอร์)' if len(orders) > 1 else ''
+        out.append({
+            'product_id':   p['id'],
+            'product_name': p['product_name'],
+            'unit_type':    p['unit_type'],
+            'stock':        p['stock'],
+            'score':        None,
+            'is_likely':    True,
+            'evidence':     f'{channel} order {order_sn}{more} ขายเป็นตัวนี้',
+        })
+    out.sort(key=lambda m: -len(per_product[m['product_id']]))
+    return out
 
 
 def _latest_purchase(conn, bsn_code: str) -> dict:
@@ -286,7 +354,8 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
       {
         'bsn_code': ...,
         'bsn_name': ...,
-        'matches': [ { product_id, product_name, score, is_likely }, ... ],
+        'matches': [ { product_id, product_name, score, is_likely,
+                       evidence? }, ... ],   # marketplace-evidenced first
         'parsed':  { category, series, brand, model, size, color_th,
                      color_code, packaging, condition, pack_variant },
         'proposed_name': str,
@@ -307,7 +376,10 @@ def suggest_for_bsn(conn, bsn_code: str, bsn_name: str) -> dict:
           LEFT JOIN stock_levels s ON s.product_id = p.id
          WHERE p.is_active = 1
     """).fetchall()
-    matches = _fuzzy_match(bsn_name, products)
+    evidence = _marketplace_evidence(conn, bsn_code)
+    evidenced = {m['product_id'] for m in evidence}
+    matches = evidence + [m for m in _fuzzy_match(bsn_name, products)
+                          if m['product_id'] not in evidenced]
 
     # Parse + propose name
     parsed = _parse_bsn_name(bsn_name, ctx)

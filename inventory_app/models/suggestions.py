@@ -28,11 +28,17 @@ class DuplicateSkuError(Exception):
     """Raised by `create_now` when the proposed sku_code already belongs to
     another product (active or inactive — sku_code is unique regardless of
     is_active). `duplicate_of` is a dict of the colliding row for the
-    caller/client to show and confirm past."""
-    def __init__(self, duplicate_of: dict):
+    caller/client to show and confirm past.
+
+    `kind` is 'sku_code' for that exact collision, or 'lookalike' (#674) when
+    ACTIVE products already have the same category_id + size + color_code
+    under a different sku_code; `candidates` lists every one of them."""
+    def __init__(self, duplicate_of: dict, kind: str = 'sku_code', candidates=None):
         self.duplicate_of = duplicate_of
+        self.kind = kind
+        self.candidates = candidates or [duplicate_of]
         super().__init__(
-            f"sku_code collision with product #{duplicate_of['id']}"
+            f"{kind} collision with product #{duplicate_of['id']}"
         )
 
 
@@ -616,6 +622,20 @@ def create_now(payload: dict, user_id: int, confirm_duplicate: bool = False) -> 
                 ).fetchone()
                 if dup:
                     raise DuplicateSkuError(dict(dup))
+            # #674: FAS-SD-4-6-NAT-SC passed the exact check above while the
+            # same rivet sat on FAS-RVT-SD-DOME-4-6-NAT. sub_category is left
+            # out on purpose: that pair differed there (ตะปูยิงรีเวท/ลูกรีเวท).
+            size = (payload.get('size') or '').strip()
+            if payload.get('category_id') and size and payload.get('color_code'):
+                lookalikes = [dict(r) for r in conn.execute(
+                    "SELECT id, product_name, sku_code, is_active FROM products "
+                    "WHERE is_active = 1 AND category_id = ? AND size = ? "
+                    "AND color_code = ? ORDER BY id",
+                    (payload['category_id'], size, payload['color_code']),
+                )]
+                if lookalikes:
+                    raise DuplicateSkuError(lookalikes[0], kind='lookalike',
+                                            candidates=lookalikes)
         finally:
             conn.close()
 

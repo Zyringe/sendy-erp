@@ -980,15 +980,17 @@ function populateSuggestModal(data) {
   if (data.matches && data.matches.length) {
     matchesEl.innerHTML = data.matches.map(m => {
       const cls = m.is_likely ? 'likely' : '';
-      const star = m.is_likely ? '⭐ ' : '';
-      const pct = (m.score * 100).toFixed(0);
+      const star = m.evidence ? '🛒 ' : (m.is_likely ? '⭐ ' : '');
+      const tail = m.evidence
+        ? `<span class="badge bg-warning text-dark" title="หลักฐานจากออเดอร์ marketplace">${m.evidence}</span>`
+        : `<span class="text-subtle small">${(m.score * 100).toFixed(0)}%</span>`;
       const stockBadgeCls = m.stock > 0 ? 'bg-success' : 'bg-secondary';
       return `<div class="match-row ${cls}" data-pid="${m.product_id}" data-unit="${m.unit_type}" onclick="pickMatch(this)">
         ${star}<span class="ac-sku">${m.product_id}</span>
         <span class="flex-fill">${m.product_name}</span>
         <span class="badge bg-info text-dark" title="หน่วยของสินค้า">⚖️ ${m.unit_type}</span>
         <span class="badge ${stockBadgeCls}" title="สต็อกปัจจุบัน">📦 ${m.stock}</span>
-        <span class="text-subtle small">${pct}%</span>
+        ${tail}
         <button type="button" class="btn btn-link btn-sm p-0" title="คัดลอกเป็นแม่แบบใน (B)"
                 onclick="event.stopPropagation(); cloneFromProduct(${m.product_id});">📋</button>
       </div>`;
@@ -1503,8 +1505,12 @@ function confirmCreateNow(confirmDuplicate) {
     .then(({ status, body }) => {
       if (status === 409 && body.duplicate_of) {
         const dup = body.duplicate_of;
-        const msg = 'sku_code ซ้ำกับสินค้า #' + dup.id + ' "' + dup.product_name + '" (' +
-          dup.sku_code + (dup.is_active ? '' : ' — ปิดใช้งานแล้ว') + ') — สร้างต่อไปเลยไหม?';
+        const msg = body.duplicate_kind === 'lookalike'
+          ? 'มีสินค้าหมวด/ขนาด/สีเดียวกันอยู่แล้ว อาจเป็นตัวเดียวกัน:\n' +
+            body.candidates.map(c => '#' + c.id + ' ' + c.product_name).join('\n') +
+            '\n\nถ้าใช่ ให้กดยกเลิกแล้วผูกกับตัวนั้นแทน. สร้างใหม่ต่อไปเลยไหม?'
+          : 'sku_code ซ้ำกับสินค้า #' + dup.id + ' "' + dup.product_name + '" (' +
+            dup.sku_code + (dup.is_active ? '' : ' — ปิดใช้งานแล้ว') + ') — สร้างต่อไปเลยไหม?';
         if (confirm(msg)) confirmCreateNow(true);
         return;
       }
