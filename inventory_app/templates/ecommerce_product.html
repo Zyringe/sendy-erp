@@ -82,7 +82,7 @@
             ไฟล์ {{ blk.freshness.snapshot_date | thaidate }}
             {% if blk.freshness.sales_through %} · บิลถึง {{ blk.freshness.sales_through | thaidate }}{% endif %}
             {% if blk.sold_since %} · ขายไปแล้ว {{ blk.sold_since | fmt_qty }} หลังวันไฟล์
-              {%- if blk.sold_unratioed %} <span class="text-danger" title="หน่วยบนบิลยังไม่มีอัตราแปลงใน unit_conversions — คิดเป็น 1 ไปก่อน จำนวนที่ขายจึงอาจต่ำกว่าจริง">({{ blk.sold_unratioed }} บรรทัดไม่มีอัตราแปลง นับเป็น 1)</span>{% endif %}
+              {%- if blk.sold_unratioed %} <span class="text-danger" title="หน่วยบนบิลยังไม่ได้ตั้งอัตราแปลงที่หน้าแปลงหน่วย จึงนับเป็น 1 ไปก่อน จำนวนที่ขายอาจต่ำกว่าจริง">({{ blk.sold_unratioed }} บรรทัดไม่มีอัตราแปลง นับเป็น 1)</span>{% endif %}
             {%- endif %}
           {% else %}
             ยังไม่มีข้อมูล

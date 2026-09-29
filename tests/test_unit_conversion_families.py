@@ -76,6 +76,14 @@ def test_word_family(conn):
     assert {u: _word(conn, pid, u) for u in UNITS} == WORD
 
 
+def test_word_cache_is_per_product(conn):
+    a = _product(conn, 'word cache a')
+    b = _product(conn, 'word cache b')
+    conn.execute("UPDATE unit_conversions SET ratio = 10 WHERE product_id = ? AND bsn_unit = 'โหล'", (b,))
+    cache = {}
+    assert [unit_conversion.word_ratio(conn, pid, 'ตัว', 'โหล', cache) for pid in (a, b)] == [12.0, 10.0]
+
+
 # ── conversion: the row lookup resolve/bundle build on (no short-circuit) ───
 
 def _conversion(conn, pid, unit):
@@ -217,7 +225,8 @@ def _load_cli():
     return mod
 
 
-# cash per piece from one ฿120 bill; ratio 0 divides by zero today.
+# cash per piece from one ฿120 bill. Ratio 0 divides by zero: pre-existing, and
+# both ratio writers refuse ratio <= 0, so only raw SQL can store one.
 CLI = {None: None, '': None, 'ตัว': 120.0, ' ตัว': None, 'โหล': 10.0, 'หล': None,
        'กุรุส': None, 'กร': 0.83, 'กล่อง': None}
 

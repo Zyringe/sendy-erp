@@ -109,8 +109,8 @@ def exact_ratio(conn, product_id, unit_type, unit) -> Optional[float]:
 
 def exact_ratios(conn, product_ids) -> dict:
     """{(product_id, bsn_unit): ratio} for every stored row of `product_ids`,
-    in one query, in the table's own order (bsn_unit within a product). No
-    base-unit entry is added and nothing is filtered: the call card drops a
+    in one query. Row order is whatever SQLite returns (no ORDER BY, as the
+    readers it replaced had none). No base-unit entry is added and nothing is filtered: the call card drops a
     ratio of 0, the VAT-sub unit selector lists it."""
     ph = ",".join("?" * len(product_ids))
     rows = conn.execute(
