@@ -32,6 +32,7 @@ import re
 import sqlite3
 
 import book_registry
+import unit_conversion
 from database import get_connection
 from .products import get_product
 
@@ -845,9 +846,8 @@ def get_unit_options(product_id, main_conn):
     the base unit_type (ratio 1.0) plus every unit_conversions row."""
     x = get_product(product_id, conn=main_conn)
     opts = [{'unit': x['unit_type'], 'ratio': 1.0, 'is_base': True}]
-    for r in main_conn.execute(
-            "SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id = ?", (product_id,)):
-        if r['bsn_unit'] == x['unit_type']:
+    for (_pid, unit), ratio in unit_conversion.exact_ratios(main_conn, [product_id]).items():
+        if unit == x['unit_type']:
             continue
-        opts.append({'unit': r['bsn_unit'], 'ratio': float(r['ratio']), 'is_base': False})
+        opts.append({'unit': unit, 'ratio': ratio, 'is_base': False})
     return opts

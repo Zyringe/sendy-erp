@@ -16,6 +16,7 @@ import calendar as _cal
 from datetime import date
 
 import sales_filters
+import unit_conversion
 from database import get_connection
 
 # Cashbook opex exclusions — mirrors models/financial_health.py's
@@ -153,9 +154,9 @@ def _cogs_basis_months(conn, date_from, date_to):
          GROUP BY ym
          ORDER BY ym
     """.format(cut=sales_filters.COGS_HISTORICAL_FROM,
-               base_qty=sales_filters.base_qty_sql(),
+               base_qty=unit_conversion.base_qty_sql(),
                unit_cost=sales_filters.cogs_unit_cost_sql(),
-               uc_join=sales_filters.unit_conversion_join()),
+               uc_join=unit_conversion.unit_conversion_join()),
        (date_from, date_to)).fetchall()
 
     months = []
@@ -199,7 +200,7 @@ def get_accounting_summary(date_from=None, date_to=None):
     Revenue  = Σnet from sales_transactions, SR (return) rows netted out —
                pre-VAT, post-doc-discount.
     COGS     = SUM(qty-in-BASE-units * the cost that stood on the sale date),
-               with the bill's unit converted by sales_filters.base_qty_sql()
+               with the bill's unit converted by unit_conversion.base_qty_sql()
                first (a โหล line costs 12 pieces). The per-line cost is
                sales_filters.cogs_unit_cost_sql(): ทุน ณ วันขาย from
                COGS_HISTORICAL_FROM, ทุนเฉลี่ยวันนี้ before it, so a closed
@@ -293,11 +294,11 @@ def get_accounting_summary(date_from=None, date_to=None):
            -- HS cash sales COUNTED here too, same reason — the goods really
            -- left the warehouse, and HS posts its COGS to the same 51-01 GL
            -- account IV uses (#514).
-    """.format(base_qty=sales_filters.base_qty_sql(),
+    """.format(base_qty=unit_conversion.base_qty_sql(),
                unit_cost=sales_filters.cogs_unit_cost_sql(),
                no_ledger=sales_filters.no_ledger_line_sql(),
-               unratioed=sales_filters.unratioed_line_sql(),
-               uc_join=sales_filters.unit_conversion_join()),
+               unratioed=unit_conversion.unratioed_line_sql(),
+               uc_join=unit_conversion.unit_conversion_join()),
        (date_from, date_to)).fetchone()
     cogs = float(cogs_row['cogs'])
     no_cost_lines = cogs_row['no_cost_lines'] or 0
@@ -420,7 +421,7 @@ def get_accounting_summary(date_from=None, date_to=None):
           b.is_own_brand,
           COALESCE(b.sort_order, 9999)                    AS sort_ord,
           ROUND(SUM(st.net), 2)                           AS sales_net,
-          ROUND(SUM(""" + sales_filters.base_qty_sql() + """
+          ROUND(SUM(""" + unit_conversion.base_qty_sql() + """
                     * COALESCE(""" + sales_filters.cogs_unit_cost_sql() + """, 0)), 2)
                                                           AS cogs_approx,
           COUNT(st.id)                                    AS line_count,
@@ -430,7 +431,7 @@ def get_accounting_summary(date_from=None, date_to=None):
         FROM sales_transactions st
         LEFT JOIN products  p ON p.id = st.product_id
         LEFT JOIN brands    b ON b.id = p.brand_id
-        """ + sales_filters.unit_conversion_join() + """
+        """ + unit_conversion.unit_conversion_join() + """
         WHERE st.date_iso >= ? AND st.date_iso <= ?
           AND st.doc_no NOT LIKE 'SR%'
           AND """ + sales_filters.not_a_sale_clause('st') + """

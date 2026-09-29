@@ -682,6 +682,63 @@ def test_detail_sold_since_whole_float_collapses_to_int(empty_db_conn):
     assert d['platforms']['shopee']['sold_since'] == 12
     assert isinstance(d['platforms']['shopee']['sold_since'], int)
 
+# ── Q14: a line with no unit ratio counts at 1 and is disclosed ──────────────
+
+def test_detail_discloses_lines_counted_without_a_ratio(empty_db_conn):
+    c = empty_db_conn
+    _product(c, 1, 'A')
+    _ps(c, 'shopee', 1, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _uc(c, 1, 'โหล', 12.0)
+    _sale(c, 1, '2026-07-05', 1, unit='โหล', doc_no='IV1')
+    _sale(c, 1, '2026-07-06', 3, unit='กล่อง', doc_no='IV2')
+    _sale(c, 1, '2026-07-07', 2, unit='ตัว', doc_no='IV3')
+    c.commit()
+    shopee = models.get_product_marketplace_detail(1)['platforms']['shopee']
+    assert (shopee['sold_since'], shopee['sold_unratioed']) == (17, 1)
+
+
+def test_base_unit_line_is_not_rescaled_by_a_base_keyed_row(empty_db_conn):
+    """The COGS rule, now here too: a line in the product's own unit is ratio
+    1 whatever a row keyed on that unit says (0 such rows with ratio <> 1 on
+    PROD, 2026-09-29, so no live number moved)."""
+    c = empty_db_conn
+    _product(c, 1, 'A')
+    _ps(c, 'shopee', 1, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _uc(c, 1, 'ตัว', 5.0)
+    _sale(c, 1, '2026-07-05', 2, unit='ตัว')
+    c.commit()
+    shopee = models.get_product_marketplace_detail(1)['platforms']['shopee']
+    assert (shopee['sold_since'], shopee['sold_unratioed']) == (2, 0)
+
+
+def _detail_html(empty_db, unit):
+    conn = sqlite3.connect(empty_db)
+    _product(conn, 1, 'A')
+    _ps(conn, 'shopee', 1, stock=50, qty_per_sale=1, imported_at='2026-07-01 00:00:00')
+    _sale(conn, 1, '2026-07-05', 3, unit=unit)
+    conn.commit()
+    conn.close()
+    from app import app as flask_app
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'], sess['username'], sess['role'] = 1, 'test-admin', 'admin'
+    resp = c.get('/ecommerce/product/1')
+    assert resp.status_code == 200
+    return resp.data.decode('utf-8')
+
+
+def test_product_page_shows_the_unratioed_note(empty_db):
+    html = _detail_html(empty_db, 'กล่อง')
+    assert 'ขายไปแล้ว 3 หลังวันไฟล์' in html
+    assert '(1 บรรทัดไม่มีอัตราแปลง นับเป็น 1)' in html
+
+
+def test_product_page_has_no_note_when_every_line_has_a_ratio(empty_db):
+    html = _detail_html(empty_db, 'ตัว')
+    assert 'ขายไปแล้ว 3 หลังวันไฟล์' in html
+    assert 'ไม่มีอัตราแปลง' not in html
+
+
 def _pp_lazada(conn, product_id_str, description, highlights_html):
     import json as _json
     raw = {'คำอธิบายหลัก': description, 'จุดเด่นของสินค้า': highlights_html}

@@ -43,7 +43,7 @@ _RAW_AGG = re.compile(
     r'SUM\(\s*(?:(?:(?:COALESCE|ROUND|IFNULL)\(\s*)?(?:\w+\.)?(?:net|qty)\b'
     r'|CASE\b.{0,200}?\b(?:net|qty)\b'
     r'|\{vat_math\.cash_sql\('
-    r'|\{sales_filters\.base_qty_sql\()',
+    r'|\{(?:sales_filters|unit_conversion)\.base_qty_sql\()',
     re.IGNORECASE | re.DOTALL)
 _HELPER = re.compile(r'\{sales_filters\.sales_(?:net|qty)_sql\(')
 

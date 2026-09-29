@@ -2,8 +2,8 @@
 
 One pure function (`resolve_price`) + two search helpers (`find_products`,
 `find_customers`). No Flask imports, no writes — `conn` in, `dict` out.
-stdlib + `sales_filters` / `models.promotions` only, so it can run on prod
-under `/opt/venv/bin/python`.
+stdlib + `sales_filters` / `unit_conversion` / `models.promotions` only, so it
+can run on prod under `/opt/venv/bin/python`.
 
 Design (see .superpowers/sdd/plan/task-1-brief.md for the numbered rules
 R1-R8 this file implements, and .superpowers/sdd/plan/task-1-report.md for
@@ -53,6 +53,7 @@ from datetime import date, timedelta
 
 import bsn_units
 import sales_filters
+import unit_conversion
 from filters import thaidate
 from models import promotions as promo_models
 import vat_math
@@ -163,36 +164,6 @@ def _label_answers(conn, qty_label, unit):
     if _is_counted(unit):
         return _tier_key(conn, qty_label) == _tier_key(conn, unit)
     return _tier_unit_word(conn, qty_label) == unit
-
-
-def _conversion_ratio(conn, product_id, unit):
-    """This product's `unit_conversions` ratio for `unit`, or None.
-
-    EXACT spelling first, the map only as a fallback. That ordering is what
-    makes this change strictly additive on a money path: wherever a row for
-    the literal spelling exists, the answer is byte-for-byte what it was
-    before the map was consulted at all, and the map only resolves asks that
-    previously found nothing. It also keeps a ledger row spelled `หล`
-    reading its OWN `หล` ratio rather than a `โหล` twin's, for as long as
-    both exist (#600 merges them).
-
-    `ORDER BY id` on the fallback so a product carrying two spellings of one
-    หน่วย answers deterministically — the oldest row, not whatever the table
-    scan happens to hand back first.
-    """
-    row = conn.execute(
-        "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
-        (product_id, unit)
-    ).fetchone()
-    if row is not None:
-        return float(row['ratio'])
-    for r in conn.execute(
-        "SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id = ? ORDER BY id",
-        (product_id,)
-    ).fetchall():
-        if _unit_word(conn, r['bsn_unit']) == unit:
-            return float(r['ratio'])
-    return None
 
 
 def _real_sale_lines(alias):
@@ -323,7 +294,8 @@ def _find_matching_tier(conn, product_id, unit):
             return r
     # then through the map — a tier still labelled with a variant answers an
     # ask in the word, and a tier already relabelled to the word answers an
-    # ask in the variant. Exact first, for the reason in `_conversion_ratio`.
+    # ask in the variant. Exact first, for the reason in
+    # `unit_conversion.conversion_ratio`.
     for r in rows:
         if _tier_unit_word(conn, r['qty_label']) == unit:
             return r
@@ -356,7 +328,7 @@ def _normalize_unit(conn, unit, unit_type):
     kept whole, with only its unit part translated, and `_find_matching_tier`
     answers it from a tier stored with that same count or not at all.
     (A STORED spelling is always looked up as written, see
-    `_conversion_ratio`.)
+    `unit_conversion.conversion_ratio`.)
     """
     raw = unit_type if unit is None else unit
     if _is_counted(raw):
@@ -434,7 +406,7 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     """
     tier = _find_matching_tier(conn, product_id, unit)
 
-    ratio = _conversion_ratio(conn, product_id, unit)
+    ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
     if ratio is not None:
         return ratio, 'unit_conversions', tier
     if tier is not None and unit == 'โหล':
@@ -466,28 +438,8 @@ def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
     rather than raising."""
     if not bundle_unit or _unit_word(conn, bundle_unit) == _unit_word(conn, unit_type):
         return 1.0
-    ratio = _conversion_ratio(conn, product_id, _unit_word(conn, bundle_unit))
+    ratio = unit_conversion.conversion_ratio(conn, product_id, _unit_word(conn, bundle_unit))
     return ratio if ratio is not None else 1.0
-
-
-def _bill_ratio(conn, product_id, unit_type, bill_unit, cache):
-    """Ratio to convert a sales_transactions row's own `unit` back to the
-    product's base unit_type. None when the bill's unit has no
-    unit_conversions row — the caller must skip the row, never assume 1
-    (R4: 'a bill whose unit has no ratio is skipped and counted in
-    window.n_unratioed')."""
-    if not bill_unit or _unit_word(conn, bill_unit) == _unit_word(conn, unit_type):
-        return 1.0
-    if bill_unit in cache:
-        return cache[bill_unit]
-    # keyed on the bill's OWN spelling, and `_conversion_ratio` tries that
-    # spelling before the map — a bill still stored as `หล` keeps reading
-    # its own `หล` ratio while that row exists (#600 merges the twins).
-    val = _conversion_ratio(conn, product_id, bill_unit)
-    if val is None:
-        val = _conversion_ratio(conn, product_id, _unit_word(conn, bill_unit))
-    cache[bill_unit] = val
-    return val
 
 
 def _resolve_list(conn, product_id, unit_type, base, asked_unit):
@@ -950,7 +902,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
                 'unit_price': row['unit_price'],
                 'discount': row['discount'],
             }
-        bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
+        bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
         if bill_ratio is None:
             continue
         cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
@@ -1027,7 +979,7 @@ def _customer_context(conn, customer_code, today):
         cache = {}
         cash_list = []
         for r in prows:
-            bill_ratio = _bill_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
+            bill_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
             if bill_ratio is None:
                 continue
             cash_pp = vat_math.cash_from_net(r['net'] / r['qty'], r['vat_type']) / bill_ratio
@@ -1223,7 +1175,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                 continue
             cash_asked = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
         else:
-            bill_ratio = _bill_ratio(conn, product_id, unit_type, row['unit'], cache)
+            bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
             if bill_ratio is None:
                 n_unratioed += 1
                 continue

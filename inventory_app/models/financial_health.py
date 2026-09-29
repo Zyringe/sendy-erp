@@ -16,6 +16,7 @@ from datetime import date
 from typing import Optional
 
 import sales_filters
+import unit_conversion
 from database import get_connection
 
 # กรรมการ + ผู้ถือหุ้น ที่ไม่นับใน "floor" (ขั้นต่ำไม่รวมเจ้าของ) — Put + แม่.
@@ -143,7 +144,7 @@ def get_current_month_pace(as_of_date=None, conn=None):
 
 def _trailing_margin(conn, as_of):
     """(Σnet − Σcost) / Σnet over the 3 complete trailing months, with each
-    line's qty converted to the product's base unit first (sales_filters
+    line's qty converted to the product's base unit first (unit_conversion
     .base_qty_sql() — cost_price is per piece, the bill is in โหล).
     Returns None when there is no trailing revenue (can't divide, and 0%
     would misleadingly read as "sells at cost" rather than "no data").
@@ -160,11 +161,11 @@ def _trailing_margin(conn, as_of):
     d_to = _month_bounds(*months[-1])[1]
     row = conn.execute(
         """SELECT COALESCE(SUM(st.net), 0) AS rev,
-                  COALESCE(SUM(""" + sales_filters.base_qty_sql() + """
+                  COALESCE(SUM(""" + unit_conversion.base_qty_sql() + """
                                * COALESCE(""" + sales_filters.cogs_unit_cost_sql() + """, 0)), 0) AS cogs
              FROM sales_transactions st
              LEFT JOIN products p ON p.id = st.product_id
-             """ + sales_filters.unit_conversion_join() + """
+             """ + unit_conversion.unit_conversion_join() + """
             WHERE st.date_iso >= ? AND st.date_iso <= ?
                  AND """ + sales_filters.revenue_filter("st"),
         (d_from, d_to)).fetchone()

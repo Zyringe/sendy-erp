@@ -881,8 +881,8 @@ def add_catalogue_unit_conversion(product_id: int, typed_unit: str, ratio: float
     update_unit_conversion_ratio, which rebuilds the product's ledger;
     upsert_unit_conversion's ON CONFLICT DO UPDATE does not, which is why this
     is a separate function. A twin spelling counts as existing because the
-    resolver already answers the word through it (price_lookup.
-    _conversion_ratio's map fallback), and a second row with another ratio
+    resolver already answers the word through it (unit_conversion.
+    conversion_ratio's map fallback), and a second row with another ratio
     would silently change that answer.
 
     No ledger re-sync: 'pending_bills' refuses whenever an unsynced bill is in
