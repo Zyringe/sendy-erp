@@ -1,4 +1,4 @@
-"""Old vs new, per reader family, over synthetic edge inputs (card A, PR1).
+"""Old vs new, per reader family, over synthetic edge inputs (card A).
 
 Each old function is loaded from the baseline commit with `git show` and run
 beside its replacement on the SAME database: random products, spellings and
@@ -215,7 +215,7 @@ QTYS = [1, 0, 6, 2.5, 0.12345, 1000]
 
 
 def test_stock_side_exact_family(world):
-    """PR2: the stock writer, review rules and the remap preflight."""
+    """The stock writer, review rules and the remap preflight."""
     conn, products = world
     old_bsn = _old('inventory_app/models/bsn_sync.py', 'models._old_bsn_sync', package='models')
     old_rr = _old('inventory_app/review_rules.py', '_old_review_rules')

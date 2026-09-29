@@ -28,20 +28,24 @@ reopens as soon as a non-canonical spelling comes back.
 ## Decision
 
 1. **`inventory_app/unit_conversion.py` is the one home for reading ratios.** A reader census
-   (`tests/test_unit_reader_census.py`) makes every other direct `SELECT`/`JOIN` on the table a writer,
-   PR2's, or an exemption with a reason.
+   (`tests/test_unit_reader_census.py`) makes every other direct `SELECT`/`JOIN` on the table a writer
+   or an exemption with a reason.
 2. **Each reader family keeps its own rule under its own name.** No flag chooses between them.
    `word_ratio` (the price resolver's bill lookup), `conversion_ratio` (the row lookup that
    `_resolve_unit` and `_bundle_buy_ratio` build on), `exact_ratio` / `exact_ratios` (exact spelling, for
    the quote CLI, the call card and the VAT-sub selector), and the COGS SQL trio (`base_qty_sql`,
-   `unit_conversion_join`, `unratioed_line_sql`). The stock writer's `_get_base_qty`, the remap preflight
-   and review rules join in PR2, behind the stock replay gate. Their exact, raw-spelling compare is kept
-   (Q11).
+   `unit_conversion_join`, `unratioed_line_sql`). The stock side reads through
+   `exact_ratio(..., strip=True)`: the stock writer (`bsn_sync._get_base_qty`, kept as a thin wrapper
+   that owns the 4-dp round) and the remap preflight (`mapping.missing_unit_ratios`). `strip` applies to
+   the base-unit compare only; the lookup is the raw spelling. Review rules (`_get_ratio`) predict the
+   stock writer but compare raw, as they always have. Their exact, raw-spelling lookup is kept (Q11).
 3. **A miss is the caller's policy, named here and not in a parameter:**
 
    | Reader | A unit with no ratio |
    |---|---|
    | stock writer | the line is held: stock is not moved until a ratio exists |
+   | remap preflight (`missing_unit_ratios`) | the unit is listed: repoint refuses, the dry-run warns |
+   | review rules (R4) | a high flag: หน่วย "…" ไม่มีอัตราแปลง — สต๊อกจะไม่ตัด |
    | price evidence (`word_ratio`) | the bill is skipped (the lowest-price scan also counts it in `n_unratioed`) |
    | customer-page cost block (`word_ratio`) | the figure shows —, never a ratio of 1 |
    | COGS (`base_qty_sql`) | costed at 1, counted, and disclosed on `/accounting` |
@@ -64,9 +68,7 @@ reopens as soon as a non-canonical spelling comes back.
   impossible to tell apart from a real 1.0. And it said nothing about the four axes that actually differ.
 - **Unify on the word family.** Rejected for now. It would change COGS (a `กุรุส` line on a product
   whose row is stored as `กร` reads 1.0 in SQL today and 144 through the word) and the stock ledger.
-  A money change needs its own measurement and Put's call, not a refactor. If M1 stays 0, the canonical
-  compare for the stock side is a separate follow-up PR. It moves `conversion_unit_key` and the pending
-  predicate in lockstep.
+  A money change needs its own measurement and Put's call, not a refactor.
 - **A Python-vs-SQL twin test.** Rejected. By design the SQL is the exact family, so the test would
   either fail on day one or be written to expect the difference. The difference is pinned as expected
   rows in `tests/test_unit_conversion_families.py` instead.
@@ -78,3 +80,14 @@ reopens as soon as a non-canonical spelling comes back.
   closed, the change is visible there and not a side effect.
 - `sales_filters` still re-exports the SQL trio, for the dated rebase scripts that import it from there.
 - The stock writer's 4-dp round stays with the stock writer. Nothing in the module rounds.
+
+## Follow-up (Q11), not done here
+
+PROD, 2026-09-29 (M1): the exact and word families agree on every mapped ledger row. No line the stock
+writer holds would be converted by the word family, and no synced line would change its base quantity
+(0 variant spellings, 0 blank units; the 35 held rows are on pids 300, 302, 1211 and 1623 and have no
+ratio under either rule). So a canonical-word compare on the stock side is allowed as a later PR. It
+must move three things in lockstep, or held lines and the pending list disagree: the stock family's
+`exact_ratio(strip=True)`, `bsn_sync.conversion_unit_key` (the writer's key, which follows the ledger's
+spelling today), and the NOT EXISTS predicate in `get_pending_unit_conversions`. Its gate is the same
+as this card's: re-measure M1 on PROD first, then a per-line differential and a stock replay.
