@@ -92,9 +92,9 @@ def test_marketplace_sold_ignores_a_discount_line(tmp_db_conn):
     sold = ecommerce_overview._sold_since_by_pid(
         conn, 'shopee', '2026-01-01', [pid, ctl_pid])
 
-    assert sold.get(pid, 0) == 0, (
+    assert sold.get(pid, (0, 0))[0] == 0, (
         "a 500-qty discount line must never read as 500 units sold")
-    assert sold.get(ctl_pid, 0) == 7, (
+    assert sold.get(ctl_pid, (0, 0))[0] == 7, (
         "a NULL-bsn_code sale on a mapped product must still count as sold")
 
 

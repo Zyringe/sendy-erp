@@ -151,8 +151,10 @@ def test_sql_family(conn):
 
 # ── overview: marketplace units sold since the stock file ───────────────────
 
-OVERVIEW = {None: 1, '': 1, 'ตัว': 5, ' ตัว': 1, 'โหล': 12, 'หล': 1,
-            'กุรุส': 1, 'กร': 144, 'แผง': 0, 'กล่อง': 1}
+# (sold, lines counted at 1 for want of a ratio). Q14 gave this family the
+# base-unit short-circuit, so the rogue ตัว=5 row no longer reads 5.
+OVERVIEW = {None: (1, 0), '': (1, 0), 'ตัว': (1, 0), ' ตัว': (1, 1), 'โหล': (12, 0),
+            'หล': (1, 1), 'กุรุส': (1, 1), 'กร': (144, 0), 'แผง': (0, 0), 'กล่อง': (1, 1)}
 
 
 def _overview(conn, pid):

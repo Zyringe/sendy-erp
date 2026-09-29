@@ -35,6 +35,10 @@ EXEMPT = {
         'sweep does not reach it. Answers "what did this order earn", which is '
         'asked at analysis time about a marketplace payout, not "what did this '
         'month cost". Left on cost_price deliberately.',
+    'models/ecommerce_overview.py':
+        'Counts marketplace UNITS sold since a stock file, in base units '
+        '(_sold_since_by_pid, Q14 of card A). It reads base_qty_sql for the '
+        'quantity and never multiplies it by a cost, so it is not COGS.',
 }
 
 

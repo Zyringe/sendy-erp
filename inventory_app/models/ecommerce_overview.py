@@ -10,7 +10,9 @@ Core-math invariants (see projects/ecommerce-revamp/plan.md — do not re-derive
     platform_file_units(p, pf) = sum(listing_units) over ps rows
                                   (internal_product_id=p, platform=pf, is_ignored=0)
     snapshot_date(pf)          = date(MAX(ps.imported_at)) per platform
-    sold_since(p, pf)          = sum(st.qty * COALESCE(uc.ratio, 1))
+    sold_since(p, pf)          = sum(unit_conversion.base_qty_sql())   -- st.qty x 1 when the bill
+                                  -- unit is blank or the base unit, else COALESCE(uc.ratio, 1);
+                                  -- lines with no ratio are also COUNTED and disclosed
                                   FROM sales_transactions st WHERE st.product_id=p
                                   AND st.date_iso > snapshot_date(pf)   -- strict: same-day
                                   AND st.doc_no NOT LIKE 'SR%'          -- returns
@@ -46,6 +48,7 @@ so it is the complete listing set for this purpose.
 import json
 import re
 
+import unit_conversion
 from database import get_connection
 
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
@@ -100,10 +103,12 @@ def _snapshot_dates(conn):
 
 
 def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
-    """{product_id: sold_units} for one platform's หน้าร้าน customers, sold
-    strictly AFTER snapshot_date, unit-converted via unit_conversions (default
-    ratio 1 when no row). Empty dict when the platform has no booking customers
-    yet or no snapshot to compare against.
+    """{product_id: (sold_units, unratioed_lines)} for one platform's หน้าร้าน
+    customers, sold strictly AFTER snapshot_date, in the product's base unit
+    (unit_conversion.base_qty_sql, the COGS rule). A line whose bill unit has
+    no ratio still counts at ratio 1, and `unratioed_lines` says how many did,
+    so the product page can say its number is a floor. Empty dict when the
+    platform has no booking customers yet or no snapshot to compare against.
 
     Excluded, and why:
       SR%  sales returns — goods came back, they are not a deduction
@@ -157,10 +162,12 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
         params = [*params, *deducted]
     ph = ",".join("?" * len(customers))
     rows = conn.execute(f"""
-        SELECT st.product_id AS pid, SUM(st.qty * COALESCE(uc.ratio, 1)) AS sold
+        SELECT st.product_id AS pid,
+               SUM({unit_conversion.base_qty_sql()}) AS sold,
+               SUM({unit_conversion.unratioed_line_sql()}) AS unratioed
           FROM sales_transactions st
-          LEFT JOIN unit_conversions uc
-                 ON uc.product_id = st.product_id AND uc.bsn_unit = st.unit
+          LEFT JOIN products p ON p.id = st.product_id
+          {unit_conversion.unit_conversion_join()}
          WHERE st.date_iso > ?
            AND st.doc_no NOT LIKE 'SR%'
            AND st.doc_no NOT LIKE 'HS%'
@@ -170,7 +177,7 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
            {already_applied}
          GROUP BY st.product_id
     """, params).fetchall()
-    return {r['pid']: (r['sold'] or 0) for r in rows}
+    return {r['pid']: (r['sold'] or 0, r['unratioed'] or 0) for r in rows}
 
 
 def get_marketplace_freshness():
@@ -296,7 +303,7 @@ def get_marketplace_overview(search=None, flt=None, page=1, per_page=50):
             if fu is None:
                 platforms[platform] = None
                 continue
-            sold = sold_by_platform[platform].get(pid, 0)
+            sold = sold_by_platform[platform].get(pid, (0, 0))[0]
             platforms[platform] = {
                 'est': _display_qty(max(fu['file_units'] - sold, 0)),
                 'listing_count': fu['listing_count'],
@@ -431,7 +438,7 @@ def get_product_marketplace_detail(product_id):
     returns a dict with empty 'items' lists (Phase 4 decides the 404 there).
 
     Shape: {product: {...products row, stock, buildable, true_available},
-            platforms: {pf: {freshness, sold_since, items: [
+            platforms: {pf: {freshness, sold_since, sold_unratioed, items: [
                 {item: platform_products row | None, skus: [ps rows]}]}}}
     Grouped by product_id_str; '' (or NULL, from propagated stubs) forms one
     trailing item-less group per platform with item=None.
@@ -457,9 +464,9 @@ def get_product_marketplace_detail(product_id):
         """, (product_id,)).fetchall()
 
         snapshots = _snapshot_dates(conn)
-        sold_since = {
-            platform: _display_qty(
-                _sold_since_by_pid(conn, platform, snapshots[platform], [product_id]).get(product_id, 0))
+        sold = {
+            platform: _sold_since_by_pid(
+                conn, platform, snapshots[platform], [product_id]).get(product_id, (0, 0))
             for platform in PLATFORMS
         }
 
@@ -471,7 +478,8 @@ def get_product_marketplace_detail(product_id):
         item_cache = {}
         freshness_all = get_marketplace_freshness()
         platforms = {
-            p: {'freshness': freshness_all[p], 'sold_since': sold_since[p], 'items': []}
+            p: {'freshness': freshness_all[p], 'sold_since': _display_qty(sold[p][0]),
+                'sold_unratioed': sold[p][1], 'items': []}
             for p in PLATFORMS
         }
         # empty product_id_str (item-less bucket) sorts after real items, per platform
