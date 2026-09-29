@@ -102,7 +102,8 @@ def is_base_unit(unit_type, unit, *, strip=False) -> bool:
 
     Raw character-for-character by default. `strip=True` is the stock side's
     compare: `str.strip()` on both sides (any Unicode space), a None unit is
-    never the base unit, and a None `unit_type` raises as it always has.
+    never the base unit, and a None `unit_type` raises (as it always has)
+    whenever `unit` is not None.
     """
     if strip:
         return unit is not None and unit.strip() == unit_type.strip()

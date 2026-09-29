@@ -26,7 +26,7 @@ import unit_conversion
 import call_card
 from models import ecommerce_overview, vat_sub
 
-BASELINE = 'ccb2245'
+BASELINE = 'ccb22456e3bc854fbef99f7a30ae092f3bf01254'
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED = 20260929
 

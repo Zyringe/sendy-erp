@@ -87,7 +87,8 @@ PROD, 2026-09-29 (M1): the exact and word families agree on every mapped ledger 
 writer holds would be converted by the word family, and no synced line would change its base quantity
 (0 variant spellings, 0 blank units; the 35 held rows are on pids 300, 302, 1211 and 1623 and have no
 ratio under either rule). So a canonical-word compare on the stock side is allowed as a later PR. It
-must move three things in lockstep, or held lines and the pending list disagree: the stock family's
+must move four things in lockstep, or held lines, the pending list and the review flags disagree: the stock family's
 `exact_ratio(strip=True)`, `bsn_sync.conversion_unit_key` (the writer's key, which follows the ledger's
-spelling today), and the NOT EXISTS predicate in `get_pending_unit_conversions`. Its gate is the same
+spelling today), the NOT EXISTS predicate in `get_pending_unit_conversions`, and `review_rules._get_ratio` (R4 predicts
+the stock writer, and already differs from it on whitespace, pinned in the families test). Its gate is the same
 as this card's: re-measure M1 on PROD first, then a per-line differential and a stock replay.
