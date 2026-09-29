@@ -36,6 +36,16 @@ def test_the_pair_price_is_twice_the_old_piece_price():
         assert plan['preserve'] == 0, pid
 
 
+def test_1368_carries_no_price_so_the_rebase_cannot_move_one():
+    """1368 is the same defect with the price left out, and that is the whole
+    reason it is cheap. `x == x * 2` holds vacuously at zero, so the rule above
+    says nothing about this product — state the zero outright, or a later edit
+    could give 1368 a price here and the doubling rule would wave it through."""
+    plan = _load().PLAN[1368]
+    assert plan['old_base'] == 0.0 and plan['pair_price'] == 0.0
+    assert plan['drop_tier'] is False, "1368 has no tier; demanding one refuses the run"
+
+
 def test_the_source_is_set_per_product_not_once_around_the_loop(monkeypatch):
     """models/wacc.py sets the source to 'wac-sync' for its own writes, so the
     first product's cost rebuild leaves the SECOND product's base change
@@ -59,6 +69,29 @@ def test_an_undeclared_product_table_refuses_the_run(empty_db_conn):
 
     problems = mod.preconditions(c, _Eng, [1364])
     assert any('zz_new_feature' in p and 'TABLE_STORY' in p for p in problems), problems
+
+
+def test_the_tier_expectation_is_per_product(empty_db_conn):
+    """1364/1365 each had to LOSE a `1 คู่` tier; 1368 has none to lose. When that
+    expectation was a module constant the run refused 1368 for a tier that was
+    never there, so the branch has to be driven from the plan — in both
+    directions, or the guard is only ever asserting the shape it was written for."""
+    mod = _load()
+    c, plan = empty_db_conn, mod.PLAN[1368]
+    c.execute("INSERT INTO products (id, product_name, unit_type, base_sell_price, cost_price) "
+              "VALUES (?,?,?,?,?)", (1368, plan['label'], mod.OLD_UNIT, plan['old_base'], plan['cost']))
+    for unit, ratio in ((mod.NEW_UNIT, 2.0), (mod.DOZEN_UNIT, mod.DOZEN_RATIO)):
+        c.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?,?,?)",
+                  (1368, unit, ratio))
+
+    class _Eng:
+        OPENING_NOTE = RECONCILE_NOTE = OPENING_STAMP = ''
+
+    assert not [p for p in mod.preconditions(c, _Eng, [1368]) if 'tier' in p]
+
+    c.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) VALUES (?,?,?)",
+              (1368, '1 โหล', 500.0))
+    assert [p for p in mod.preconditions(c, _Eng, [1368]) if 'tier' in p]
 
 
 def test_the_dozen_stops_quoting_half_price():
