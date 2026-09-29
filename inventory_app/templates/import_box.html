@@ -273,11 +273,12 @@
   <div class="row g-3 justify-content-center">
     <div class="col-lg-7">
       <div class="card">
-        <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>ลากไฟล์ Express รายสัปดาห์มาที่นี่ (หลายไฟล์พร้อมกันได้)</div>
+        <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>ลากไฟล์รายงาน Express มาที่นี่ (หลายไฟล์พร้อมกันได้)</div>
         <div class="card-body">
           <div class="alert alert-info mb-3">
+            {# ขาย · ซื้อ · AR/AP are retired (ADR 0020): keep this intro in step with report_types.retired_reason. #}
             <i class="bi bi-magic me-1"></i>ระบบตรวจชนิดรายงานให้อัตโนมัติ — การรับชำระหนี้ · การจ่ายชำระหนี้ ·
-            ใบลดหนี้ (รับคืน/ส่งคืน) — แล้วให้ดูตัวอย่างก่อนยืนยัน.
+            ใบลดหนี้ (รับคืน/ส่งคืน) — แล้วให้ดูตัวอย่างก่อนยืนยัน<br>
             ขาย · ซื้อ · ลูกหนี้/เจ้าหนี้คงค้าง มาจาก zip รายวันที่หน้า
             <a href="{{ url_for('bsn.express_dbf_import') }}">นำเข้า Express (DBF)</a>
           </div>

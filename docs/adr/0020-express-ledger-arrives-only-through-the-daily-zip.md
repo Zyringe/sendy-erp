@@ -33,14 +33,18 @@ Two facts about the zip made the retirement safe to declare:
 1. **ขาย and ซื้อ are retired on the text box.** `ReportType.retired_reason` on the two registry entries is
    the **single switch**. `labels()` derives the ` — ปิดแล้ว ใช้ zip รายวัน` suffix from it and
    `removal_capable_keys()` excludes a retired type; `label` and `supports_removals` stay as declared
-   facts. Deleting `retired_reason=` reopens the door whole, tests included.
+   facts. Re-enabling is deleting `retired_reason=` plus two things it does not cover: the upload intro
+   (`templates/import_box.html:279-284`) still says ขาย · ซื้อ come from the zip, and the tests that pin
+   the retirement flip (`test_retired_report_types.py`: the four-key retired set, the labels, the
+   `removal_capable_keys()` set, the dispatcher refusals).
 2. **Enforced at three layers, all reading the registry at call time:**
    - preview marks a detected-retired row `blocked='retired'` (red panel, the reason, a
      `ไปหน้านำเข้า Express (zip)` button, no ticks; the count column shows `—`);
    - confirm refuses a retired **submitted** type (an `unknown` file overridden to ขาย in the dropdown
      has no block) before the file-exists check and before the watermark claim;
    - `import_router.preview_file` / `commit_file` raise `RetiredReportType(ValueError)` for any
-     retired type, so no caller can reach `models.import_weekly` for ขาย / ซื้อ. `commit_file` also
+     retired type, so no caller of the dispatcher can reach `models.import_weekly` for ขาย / ซื้อ
+     (a direct `models.import_weekly` call is a separate door, made explicit by PR-0). `commit_file` also
      loses its `apply_removals` default; the route is its only caller.
 3. **The zip's removals become numbers.** `results['bsn']['removed_lines'] = {'sales': n, 'purchase': m}`
    goes into the run record (`import_log.notes`) and the flash appends

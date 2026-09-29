@@ -10,7 +10,6 @@ Usage:
     python scripts/import_express.py payments_in   /path/to/การรับชำระหนี้.csv
     python scripts/import_express.py ar_snapshot   /path/to/ลูกหนี้คงค้าง.csv
     python scripts/import_express.py payments_out  /path/to/จ่ายชำระหนี้.csv
-    python scripts/import_express.py sales         /path/to/ขาย.csv
 
 Add --dry-run to parse-only without writing to DB. Add --company SD
 to attribute the batch to Sendai Trading instead of BSN (default).
