@@ -25,10 +25,6 @@ import pytest
 from tests import _census
 
 EXEMPT = {
-    'ar_diagnostic.py':
-        'A Thai user-facing reason label ("payments_alloc._settlement_rows '
-        'filters SR% out on purpose") shown on the reconciliation page. Prose '
-        'the operator reads, not a predicate.',
     'scripts/2026_09_19_fix_pack_ratios_592.py':
         'Dated one-off correction script for a measured set (#592); it ran '
         'once and is kept for the record, not maintained.',

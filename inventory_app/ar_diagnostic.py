@@ -42,7 +42,7 @@ _REASONS = [
      'บิลถูกใบลดหนี้ล้างพอดี และใบลดหนี้ยังเปิดค้างอยู่ใน snapshot เอง — '
      'Express แยกเป็น 2 ใบ, Sendy หักกลบให้ ยอดรวมเท่ากัน ทั้งคู่ถูก'),
     ('credit_note',
-     'ใบลดหนี้ SR — payments_alloc._settlement_rows กรอง SR% ออกโดยตั้งใจ'),
+     'ใบลดหนี้ SR — payments_alloc._settlement_rows กรองเอกสาร SR ออกโดยตั้งใจ'),
     ('cash_sale',
      'ขายสด HS — _settlement_rows กรอง HS% ออกโดยตั้งใจ'),
     ('not_yet_imported',
