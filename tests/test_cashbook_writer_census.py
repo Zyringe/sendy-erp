@@ -1,9 +1,9 @@
 """Card F census: every place that writes `cashbook_transactions`, by file and
 exact hit count (plan §5 PR-1).
 
-Scans the raw source of every `inventory_app/**/*.py` (minus tests, __pycache__,
-instance, static) and `scripts/**/*.py`, whitespace runs collapsed, against one
-case-insensitive pattern. An allowed file with one hit more than its count goes
+Scans the raw source of every `inventory_app/**/*.py` (minus __pycache__,
+instance, static) and `scripts/**/*.py` through the shared `tests/_census.py`
+walker, whitespace runs collapsed, against one case-insensitive pattern. An allowed file with one hit more than its count goes
 red, as does any file not in the map. PR-2 removes `blueprints/cashbook.py`,
 PR-3 leaves only the ledger and the one-off scripts.
 
@@ -17,7 +17,9 @@ import re
 
 import pytest
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+from tests import _census
+
+REPO = _census.ROOT
 
 WRITE_RE = re.compile(
     r"""(insert(\s+or\s+\w+)?\s+into|replace\s+into|update(\s+or\s+\w+)?|delete\s+from)"""
@@ -25,20 +27,18 @@ WRITE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_SKIP_DIRS = {'tests', '__pycache__', 'instance', 'static'}
-
 # {repo-relative path: (exact hit count, reason)}
 ALLOWED = {
-    'inventory_app/blueprints/cashbook.py': (
+    'blueprints/cashbook.py': (
         4, "manual/advance INSERT x2, edit UPDATE, delete DELETE; moves to the ledger in PR-2"),
-    'inventory_app/hr.py': (
+    'hr.py': (
         2, "salary pay-event INSERT + void DELETE; moves to the ledger in PR-3"),
-    'inventory_app/commission.py': (
+    'commission.py': (
         2, "commission payout INSERT + cancel DELETE; moves to the ledger in PR-3"),
-    'inventory_app/cashbook_payout_mirror.py': (
+    'cashbook_payout_mirror.py': (
         4, "mirror INSERT, DELETE, UPDATE description + the module docstring's "
            "'Insert/delete/update cashbook_transactions' prose; PR-3 rewords it"),
-    'inventory_app/cashbook_ledger.py': (
+    'cashbook_ledger.py': (
         11, "the seam: post_manual, post_advance, post_salary, post_commission, post_payout "
             "INSERT; amend_manual, set_payout_description UPDATE; cancel_manual, "
             "cancel_salary, cancel_commission, cancel_payout DELETE"),
@@ -46,46 +46,37 @@ ALLOWED = {
         1, "one-time ADR 0013 conversion (UPDATE of the payout_* columns)"),
     'scripts/2026_09_19_589_commission_03_backrecord.py': (
         1, "one-time #589 back-record (DELETE), rehearse/live flag"),
+    'scripts/2026-09-30_redate_cashbook_642.py': (
+        1, "one-time card F PR-0 (Q7 B) re-date of row 642 (UPDATE), --apply gate"),
 }
 
 
-def _files(root):
-    app = os.path.join(root, 'inventory_app')
-    for base in (app, os.path.join(root, 'scripts')):
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = sorted(d for d in dirnames
-                                 if not (base == app and d in _SKIP_DIRS) and d != '__pycache__')
-            for f in sorted(filenames):
-                if f.endswith('.py'):
-                    yield os.path.join(dirpath, f)
-
-
-def census(root):
-    """{repo-relative path: hit count} for every file with at least one hit."""
+def census():
+    """{path: hit count} for every file with at least one hit. Paths are
+    relative to inventory_app/, scripts prefixed 'scripts/' (the shared
+    `tests/_census.py` walker). Raw source on purpose: a docstring that names a
+    write counts, so rewording it is a visible change."""
     out = {}
-    for path in _files(root):
-        with open(path, encoding='utf-8') as fh:
-            src = re.sub(r'\s+', ' ', fh.read())
-        n = len(WRITE_RE.findall(src))
+    for rel, path in _census.py_files(include_scripts=True):
+        n = len(WRITE_RE.findall(re.sub(r'\s+', ' ', _census.read(path))))
         if n:
-            out[os.path.relpath(path, root)] = n
+            out[rel] = n
     return out
 
 
 def test_every_cashbook_writer_is_in_the_count_map():
-    found = census(REPO)
-    assert 'inventory_app/blueprints/cashbook.py' in found, "control: the census saw nothing"
+    found = census()
+    assert 'blueprints/cashbook.py' in found, "control: the census saw nothing"
     assert found == {path: n for path, (n, _) in ALLOWED.items()}
 
 
 def test_the_census_scans_the_places_it_claims():
     """Control for the walk: each scanned root yields files, the skipped
     directories yield none."""
-    files = [os.path.relpath(p, REPO) for p in _files(REPO)]
-    assert any(f.startswith('inventory_app/blueprints/') for f in files)
+    files = [rel for rel, _ in _census.py_files(include_scripts=True)]
+    assert any(f.startswith('blueprints/') for f in files)
     assert any(f.startswith('scripts/') for f in files)
-    assert not [f for f in files if f.startswith(('inventory_app/tests/', 'inventory_app/static/',
-                                                  'inventory_app/instance/'))]
+    assert not [f for f in files if f.startswith(('static/', 'instance/'))]
 
 
 # ── break once, per shape ────────────────────────────────────────────────────
@@ -101,35 +92,40 @@ _SHAPES = {
 }
 
 
-def _mini_tree(tmp_path, rel, body):
-    path = tmp_path / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding='utf-8')
-    return str(tmp_path)
+@pytest.fixture
+def mini(tmp_path, monkeypatch):
+    """Point the shared walker at an empty tree; returns a writer for it."""
+    monkeypatch.setattr(_census, 'APP', str(tmp_path / 'inventory_app'))
+    monkeypatch.setattr(_census, 'SCRIPTS', str(tmp_path / 'scripts'))
+
+    def put(rel, body):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding='utf-8')
+    return put
 
 
 @pytest.mark.parametrize('shape', sorted(_SHAPES))
 @pytest.mark.parametrize('rel', ['inventory_app/models/new_writer.py', 'scripts/oneoff_fix.py'])
-def test_each_shape_is_caught_in_a_new_file(tmp_path, shape, rel):
-    root = _mini_tree(tmp_path, rel, _SHAPES[shape])
-    assert census(root) == {rel: 1}
+def test_each_shape_is_caught_in_a_new_file(mini, shape, rel):
+    mini(rel, _SHAPES[shape])
+    assert census() == {rel.replace('inventory_app/', ''): 1}
 
 
-def test_an_extra_write_in_an_allowed_file_is_caught(tmp_path):
-    rel = 'inventory_app/hr.py'
-    with open(os.path.join(REPO, rel), encoding='utf-8') as fh:
-        src = fh.read()
-    root = _mini_tree(tmp_path, rel, src + '\n' + _SHAPES['lowercase'])
-    assert census(root)[rel] == ALLOWED[rel][0] + 1
+def test_an_extra_write_in_an_allowed_file_is_caught(mini):
+    src = _census.read(os.path.join(REPO, 'inventory_app', 'hr.py'))
+    mini('inventory_app/hr.py', src + '\n' + _SHAPES['lowercase'])
+    assert census()['hr.py'] == ALLOWED['hr.py'][0] + 1
 
 
-def test_skipped_directories_really_are_skipped(tmp_path):
-    root = _mini_tree(tmp_path, 'inventory_app/static/x.py', _SHAPES['lowercase'])
-    assert census(root) == {}
+def test_skipped_directories_really_are_skipped(mini):
+    mini('inventory_app/static/x.py', _SHAPES['lowercase'])
+    mini('inventory_app/models/control.py', _SHAPES['lowercase'])
+    assert census() == {'models/control.py': 1}
 
 
-def test_a_runtime_built_table_name_is_not_caught_as_documented(tmp_path):
+def test_a_runtime_built_table_name_is_not_caught_as_documented(mini):
     """Pins the stated blind spot, so nobody reads a green census as covering it."""
-    root = _mini_tree(tmp_path, 'inventory_app/models/dyn.py',
-                      'tbl = "cashbook_transactions"\nsql = f"DELETE FROM {tbl} WHERE id = 1"\n')
-    assert census(root) == {}
+    mini('inventory_app/models/dyn.py',
+         'tbl = "cashbook_transactions"\nsql = f"DELETE FROM {tbl} WHERE id = 1"\n')
+    assert census() == {}
