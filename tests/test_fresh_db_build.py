@@ -193,8 +193,8 @@ def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, mo
     # (mig 192: หอ/ดว plus the 27 codes it shares an Express meaning with
     # BSN5657 for) — see test_migration_192_unit_map_xp5.py for the
     # derivation — + mig 193's 26 (16 BSN5657, 5 xp5, 5 book-independent)
-    # − the five `!` rows 193 removes.
-    assert len(first) == 94                          # control: schema.sql's rows landed
+    # − the five `!` rows 193 removes + mig 195's 7 supplier spellings.
+    assert len(first) == 101                         # control: schema.sql's rows landed
     database.init_db()
     assert _unit_map_rows(db_path) == first          # idempotent
 
@@ -206,7 +206,7 @@ def test_init_db_unit_map_seed_is_idempotent_and_keeps_learned_rows(tmp_path, mo
     finally:
         conn.close()
     learned = _unit_map_rows(db_path)
-    assert len(learned) == 95 and learned != first   # control: the edits landed
+    assert len(learned) == 102 and learned != first  # control: the edits landed
 
     database.init_db()
     assert _unit_map_rows(db_path) == learned
