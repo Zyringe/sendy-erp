@@ -32,6 +32,7 @@ export; the *settled* payout can differ slightly and is confirmed only on the
 finance/settlement report. Treat them as indicative until reconciled.
 """
 
+import re
 from collections import OrderedDict
 from datetime import datetime
 from typing import Optional
@@ -316,9 +317,10 @@ _TT_REQUIRED = {_TT.ORDER, _TT.STATUS, _TT.SKU_ID, _TT.ITEM_NAME, _TT.QTY,
 
 
 def _tt_id(val, col):
-    """Order ID / SKU ID: digits only once the trailing TAB is stripped."""
+    """Order ID / SKU ID: ASCII digits only once the trailing TAB is stripped
+    (str.isdigit() also accepts Thai and superscript digits)."""
     s = _s(val)
-    if not s.isdigit():
+    if not re.fullmatch(r'[0-9]+', s):
         raise ValueError(f"TikTok order export: {col} is not numeric: {s!r}")
     return s
 

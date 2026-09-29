@@ -130,7 +130,9 @@ def test_missing_required_column_names_what_it_saw():
 
 
 @pytest.mark.parametrize('col,bad', [('Order ID', '58588467186136037X\t'),
-                                     ('SKU ID', '1737 136796\t')])
+                                     ('SKU ID', '1737 136796\t'),
+                                     ('SKU ID', '๑๗๓๗\t'),          # Thai digits: isdigit() says yes
+                                     ('Order ID', '585884²\t')])     # superscript: isdigit() says yes
 def test_non_numeric_ids_refused(col, bad):
     df = _df()
     df.loc[0, col] = bad
