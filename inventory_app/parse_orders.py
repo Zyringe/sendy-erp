@@ -1,4 +1,4 @@
-"""Marketplace ORDER-export parsers (Shopee, Lazada).
+"""Marketplace ORDER-export parsers (Shopee, Lazada, TikTok).
 
 Distinct from parse_platform.py, which parses the Mass-Update LISTING file.
 These parse the per-order export downloaded from the Seller Center and return a
@@ -277,6 +277,152 @@ def parse_lazada_orders(df):
             'payout': None,
             'currency': 'THB',
             'items': items,
+        })
+
+    return orders
+
+
+# --- TikTok Shop order-export column headers (CSV, one row per SKU line) ---
+class _TT:
+    ORDER         = 'Order ID'
+    STATUS        = 'Order Status'
+    RETURN_TYPE   = 'Cancelation/Return Type'
+    SKU_ID        = 'SKU ID'                       # = platform_skus.variation_id
+    SELLER_SKU    = 'Seller SKU'
+    ITEM_NAME     = 'Product Name'
+    VARIATION     = 'Variation'
+    QTY           = 'Quantity'
+    QTY_RETURNED  = 'Sku Quantity of return'
+    UNIT_PRICE    = 'SKU Unit Original Price'
+    PLATFORM_DISC = 'SKU Platform Discount'
+    SELLER_DISC   = 'SKU Seller Discount'
+    SUBTOTAL      = 'SKU Subtotal After Discount'  # what the buyer paid for the line
+    SHIPPING      = 'Shipping Fee After Discount'
+    ORDER_AMOUNT  = 'Order Amount'
+    REFUND        = 'Order Refund Amount'
+    CREATED       = 'Created Time'
+    PAID          = 'Paid Time'
+    CANCELLED     = 'Cancelled Time'
+    RECIPIENT     = 'Recipient'
+    PHONE         = 'Phone #'
+    ADDR          = ('Detail Address', 'Districts', 'District', 'Province', 'Zipcode')
+    PAYMENT       = 'Payment Method'
+    CHANNEL       = 'Order Channel'
+    CREATOR       = 'Creator Handle'
+
+
+_TT_REQUIRED = {_TT.ORDER, _TT.STATUS, _TT.SKU_ID, _TT.ITEM_NAME, _TT.QTY,
+                _TT.UNIT_PRICE, _TT.SUBTOTAL, _TT.CREATED, _TT.PAID}
+
+
+def _tt_id(val, col):
+    """Order ID / SKU ID: digits only once the trailing TAB is stripped."""
+    s = _s(val)
+    if not s.isdigit():
+        raise ValueError(f"TikTok order export: {col} is not numeric: {s!r}")
+    return s
+
+
+def _tt_dt(val, col):
+    """'DD/MM/YYYY HH:MM:SS' -> 'YYYY-MM-DD HH:MM:SS' (seconds kept). Blank -> None;
+    anything else that won't parse raises (never returned raw)."""
+    s = _s(val)
+    if s == '':
+        return None
+    try:
+        return datetime.strptime(s, '%d/%m/%Y %H:%M:%S').strftime('%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        raise ValueError(f"TikTok order export: {col} is not DD/MM/YYYY HH:MM:SS: {s!r}")
+
+
+def _unmasked(val):
+    """TikTok masks buyer data with '*'; a masked value carries nothing -> None."""
+    s = _s(val)
+    return None if s == '' or '*' in s else s
+
+
+def parse_tiktok_orders(df):
+    """Parse a TikTok Shop order-export DataFrame (CSV read with dtype=str,
+    keep_default_na=False, encoding='utf-8-sig').
+
+    One row per SKU line. Lines are grouped by Order ID and aggregated by SKU ID
+    (line_key = variation_id = SKU ID), so a SKU repeated inside one order stays
+    one line under UNIQUE(platform, order_sn, line_key). item_subtotal is
+    `SKU Subtotal After Discount` = what the buyer paid, after TikTok's and the
+    seller's discounts; item_total is its sum. Fees and payout come from the
+    income file (a later phase), so marketplace_fee and payout stay None.
+
+    Discounts, returns and order-level amounts are carried on the dict (and so
+    stored in raw_json) for the settlement/IV phases; nothing acts on them here.
+    Returns a list of order dicts (see module docstring).
+    """
+    missing = _TT_REQUIRED - set(df.columns)
+    if missing:
+        raise ValueError(f"TikTok order export missing columns: {sorted(missing)}; "
+                         f"columns seen: {list(df.columns)}")
+
+    groups = OrderedDict()
+    for r in df.to_dict('records'):
+        osn = _tt_id(r.get(_TT.ORDER), _TT.ORDER)
+        groups.setdefault(osn, []).append(r)
+
+    orders = []
+    for osn, rows in groups.items():
+        lines = OrderedDict()
+        for r in rows:
+            sku = _tt_id(r.get(_TT.SKU_ID), _TT.SKU_ID)
+            line = lines.get(sku)
+            if line is None:
+                line = lines[sku] = {
+                    'line_key': sku,
+                    'seller_sku': _s(r.get(_TT.SELLER_SKU)) or None,
+                    'variation_id': sku,
+                    'item_name': _s(r.get(_TT.ITEM_NAME)),
+                    'variation_name': _s(r.get(_TT.VARIATION)) or None,
+                    'qty': 0.0,
+                    'unit_price': _num(r.get(_TT.UNIT_PRICE)),
+                    'item_subtotal': 0.0,
+                    'platform_discount': 0.0,
+                    'seller_discount': 0.0,
+                    'qty_returned': 0.0,
+                    'return_type': _s(r.get(_TT.RETURN_TYPE)) or None,
+                }
+            line['qty'] += _num(r.get(_TT.QTY)) or 0.0
+            line['item_subtotal'] = round(line['item_subtotal'] + (_num(r.get(_TT.SUBTOTAL)) or 0.0), 2)
+            line['platform_discount'] = round(
+                line['platform_discount'] + (_num(r.get(_TT.PLATFORM_DISC)) or 0.0), 2)
+            line['seller_discount'] = round(
+                line['seller_discount'] + (_num(r.get(_TT.SELLER_DISC)) or 0.0), 2)
+            line['qty_returned'] += _num(r.get(_TT.QTY_RETURNED)) or 0.0
+
+        items = list(lines.values())
+        # Every date cell is checked, not only the first non-empty one.
+        created = [_tt_dt(r.get(_TT.CREATED), _TT.CREATED) for r in rows]
+        paid = [_tt_dt(r.get(_TT.PAID), _TT.PAID) for r in rows]
+        cancelled = [_tt_dt(r.get(_TT.CANCELLED), _TT.CANCELLED) for r in rows]
+        addr_parts = [_unmasked(_first_nonempty(rows, k)) for k in _TT.ADDR]
+
+        orders.append({
+            'platform': 'tiktok',
+            'order_sn': osn,
+            'status': _first_nonempty(rows, _TT.STATUS) or None,
+            'order_date': next((d for d in created if d), None),
+            'paid_date': next((d for d in paid if d), None),
+            'buyer_name': _unmasked(_first_nonempty(rows, _TT.RECIPIENT)),
+            'buyer_phone': _unmasked(_first_nonempty(rows, _TT.PHONE)),
+            'ship_address': ' '.join(p for p in addr_parts if p) or None,
+            'item_total': round(sum(li['item_subtotal'] for li in items), 2),
+            'marketplace_fee': None,                    # income file (PR-2)
+            'payout': None,
+            'currency': 'THB',
+            'items': items,
+            'order_amount': _num(_first_nonempty(rows, _TT.ORDER_AMOUNT)),
+            'refund_amount': _num(_first_nonempty(rows, _TT.REFUND)),
+            'shipping_fee_after_discount': _num(_first_nonempty(rows, _TT.SHIPPING)),
+            'payment_method': _first_nonempty(rows, _TT.PAYMENT) or None,
+            'order_channel': _first_nonempty(rows, _TT.CHANNEL) or None,
+            'creator_handle': _first_nonempty(rows, _TT.CREATOR) or None,
+            'cancelled_time': next((d for d in cancelled if d), None),
         })
 
     return orders
