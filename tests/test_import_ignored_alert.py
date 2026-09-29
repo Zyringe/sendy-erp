@@ -79,7 +79,7 @@ def _alerts(db):
 
 def test_a_skipped_billable_line_raises_a_system_alert(seeded):
     models.import_weekly([_entry(OK, "IV9920001-1", 100.0),
-                          _entry(IGN, "IV9920001-2", 218.0)], "sales", "wk.csv")
+                          _entry(IGN, "IV9920001-2", 218.0)], "sales", "wk.csv", apply_removals=True)
     a = _alerts(seeded)
     assert len(a) == 1, "the skip must reach /alerts, not only the results page"
     assert a[0]["severity"] == "warning", "the import succeeded — this is not an error"
@@ -88,7 +88,7 @@ def test_a_skipped_billable_line_raises_a_system_alert(seeded):
 
 
 def test_the_alert_carries_context_for_diagnosis(seeded):
-    models.import_weekly([_entry(IGN, "IV9920002-1", 218.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(IGN, "IV9920002-1", 218.0)], "sales", "wk.csv", apply_removals=True)
     ctx = json.loads(_alerts(seeded)[0]["context_json"])
     assert ctx["file_type"] == "sales"
     assert ctx["filename"] == "wk.csv"
@@ -98,22 +98,22 @@ def test_the_alert_carries_context_for_diagnosis(seeded):
 def test_a_repeat_does_not_spam_a_second_open_alert(seeded):
     """Dedupe is the point of the partial unique index: one OPEN alert per code
     until someone acknowledges it on /alerts."""
-    models.import_weekly([_entry(IGN, "IV9920003-1", 218.0)], "sales", "wk1.csv")
-    models.import_weekly([_entry(IGN, "IV9920004-1", 30.0)], "sales", "wk2.csv")
+    models.import_weekly([_entry(IGN, "IV9920003-1", 218.0)], "sales", "wk1.csv", apply_removals=True)
+    models.import_weekly([_entry(IGN, "IV9920004-1", 30.0)], "sales", "wk2.csv", apply_removals=True)
     assert len(_alerts(seeded)) == 1
 
 
 def test_a_recurrence_after_acknowledging_alerts_again(seeded):
     """…but once resolved, it must be able to fire again — a recurrence is news."""
-    models.import_weekly([_entry(IGN, "IV9920005-1", 218.0)], "sales", "wk1.csv")
+    models.import_weekly([_entry(IGN, "IV9920005-1", 218.0)], "sales", "wk1.csv", apply_removals=True)
     models.resolve_system_alert(_alerts(seeded)[0]["id"], "put")
-    models.import_weekly([_entry(IGN, "IV9920006-1", 30.0)], "sales", "wk2.csv")
+    models.import_weekly([_entry(IGN, "IV9920006-1", 30.0)], "sales", "wk2.csv", apply_removals=True)
     assert len(_alerts(seeded)) == 1, "a fresh occurrence after acknowledgement must alert"
 
 
 def test_a_clean_import_raises_no_alert(seeded):
     """Control: no skipped lines, no noise on /alerts."""
-    models.import_weekly([_entry(OK, "IV9920007-1", 100.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(OK, "IV9920007-1", 100.0)], "sales", "wk.csv", apply_removals=True)
     assert _alerts(seeded) == []
 
 
@@ -124,7 +124,7 @@ def test_an_alert_failure_never_sinks_a_good_import(seeded, monkeypatch):
     monkeypatch.setattr(sa, "create_system_alert",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("alert table down")))
     stats = models.import_weekly([_entry(OK, "IV9920008-1", 100.0),
-                                  _entry(IGN, "IV9920008-2", 218.0)], "sales", "wk.csv")
+                                  _entry(IGN, "IV9920008-2", 218.0)], "sales", "wk.csv", apply_removals=True)
     assert stats["imported"] == 1 and stats["ignored"] == 1
     c = sqlite3.connect(seeded)
     n = c.execute("SELECT COUNT(*) FROM sales_transactions WHERE doc_base='IV9920008'").fetchone()[0]

@@ -105,7 +105,7 @@ def spy_import_weekly(monkeypatch):
     import models
     calls = []
 
-    def _spy(entries, file_type, filename, apply_removals=True):
+    def _spy(entries, file_type, filename, apply_removals):
         calls.append({'file_type': file_type, 'filename': filename,
                       'apply_removals': apply_removals, 'n': len(entries)})
         return {'imported': len(entries), 'batch_id': None}

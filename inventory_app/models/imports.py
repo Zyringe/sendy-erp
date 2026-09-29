@@ -131,14 +131,15 @@ def preview_import(entries: list, file_type: str) -> dict:
 
 
 def import_weekly(entries: list, file_type: str, filename: str,
-                  apply_removals: bool = True, book: str = None) -> dict:
+                  *, apply_removals: bool, book: str = None) -> dict:
     """An importer run (#590): every cost row it causes is recorded as
     `import`, with the file named in the reason. See _import_weekly."""
     with actor.acting_as(source='import', detail=f'import:{filename}'):
-        return _import_weekly(entries, file_type, filename, apply_removals, book)
+        return _import_weekly(entries, file_type, filename,
+                              apply_removals=apply_removals, book=book)
 
 
-def _import_weekly(entries, file_type, filename, apply_removals=True, book=None):
+def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
     """
     Insert sales or purchase entries; skip duplicates by doc_no.
 

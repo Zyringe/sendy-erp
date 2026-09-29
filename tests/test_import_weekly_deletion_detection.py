@@ -77,11 +77,11 @@ def test_sales_deleted_line_is_reversed(empty_db):
     a = _seed(empty_db, 50001, 'A1')
     b = _seed(empty_db, 50002, 'A2')
     # invoice IV900 with two lines
-    models.import_weekly([_entry('IV900-1', 'A1', 10), _entry('IV900-2', 'A2', 5)], 'sales', 'f1')
+    models.import_weekly([_entry('IV900-1', 'A1', 10), _entry('IV900-2', 'A2', 5)], 'sales', 'f1', apply_removals=True)
     assert _stock(empty_db, a) == -10 and _stock(empty_db, b) == -5
 
     # re-export the SAME invoice with line -1 (A1) deleted
-    s = models.import_weekly([_entry('IV900-2', 'A2', 5)], 'sales', 'f2')
+    s = models.import_weekly([_entry('IV900-2', 'A2', 5)], 'sales', 'f2', apply_removals=True)
     assert s['removed'] == 1, s
     assert _rows(empty_db, 'sales_transactions', 'IV900') == 1, "orphan line must be gone"
     assert _stock(empty_db, a) == 0, "deleted line's stock must be restored"
@@ -93,12 +93,12 @@ def test_partial_file_does_not_reverse_absent_docs(empty_db):
     import models
     a = _seed(empty_db, 50101, 'B1')
     b = _seed(empty_db, 50102, 'B2')
-    models.import_weekly([_entry('IV910-1', 'B1', 7)], 'sales', 'f1')
-    models.import_weekly([_entry('IV911-1', 'B2', 3)], 'sales', 'f2')
+    models.import_weekly([_entry('IV910-1', 'B1', 7)], 'sales', 'f1', apply_removals=True)
+    models.import_weekly([_entry('IV911-1', 'B2', 3)], 'sales', 'f2', apply_removals=True)
     assert _stock(empty_db, a) == -7 and _stock(empty_db, b) == -3
 
     # a slice that only contains IV911 must leave IV910 completely alone
-    s = models.import_weekly([_entry('IV911-1', 'B2', 3)], 'sales', 'f3')
+    s = models.import_weekly([_entry('IV911-1', 'B2', 3)], 'sales', 'f3', apply_removals=True)
     assert s['removed'] == 0, s
     assert _stock(empty_db, a) == -7, "doc absent from the slice must NOT be reversed"
     assert _rows(empty_db, 'sales_transactions', 'IV910') == 1
@@ -111,10 +111,10 @@ def test_purchase_deleted_line_seq_is_reversed(empty_db):
     models.import_weekly([
         _entry('HP301', 'D1', 10, price=5.0, line_seq=1),
         _entry('HP301', 'D1', 5, price=5.0, line_seq=2),
-    ], 'purchase', 'f1')
+    ], 'purchase', 'f1', apply_removals=True)
     assert _stock(empty_db, d) == 15
 
-    s = models.import_weekly([_entry('HP301', 'D1', 10, price=5.0, line_seq=1)], 'purchase', 'f2')
+    s = models.import_weekly([_entry('HP301', 'D1', 10, price=5.0, line_seq=1)], 'purchase', 'f2', apply_removals=True)
     assert s['removed'] == 1, s
     assert _rows(empty_db, 'purchase_transactions', 'HP301') == 1
     assert _stock(empty_db, d) == 10, "deleted second line must reverse its stock"
@@ -124,8 +124,8 @@ def test_purchase_deleted_line_seq_is_reversed(empty_db):
 def test_identical_reimport_no_phantom_removal(empty_db):
     import models
     _seed(empty_db, 50301, 'E1')
-    models.import_weekly([_entry('IV920-1', 'E1', 4)], 'sales', 'f1')
-    s = models.import_weekly([_entry('IV920-1', 'E1', 4)], 'sales', 'f2')
+    models.import_weekly([_entry('IV920-1', 'E1', 4)], 'sales', 'f1', apply_removals=True)
+    s = models.import_weekly([_entry('IV920-1', 'E1', 4)], 'sales', 'f2', apply_removals=True)
     assert s['removed'] == 0 and s['unchanged'] == 1, s
 
 
@@ -134,7 +134,7 @@ def test_removals_opt_out_keeps_orphan(empty_db):
     import models
     a = _seed(empty_db, 50501, 'G1')
     b = _seed(empty_db, 50502, 'G2')
-    models.import_weekly([_entry('IV940-1', 'G1', 6), _entry('IV940-2', 'G2', 2)], 'sales', 'f1')
+    models.import_weekly([_entry('IV940-1', 'G1', 6), _entry('IV940-2', 'G2', 2)], 'sales', 'f1', apply_removals=True)
     assert _stock(empty_db, a) == -6
 
     # re-import with line -1 gone BUT opt-out → orphan kept, stock untouched,
@@ -150,7 +150,7 @@ def test_preview_lists_removals_readonly(empty_db):
     import models
     a = _seed(empty_db, 50401, 'F1')
     b = _seed(empty_db, 50402, 'F2')
-    models.import_weekly([_entry('IV930-1', 'F1', 9), _entry('IV930-2', 'F2', 1)], 'sales', 'f1')
+    models.import_weekly([_entry('IV930-1', 'F1', 9), _entry('IV930-2', 'F2', 1)], 'sales', 'f1', apply_removals=True)
 
     reduced = [_entry('IV930-2', 'F2', 1)]
     prev = models.preview_import(reduced, 'sales')
@@ -159,6 +159,6 @@ def test_preview_lists_removals_readonly(empty_db):
     # read-only
     assert _stock(empty_db, a) == -9 and _rows(empty_db, 'sales_transactions', 'IV930') == 2
 
-    st = models.import_weekly(reduced, 'sales', 'f2')
+    st = models.import_weekly(reduced, 'sales', 'f2', apply_removals=True)
     assert st['removed'] == prev['removed']
     assert _stock(empty_db, a) == 0

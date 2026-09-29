@@ -369,7 +369,7 @@ def test_a_real_import_round_trip_still_works_and_declares_itself(db, empty_db, 
     monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
     monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
 
-    first = models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv')
+    first = models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv', apply_removals=True)
     assert first['imported'] == 1, first
     row = db.execute("SELECT change_source, change_actor, change_token, net"
                      " FROM sales_transactions WHERE doc_no='IV7001-1'").fetchone()
@@ -378,14 +378,14 @@ def test_a_real_import_round_trip_still_works_and_declares_itself(db, empty_db, 
     assert row['change_token'], 'the importer must stamp a token or its rows cannot be edited later'
 
     # Re-import the SAME line: a genuine no-op, and must stay one.
-    again = models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv')
+    again = models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv', apply_removals=True)
     assert again['unchanged'] == 1 and again['imported'] == 0, again
 
     # Re-import a CHANGED line — imports.py does DELETE+INSERT here, which the
     # UPDATE guard deliberately never sees. If that ever became an UPDATE this
     # test is where the import would start failing.
     changed = models.import_weekly([_entry(net=25.0, total=25.0)], 'sales',
-                                   'ยอดขาย_ทดสอบ.csv')
+                                   'ยอดขาย_ทดสอบ.csv', apply_removals=True)
     assert changed['overwritten'] == 1, changed
     assert db.execute("SELECT net FROM sales_transactions WHERE doc_no='IV7001-1'"
                       ).fetchone()[0] == 25.0
@@ -404,7 +404,7 @@ def test_a_line_the_importer_wrote_can_still_be_hand_corrected(db, empty_db, mon
     import config, database, models
     monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
     monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
-    models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv')
+    models.import_weekly([_entry()], 'sales', 'ยอดขาย_ทดสอบ.csv', apply_removals=True)
     rid = db.execute("SELECT id FROM sales_transactions").fetchone()['id']
 
     conn = sqlite3.connect(str(empty_db))
@@ -740,7 +740,7 @@ def _import_then_hand_correct(db, empty_db, monkeypatch, doc='IV8001-1'):
     import config, database, models
     monkeypatch.setattr(config, 'DATABASE_PATH', str(empty_db))
     monkeypatch.setattr(database, 'DATABASE_PATH', str(empty_db))
-    models.import_weekly([_entry(doc_no=doc)], 'sales', 'ยอดขาย_wk1.csv')
+    models.import_weekly([_entry(doc_no=doc)], 'sales', 'ยอดขาย_wk1.csv', apply_removals=True)
     rid = db.execute("SELECT id FROM sales_transactions WHERE doc_no=?", (doc,)).fetchone()['id']
     conn = sqlite3.connect(str(empty_db))
     models.declared_update(conn, 'sales_transactions', rid, {'date_iso': '2026-01-14'},
@@ -757,7 +757,7 @@ def test_importer_replacing_a_hand_corrected_line_is_not_recorded_as_the_human(
         db, empty_db, monkeypatch):
     models, _ = _import_then_hand_correct(db, empty_db, monkeypatch, 'IV8001-1')
     models.import_weekly([_entry(doc_no='IV8001-1', net=25.0, total=25.0)],
-                         'sales', 'ยอดขาย_wk2.csv')
+                         'sales', 'ยอดขาย_wk2.csv', apply_removals=True)
     d = [r for r in audit(db, 'DELETE') if r['row_key'] == 'IV8001-1|A001']
     assert len(d) == 1, [dict(x) for x in audit(db, 'DELETE')]
     assert d[0]['change_source'] == 'import', (

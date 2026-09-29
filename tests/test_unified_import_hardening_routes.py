@@ -46,7 +46,7 @@ def spy_import_weekly(monkeypatch):
     import models
     calls = []
 
-    def _spy(entries, file_type, filename, apply_removals=True):
+    def _spy(entries, file_type, filename, apply_removals):
         calls.append({'file_type': file_type, 'filename': filename,
                       'apply_removals': apply_removals, 'n': len(entries)})
         return {'imported': len(entries), 'batch_id': None}
@@ -174,7 +174,7 @@ def test_mixed_drop_isolates_bad_files(admin_client, spy_import_weekly):
 def spy_with_skipped_removals(monkeypatch):
     import models
     monkeypatch.setattr(models, 'import_weekly',
-                        lambda entries, kind, fn, apply_removals=True: {
+                        lambda entries, kind, fn, apply_removals: {
                             'imported': len(entries), 'batch_id': None,
                             'removed': 0, 'removed_skipped': 0 if apply_removals else 3})
     return None
@@ -268,7 +268,7 @@ def spy_all_importers(monkeypatch):
     import import_credit_notes as icn
     calls = []
     monkeypatch.setattr(models, 'import_weekly',
-                        lambda e, k, f, apply_removals=True: calls.append('import_weekly') or {})
+                        lambda e, k, f, apply_removals: calls.append('import_weekly') or {})
     monkeypatch.setattr(models, 'import_payments',
                         lambda p: calls.append('import_payments') or {})
     monkeypatch.setattr(icn, 'import_credit_notes',
@@ -389,7 +389,7 @@ def test_unknown_classified_as_a_non_weekly_type_never_applies_removals(
 def spy_with_ignored_lines(monkeypatch):
     import models
     monkeypatch.setattr(models, 'import_weekly',
-                        lambda entries, kind, fn, apply_removals=True: {
+                        lambda entries, kind, fn, apply_removals: {
                             'imported': len(entries), 'batch_id': None, 'ignored': 2,
                             'ignored_detail': [
                                 {'bsn_code': '888ค8888', 'name': 'ค่าขนส่ง',

@@ -378,3 +378,16 @@ def test_a_full_history_call_into_the_main_db_is_caught():
     (rel, func), (window, db) = next(iter(rogue.items()))
     assert window == "None" and "DATABASE_PATH" in db
     assert (rel, func) not in ALLOWED
+
+
+def test_import_weekly_has_no_removals_default():
+    """PR-0 (card E): every caller says whether source-line removals apply."""
+    import inspect
+    import models
+    from models import imports
+    for fn in (models.import_weekly, imports._import_weekly):
+        p = inspect.signature(fn).parameters['apply_removals']
+        assert p.default is inspect.Parameter.empty
+        assert p.kind is inspect.Parameter.KEYWORD_ONLY
+    with pytest.raises(TypeError):
+        models.import_weekly([], 'sales', 'x.csv')

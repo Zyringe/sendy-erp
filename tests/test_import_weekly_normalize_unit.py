@@ -52,7 +52,7 @@ def test_known_acronym_normalized_unknown_kept(tmp_db, monkeypatch, patch_models
 
     models.import_weekly([_entry("CNORMK", "หล"),        # known → โหล
                           _entry("CNORMU", "ผป")],       # unknown → kept
-                         "purchase", "norm.csv")
+                         "purchase", "norm.csv", apply_removals=True)
 
     c = sqlite3.connect(tmp_db)
     units = {r[0]: r[1] for r in c.execute(

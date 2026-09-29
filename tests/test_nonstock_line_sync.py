@@ -96,7 +96,7 @@ def test_non_stock_line_is_imported_as_revenue(tmp_db_conn):
     _map(conn, '888ค8888', 'ค่าขนส่ง', pid, is_ignored=1)   # pre-mig state
 
     stats = models.import_weekly(
-        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9001-1', 30.0)], 'sales', 'test.csv')
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9001-1', 30.0)], 'sales', 'test.csv', apply_removals=True)
 
     assert stats['non_stock'] == 1, stats
     assert stats['ignored'] == 0, stats
@@ -133,7 +133,7 @@ def test_vat_code_is_still_dropped_entirely(tmp_db_conn):
     _map(conn, '888ค8887', 'ค่าVAT', pid, is_ignored=1)
 
     stats = models.import_weekly(
-        [_entry('888ค8887', 'ค่าVAT', 'IV9002-1', 70.0)], 'sales', 'test.csv')
+        [_entry('888ค8887', 'ค่าVAT', 'IV9002-1', 70.0)], 'sales', 'test.csv', apply_removals=True)
 
     assert stats['ignored'] == 1, stats
     assert stats['non_stock'] == 0, stats
@@ -205,7 +205,7 @@ def test_non_stock_line_creates_no_ledger_row(tmp_db_conn):
     before = before[0] if before else 0
 
     models.import_weekly(
-        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9003-1', 30.0)], 'sales', 'test.csv')
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9003-1', 30.0)], 'sales', 'test.csv', apply_removals=True)
 
     ledger = conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]
@@ -239,11 +239,11 @@ def test_non_stock_row_survives_pass_2_rebuild(tmp_db_conn):
     _map(conn, '888ค8888', 'ค่าขนส่ง', pid)
 
     models.import_weekly(
-        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9004-1', 30.0)], 'sales', 'test.csv')
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9004-1', 30.0)], 'sales', 'test.csv', apply_removals=True)
     # Second import on the SAME pid with a CHANGED net forces affected_pids
     # to include pid, which triggers the pass-2 delete/reset/re-sync.
     models.import_weekly(
-        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9004-1', 45.0)], 'sales', 'test.csv')
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9004-1', 45.0)], 'sales', 'test.csv', apply_removals=True)
 
     rows = conn.execute(
         "SELECT net, synced_to_stock FROM sales_transactions WHERE bsn_code='888ค8888'"
@@ -288,7 +288,7 @@ def test_reimport_identical_non_stock_file_is_a_true_no_op(tmp_db_conn):
 
     entry = _entry('888ค8888', 'ค่าขนส่ง', 'IV9005-1', 30.0)
 
-    first = models.import_weekly([dict(entry)], 'sales', 'test.csv')
+    first = models.import_weekly([dict(entry)], 'sales', 'test.csv', apply_removals=True)
     assert first['non_stock'] == 1, first
     assert first['imported'] == 1, first
     rows1 = conn.execute(
@@ -304,7 +304,7 @@ def test_reimport_identical_non_stock_file_is_a_true_no_op(tmp_db_conn):
         (pid,)).fetchone()
     stock1 = stock1[0] if stock1 else 0
 
-    second = models.import_weekly([dict(entry)], 'sales', 'test.csv')
+    second = models.import_weekly([dict(entry)], 'sales', 'test.csv', apply_removals=True)
 
     assert second['unchanged'] == 1, second
     assert second['imported'] == 0, second

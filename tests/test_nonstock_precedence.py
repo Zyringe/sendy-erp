@@ -91,7 +91,7 @@ def test_restored_backup_contradiction_keeps_revenue_and_alerts(tmp_db_conn):
         'product_code_raw': '888ค8888', 'product_name_raw': 'ค่าขนส่ง',
         'party': 'วรสวัสดิ์', 'party_code': '01อ35', 'qty': 1.0, 'unit': 'ใบ',
         'unit_price': 30.0, 'vat_type': 2, 'discount': '', 'total': 30.0,
-        'net': 30.0, 'line_seq': 1}], 'sales', 'test.csv')
+        'net': 30.0, 'line_seq': 1}], 'sales', 'test.csv', apply_removals=True)
 
     assert stats['non_stock'] == 1, stats
     n = conn.execute(

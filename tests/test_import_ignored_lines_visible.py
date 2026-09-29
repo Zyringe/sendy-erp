@@ -72,7 +72,7 @@ def seeded(tmp_db, patch_models_conn):
 def test_ignored_lines_are_reported_separately_not_as_duplicates(seeded):
     stats = models.import_weekly(
         [_entry(OK_CODE, "IV9910001-1", 100.0), _entry(IGN_CODE, "IV9910001-2", 218.0)],
-        "sales", "f.csv")
+        "sales", "f.csv", apply_removals=True)
     assert stats["ignored"] == 1, "a skipped billable line needs its own count"
     assert stats.get("skipped_dup", 0) == 0, \
         "an ignored line is not a duplicate — that label is what hid ฿592"
@@ -83,7 +83,7 @@ def test_the_report_names_the_code_and_the_money_skipped(seeded):
     dropped and for HOW MUCH without opening the DB."""
     stats = models.import_weekly(
         [_entry(OK_CODE, "IV9910002-1", 100.0), _entry(IGN_CODE, "IV9910002-2", 218.0)],
-        "sales", "f.csv")
+        "sales", "f.csv", apply_removals=True)
     detail = stats["ignored_detail"]
     assert len(detail) == 1
     row = detail[0]
@@ -97,7 +97,7 @@ def test_preview_and_commit_agree_on_the_ignored_count(seeded):
     """They disagreed: preview counted `ignored`, commit counted `skipped_dup`."""
     entries = [_entry(OK_CODE, "IV9910003-1", 100.0), _entry(IGN_CODE, "IV9910003-2", 218.0)]
     plan = models.preview_import(entries, "sales")
-    stats = models.import_weekly(entries, "sales", "f.csv")
+    stats = models.import_weekly(entries, "sales", "f.csv", apply_removals=True)
     assert plan["ignored"] == stats["ignored"] == 1
 
 
@@ -106,7 +106,7 @@ def test_nothing_changes_about_what_actually_imports(seeded):
     and the real line must still land."""
     models.import_weekly(
         [_entry(OK_CODE, "IV9910004-1", 100.0), _entry(IGN_CODE, "IV9910004-2", 218.0)],
-        "sales", "f.csv")
+        "sales", "f.csv", apply_removals=True)
     c = sqlite3.connect(seeded)
     codes = [r[0] for r in c.execute(
         "SELECT bsn_code FROM sales_transactions WHERE doc_base='IV9910004'")]
@@ -116,6 +116,6 @@ def test_nothing_changes_about_what_actually_imports(seeded):
 
 def test_no_ignored_lines_means_no_noise(seeded):
     """Control for the warning UI: a clean import must report nothing to explain."""
-    stats = models.import_weekly([_entry(OK_CODE, "IV9910005-1", 100.0)], "sales", "f.csv")
+    stats = models.import_weekly([_entry(OK_CODE, "IV9910005-1", 100.0)], "sales", "f.csv", apply_removals=True)
     assert stats["ignored"] == 0
     assert stats["ignored_detail"] == []

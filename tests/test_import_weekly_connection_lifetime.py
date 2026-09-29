@@ -93,7 +93,7 @@ def test_a_raise_before_the_commit_still_closes_the_connection(tracked, monkeypa
     monkeypatch.setattr(imports_mod, '_resolve_mapping', _explode)
 
     with pytest.raises(_Boom):
-        imports_mod.import_weekly(_entries(), 'sales', 'x.csv')
+        imports_mod.import_weekly(_entries(), 'sales', 'x.csv', apply_removals=True)
 
     # CONTROL: the function really did get as far as opening a connection, so
     # a passing assertion below means "closed", not "never opened".
@@ -110,7 +110,7 @@ def test_the_happy_path_still_closes_exactly_once(tracked):
     """A guard must survive its own success: the fix must not double-close."""
     from models import imports as imports_mod
 
-    imports_mod.import_weekly(_entries(), 'sales', 'x.csv')
+    imports_mod.import_weekly(_entries(), 'sales', 'x.csv', apply_removals=True)
 
     assert len(tracked) == 1
     assert tracked[0].close_calls == 1, (
