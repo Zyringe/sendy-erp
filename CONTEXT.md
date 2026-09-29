@@ -248,6 +248,9 @@
   what a person means by "**the invoice**" — the thing you search for and click through to
   its detail page (`/sales/doc/<base>`). A prefix names the kind: sales-side **IV** (invoice
   ใบกำกับ), **SR** (credit note ใบลดหนี้), **HS**; purchase-side **HP**, **RR**, **GR**.
+  Which prefix is a **return** (SR on sales, GR on purchase; HS is a sale) is owned by
+  `inventory_app/document_kind.py`; nothing else types `'SR%'` / `'GR%'`
+  (`tests/test_document_kind_census.py`).
 
 - **บรรทัดเอกสาร (document line / doc_no)** — one product line *within* a document
   (`IV6901104-1`, `IV6901104-2`, …). The rows shown in the `/sales` and `/purchases` tables
