@@ -5,6 +5,7 @@ rationale. No behavior changes.
 """
 import json
 import customer_geo
+import document_kind
 import sales_filters
 import unit_conversion
 import vat_math
@@ -53,7 +54,7 @@ def _customer_documents(conn, where, params, limit=None):
                COUNT(*) AS item_count,
                MAX(vat_type) AS vat_type,
                SUM({vat_math.cash_sql()}) AS raw_total,
-               (doc_base LIKE 'SR%') AS is_credit_note,
+               ({document_kind.is_return_sql('', 'sales')}) AS is_credit_note,
                MAX(ref_invoice) AS ref_invoice
         FROM sales_transactions
         WHERE {where}

@@ -43,6 +43,7 @@ import re
 from collections import deque
 from datetime import datetime
 from functools import lru_cache
+import document_kind
 import vat_math
 
 # Customer code per platform (sales_transactions.customer_code).
@@ -180,7 +181,7 @@ def _ivs_and_srs_for(conn, customer_code):
                    ROUND(SUM({_VAT_NET}), 2)      AS iv_net,
                    COUNT(*)                       AS line_count
             FROM sales_transactions
-            WHERE customer_code = ? AND (doc_base LIKE 'IV%' OR doc_base LIKE 'SR%')
+            WHERE customer_code = ? AND (doc_base LIKE 'IV%' OR {document_kind.is_return_sql('', 'sales')})
             GROUP BY doc_base""",
         (customer_code,)
     ).fetchall()
@@ -191,8 +192,8 @@ def _iv_and_sr_products(conn, customer_code):
     """doc_base -> set(product_id), IV and SR docs both included."""
     out = {}
     for r in conn.execute(
-        """SELECT doc_base, product_id FROM sales_transactions
-           WHERE customer_code = ? AND (doc_base LIKE 'IV%' OR doc_base LIKE 'SR%')
+        f"""SELECT doc_base, product_id FROM sales_transactions
+           WHERE customer_code = ? AND (doc_base LIKE 'IV%' OR {document_kind.is_return_sql('', 'sales')})
              AND product_id IS NOT NULL""",
         (customer_code,)
     ):

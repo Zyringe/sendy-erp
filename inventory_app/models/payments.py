@@ -6,6 +6,7 @@ docstring for the overall file-split rationale. No behavior changes.
 import math
 
 from database import get_connection
+import document_kind
 import vat_math
 from cashflow import BSN_AR_PREDICATE
 
@@ -78,7 +79,7 @@ def parse_payment_csv(filepath):
                 # regex is ever widened (new BSN doc kind), this catches the
                 # parser/CHECK-constraint coordination gap before paid_invoices
                 # receives a misclassified row.
-                if doc_no.startswith('SR'):
+                if document_kind.is_return(doc_no, 'sales'):
                     kind = 'SR'
                 elif doc_no.startswith('IV'):
                     kind = 'IV'
@@ -396,7 +397,7 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     conn = get_connection()
 
     # HS is paid on the spot, never a receivable (#514).
-    conds = ["st.doc_base IS NOT NULL", "st.doc_base NOT LIKE 'SR%'", "st.doc_base NOT LIKE 'HS%'"]
+    conds = ["st.doc_base IS NOT NULL", document_kind.not_return_sql('st', 'sales'), "st.doc_base NOT LIKE 'HS%'"]
     params = []
 
     if search:
@@ -477,7 +478,7 @@ def get_payment_summary():
             SELECT doc_base,
                    SUM({vat_math.cash_sql()}) AS net
             FROM sales_transactions
-            WHERE doc_base IS NOT NULL AND doc_base NOT LIKE 'SR%' AND doc_base NOT LIKE 'HS%'
+            WHERE doc_base IS NOT NULL AND {document_kind.not_return_sql('', 'sales')} AND doc_base NOT LIKE 'HS%'
             -- HS is paid on the spot, never a receivable (#514)
             GROUP BY doc_base
             HAVING SUM({vat_math.cash_sql()}) > 0
@@ -555,7 +556,7 @@ def get_ar_reconciliation():
                      SUM({vat_math.cash_sql()}) AS bill_net
                 FROM sales_transactions
                WHERE doc_base IS NOT NULL
-                 AND doc_base NOT LIKE 'SR%'
+                 AND {document_kind.not_return_sql('', 'sales')}
                  AND doc_base NOT LIKE 'HS%'
                  -- HS is paid on the spot, never a receivable (#514)
                GROUP BY doc_base
@@ -745,7 +746,7 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
         FROM sales_transactions st
         LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
         WHERE st.doc_base IS NOT NULL
-          AND st.doc_base NOT LIKE 'SR%' AND st.doc_base NOT LIKE 'HS%'
+          AND {document_kind.not_return_sql('st', 'sales')} AND st.doc_base NOT LIKE 'HS%'
           -- HS is paid on the spot, never a receivable (#514)
           AND apd.doc_no IS NULL
           AND st.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)

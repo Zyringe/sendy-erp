@@ -66,6 +66,7 @@ import sqlite3
 from typing import Optional
 
 import bsn_units
+import document_kind
 from config import DATABASE_PATH
 from parse_weekly import (
     parse_credit_notes,
@@ -443,9 +444,9 @@ def populate_sr_writeoffs(conn=None, db_path=None):
 
     # Fetch all SR rows from sales_transactions
     sr_rows = conn.execute(
-        """SELECT doc_no, doc_base, date_iso, customer, ref_invoice, net
+        f"""SELECT doc_no, doc_base, date_iso, customer, ref_invoice, net
            FROM sales_transactions
-           WHERE doc_base LIKE 'SR%'
+           WHERE {document_kind.is_return_sql('', 'sales')}
         """
     ).fetchall()
 
@@ -454,7 +455,8 @@ def populate_sr_writeoffs(conn=None, db_path=None):
     # We only need non-SR doc_bases (an SR pointing to another SR is pre_system).
     real_doc_bases = {
         row[0] for row in conn.execute(
-            "SELECT DISTINCT doc_base FROM sales_transactions WHERE doc_base NOT LIKE 'SR%'"
+            "SELECT DISTINCT doc_base FROM sales_transactions WHERE "
+            + document_kind.not_return_sql('', 'sales')
         ).fetchall()
     }
 
