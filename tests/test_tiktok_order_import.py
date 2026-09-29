@@ -117,6 +117,8 @@ def test_loader_refuses_a_file_that_is_not_an_order_export():
 
 def test_one_constant_decides_which_platforms_deduct():
     assert set(PLATFORM_STOCK_DEDUCT_CUSTOMERS.values()) == {'shopee', 'lazada'}
+    # The staleness exemption is the complement of that same rule.
+    assert models.ORDER_STALENESS_EXEMPT == {'tiktok'}
 
 
 def test_tiktok_order_after_stock_as_of_leaves_the_mirror_alone(conn):

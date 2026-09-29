@@ -341,8 +341,9 @@ def import_marketplace_orders(conn, orders, source_file=None):
 # pill, which displays the same signal). The alert exists because a stale
 # order import leaves the platform_skus.stock mirror reading high; TikTok
 # orders never touch the mirror (_ORDER_DEDUCT_PLATFORMS), so a TikTok upload
-# gap costs nothing and there is no 10-day chore to nag about.
-ORDER_STALENESS_EXEMPT = frozenset({'tiktok'})
+# gap costs nothing and there is no 10-day chore to nag about. Derived, so the
+# deduct rule lives in one place: exempt = every platform whose orders don't deduct.
+ORDER_STALENESS_EXEMPT = frozenset(PLATFORMS) - _ORDER_DEDUCT_PLATFORMS
 
 # D8: weekly cadence (Put's chosen operating rhythm) + weekend/holiday slack.
 # The ONLY freshness rule for order imports -- do not invent a second one.
