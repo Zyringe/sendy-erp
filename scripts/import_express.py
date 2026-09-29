@@ -744,7 +744,10 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('file_type', choices=sorted(_IMPORTERS))
+    # 'sales' is off the CLI (Card E, ADR 0020): the ขาย text report is retired
+    # everywhere else, and this door writes express_sales, read by
+    # models/brands.py. `_import_sales` and run_import('sales') stay for that table.
+    ap.add_argument('file_type', choices=sorted(k for k in _IMPORTERS if k != 'sales'))
     ap.add_argument('path', type=Path)
     ap.add_argument('--company', default='BSN', help='company code (BSN or SD)')
     ap.add_argument('--dry-run', action='store_true')
