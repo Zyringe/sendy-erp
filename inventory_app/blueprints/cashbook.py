@@ -27,6 +27,7 @@ from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
 from markupsafe import Markup
 
 import access_control
+import cashbook_ledger
 import database
 import filters
 from paging import paging
@@ -57,7 +58,7 @@ TRANSFER_CATEGORIES = ("เงินทุน/เงินโอน",)
 # treated as an advance iff it also resolves a valid employee — see
 # `_resolve_advance_rows`. Excluded from overspend flags (advances are lumpy,
 # finding #5); still counts in the P&L / category summary.
-ADVANCE_CATEGORY = "เงินเดือน (เบิกล่วงหน้า)"
+ADVANCE_CATEGORY = cashbook_ledger.ADVANCE_CATEGORY
 
 # Phase 3 (plan.md decisions C1-C3): the other two salary-family categories,
 # each hard-blocked from MANUAL cashbook entry because they are sourced
@@ -67,8 +68,8 @@ ADVANCE_CATEGORY = "เงินเดือน (เบิกล่วงหน�
 #   - COMMISSION_CATEGORY: HYBRID blocked — only for an "in-engine" recipient
 #     (see `_in_engine_commission_rep`); an off-system rep (not in
 #     `salespersons`) keeps the cashbook as its manual home (ADR 0008).
-SALARY_CATEGORY = "เงินเดือน"
-COMMISSION_CATEGORY = "จ่ายค่าคอมมิชชั่น"
+SALARY_CATEGORY = cashbook_ledger.SALARY_CATEGORY
+COMMISSION_CATEGORY = cashbook_ledger.COMMISSION_CATEGORY
 
 
 def _tcat_ph():

@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-import cashbook_seam_scenario as scn
+from tests import cashbook_seam_scenario as scn
 import database
 
 import cashbook_ledger as ledger
@@ -851,4 +851,27 @@ def test_payout_writers_refuse_a_non_payout_row(db):
     for fn in (ledger.cancel_payout, ledger.set_payout_description):
         with pytest.raises(ledger.CashbookError):
             _ledger(path, fn, txn_id=txn)
+    assert _state(path) == before
+
+
+def test_cancel_manual_cascade_guard_refuses_a_deduction_that_lands_mid_delete(db):
+    """The second, atomic check (`DELETE ... AND deducted_in_run_id IS NULL`)
+    is shadowed by the read before it, so reach it directly: a trigger deducts
+    the advance at the moment its cashbook row is deleted. The refusal must
+    leave both rows in place (the caller's database.immediate rolls back)."""
+    path, ids = db
+    adv_id, txn = _ledger(path, ledger.post_advance, account_id=ids['acct_392'],
+                          txn_date='2026-09-05', employee_id=ids['emp2'], amount=700.0,
+                          description='', note='', actor=ACTOR)
+    c = sqlite3.connect(path)
+    c.execute(f"""CREATE TRIGGER deduct_mid_delete BEFORE DELETE ON cashbook_transactions
+                  WHEN OLD.id = {txn}
+                  BEGIN UPDATE salary_advances SET deducted_in_run_id = {ids['run']}
+                        WHERE id = OLD.salary_advance_id; END""")
+    c.commit()
+    c.close()
+    before = _state(path)
+    with pytest.raises(ledger.LockedRow) as caught:
+        _ledger(path, ledger.cancel_manual, txn, actor=ACTOR)
+    assert caught.value.kind == 'advance_deducted'
     assert _state(path) == before

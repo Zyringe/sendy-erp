@@ -8,7 +8,8 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 
 from datetime import date
 
-from blueprints.cashbook import _overspend_flags, ADVANCE_CATEGORY
+from blueprints.cashbook import _overspend_flags
+from cashbook_ledger import ADVANCE_CATEGORY
 
 
 def test_advance_category_never_overspend_flagged(tmp_db_conn):

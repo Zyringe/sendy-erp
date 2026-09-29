@@ -24,24 +24,22 @@ Call after marketplace_reconcile.reconcile_payouts(conn, platform) has
 committed. Idempotent — calling it again with no payout change is a no-op.
 """
 
-PLATFORM_ACCOUNT_CODE = {'lazada': 'LEX', 'shopee': 'SPX'}
-PLATFORM_LABEL_TH = {'lazada': 'Lazada', 'shopee': 'Shopee'}
-PAYOUT_CATEGORY = 'ยอดขายของ'
-PAYOUT_CREATED_BY = 'ระบบ'
-MIN_DEPOSIT_DATE = '2026-01-01'
+# The constants and the exception live in cashbook_ledger (card F); re-exported
+# here so `cashbook_payout_mirror.<name>` stays the same object for its callers.
+from cashbook_ledger import (  # noqa: F401
+    MIN_DEPOSIT_DATE,
+    PAYOUT_CATEGORY,
+    PAYOUT_CREATED_BY,
+    PLATFORM_ACCOUNT_CODE,
+    PLATFORM_LABEL_TH,
+    CashbookPayoutMirrorError,
+)
 
 # Matches scripts/convert_legacy_cashbook_payout_rows.py's own match window —
 # that script imports this constant rather than keeping its own copy, so the
 # two can never drift apart (review finding: they used to be independent
 # numbers with no code tying them together).
 CONFLICT_WINDOW_DAYS = 2
-
-
-class CashbookPayoutMirrorError(Exception):
-    """The platform has no active destination cashbook account (unknown
-    platform, or the account is missing/inactive). Raised instead of
-    silently skipping — issue #533: "show a visible error and never skip
-    silently"."""
 
 
 def _target_payouts(conn, platform):
