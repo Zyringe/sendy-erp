@@ -214,12 +214,18 @@ def _row_html(html, order_sn):
 
 def test_dashboard_badges_tiktok_and_waits_for_income(conn):
     _import_fixture(conn)
+    conn.execute("INSERT INTO marketplace_orders (platform, order_sn, item_total, order_date) "
+                 "VALUES ('shopee', 'SPFILTER1', 50, '2026-09-04 13:00')")
+    conn.commit()
+    # Control: the Shopee order is on the unfiltered page.
+    assert 'SPFILTER1' in _client().get('/marketplace').get_data(as_text=True)
     html = _client().get('/marketplace?platform=tiktok').get_data(as_text=True)
     row = _row_html(html, '585884671861360379')
     assert 'TikTok' in row and 'Lazada' not in row and 'Shopee' not in row
     assert 'รอไฟล์ Income' in row
     assert '~ประมาณ' not in row
-    # Control: the filter really narrowed to TikTok, and the other orders render too.
+    # The filter narrowed to TikTok: the Shopee order is gone, the 3 TikTok ones render.
+    assert 'SPFILTER1' not in html
     assert html.count('class="js-order-detail"') == 3
 
 
