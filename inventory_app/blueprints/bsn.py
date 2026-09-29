@@ -1249,7 +1249,20 @@ def _express_dbf_summary_message(per_type):
     skipped = per_type['payments_in'].get('skipped_rectyp') or []
     if skipped:
         msg += f' · ข้ามบรรทัดที่อ่านไม่ได้ {len(skipped)} บรรทัด'
+    # Sales/purchase lines the source no longer lists are reversed on every zip
+    # (Card E, ADR 0020: declared apply_removals=True, no preview in front of
+    # it). Same stance as the link count above: silent on the ordinary day.
+    removed_lines = _removed_lines(per_type)
+    if sum(removed_lines.values()):
+        msg += f' · ลบบรรทัดที่หายจากต้นทาง {sum(removed_lines.values())}'
     return msg
+
+
+def _removed_lines(per_type):
+    """{'sales': n, 'purchase': m}: source lines the zip reversed. .get on
+    purpose, like the snapshot keys above: older callers carry no `removed`."""
+    return {k: (per_type.get(k) or {}).get('removed') or 0
+            for k in ('sales', 'purchase')}
 
 
 def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta,
@@ -1548,6 +1561,9 @@ def express_dbf_upload():
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {}),
                                   'doc_drift': per_type.get('doc_drift') or {}}
+                # In the run record beside the summary (Card E): the counts the
+                # flash clause above is built from, queryable after the fact.
+                results['bsn']['removed_lines'] = _removed_lines(per_type)
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
                 _dbf_lossy = _lossy_reversal_warning(
                     per_type.get('sales'), 'BSN5657 (DBF)')
