@@ -224,19 +224,17 @@ def unit_conversions_add():
         flash(f'"{typed}" คือหน่วยหลักของสินค้านี้ ({result["unit_type"]}) อยู่แล้ว '
               f'เท่ากับ 1 ต่อ 1 เสมอ ไม่ต้องเพิ่ม', 'info')
     elif 'exists' in result:
-        flash(f'สินค้านี้มีหน่วย "{result["stored_as"]}" อยู่แล้ว '
+        flash(f'สินค้ารหัส {product_id} มีหน่วย "{result["stored_as"]}" อยู่แล้ว '
               f'(ratio ปัจจุบัน {result["ratio"]:g}) จึงไม่ได้เปลี่ยนอะไร — '
-              f'ถ้าจะเปลี่ยน ratio ให้กด "แก้ไข" ที่แถวนี้ในตารางด้านล่าง '
-              f'(ระบบจะ re-sync สต็อกให้)', 'warning')
+              f'ถ้าจะเปลี่ยน ratio ให้ค้นหารหัส {product_id} แล้วกด "แก้ไข" '
+              f'ในตารางด้านล่าง (ระบบจะ re-sync สต็อกให้)', 'warning')
     elif 'pending_bills' in result:
         flash(f'หน่วย "{typed}" ของสินค้านี้มีบิล {result["pending_bills"]} แถวรอแปลงหน่วยอยู่ — '
               f'ให้กำหนด ratio ในตารางรอกำหนดด้านบนแทน (บันทึกที่นั่นจะ sync สต็อกให้ด้วย)',
               'warning')
     else:
         _flash_unit_hazard(result['blocked'])
-    # ok / exists: filter to the product so its row, and its แก้ไข button, is on screen
-    shown = str(product_id) if ('ok' in result or 'exists' in result) else q
-    return redirect(url_for('bsn.unit_conversions', q=shown or None))
+    return redirect(url_for('bsn.unit_conversions', q=q or None))
 
 
 @bp_bsn.route('/unit-conversions/dismiss', methods=['POST'])

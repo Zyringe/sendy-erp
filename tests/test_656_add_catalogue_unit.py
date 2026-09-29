@@ -341,12 +341,16 @@ def test_route_existing_ratio_is_kept_and_points_at_the_edit_button(seeded):
     c.commit()
     client = _client('admin')
 
-    client.post('/unit-conversions/add',
-                data={'product_id': str(P), 'unit': 'กล่อง', 'ratio': '12'})
+    resp = client.post('/unit-conversions/add',
+                       data={'product_id': str(P), 'unit': 'กล่อง', 'ratio': '12',
+                             'q': 'สี'})
 
     assert _rows(c) == [('กล่อง', 6.0)]
     (cat, msg), = _flashes(client)
-    assert cat == 'warning' and 'แก้ไข' in msg, (cat, msg)
+    assert cat == 'warning' and 'แก้ไข' in msg and str(P) in msg, (cat, msg)
+    # the page's search filter survives the round trip
+    from urllib.parse import parse_qs, urlsplit
+    assert parse_qs(urlsplit(resp.headers['Location']).query) == {'q': ['สี']}
 
 
 def test_route_blocked_uses_the_shared_hazard_flash(seeded):
