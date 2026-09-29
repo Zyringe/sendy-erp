@@ -53,7 +53,7 @@ from database import get_connection
 
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
 from .conversions import get_buildable
-from .marketplace import get_last_order_import_dates
+from .marketplace import get_last_order_import_dates, ORDER_STALENESS_EXEMPT
 from ._shared import PLATFORMS
 from .stock_filters import non_stock_clause
 
@@ -63,8 +63,9 @@ from .stock_filters import non_stock_clause
 # 2026-08-29 after
 # PR #416 put it in the ERP on 2026-08-22: the empty tuple had silently pinned
 # platform_est to the file figure. หน้าร้านT intentionally stays OUT of
-# bsn_sync.PLATFORM_STOCK_DEDUCT_CUSTOMERS because no TikTok order import
-# updates the platform mirror; every synced TikTok sale must remain sold_since.
+# bsn_sync.PLATFORM_STOCK_DEDUCT_CUSTOMERS because TikTok orders, imported
+# since mig 197, never update the platform mirror; every synced TikTok sale
+# must remain sold_since.
 PLATFORM_CUSTOMERS = {
     'shopee': ('หน้าร้านS', 'หน้าร้านB'),
     'lazada': ('หน้าร้านL',),
@@ -185,9 +186,9 @@ def get_marketplace_freshness():
     'last_order_import', 'order_days_old'}} — the freshness pills on the
     overview page. `sales_through` = MAX(date_iso) of the platform's
     หน้าร้าน customer rows (independent of platform_skus). `last_order_import`
-    / `order_days_old` = MAX(marketplace_orders.last_synced_at) per platform
-    (shopee/lazada only — tiktok has no order rows, CHECK-excluded — so both
-    stay None for it). Reuses get_last_order_import_dates, the SAME query
+    / `order_days_old` = MAX(marketplace_orders.last_synced_at) per platform,
+    None for platforms in ORDER_STALENESS_EXEMPT (tiktok: its orders never
+    touch the mirror, so their upload date is not a freshness signal). Reuses get_last_order_import_dates, the SAME query
     get_order_staleness_alerts (the /alerts warning, D8) reads — this pill
     is a second DISPLAY of that signal, never a second DEFINITION of it."""
     conn = get_connection()
@@ -211,7 +212,8 @@ def get_marketplace_freshness():
                     f"SELECT MAX(date_iso) FROM sales_transactions WHERE customer IN ({ph})",
                     customers,
                 ).fetchone()[0]
-            last_order_import = last_order_by_platform.get(platform)
+            last_order_import = (None if platform in ORDER_STALENESS_EXEMPT
+                                 else last_order_by_platform.get(platform))
             if last_order_import:
                 order_days_old = conn.execute(
                     "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",

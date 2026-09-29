@@ -19,6 +19,16 @@ from database import get_connection
 import marketplace_match
 import vat_math
 
+from ._shared import PLATFORMS
+from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS
+
+# Platforms whose orders maintain the platform_skus.stock mirror. The SAME
+# constant decides which หน้าร้าน IVs deduct it (bsn_sync), so "the IV deducts"
+# and "the order deducts" cannot drift apart. TikTok is outside it (Put,
+# 2026-09-30): its mirror keeps moving by Express IV through
+# ecommerce_overview._sold_since_by_pid, and its orders are display-only.
+_ORDER_DEDUCT_PLATFORMS = frozenset(PLATFORM_STOCK_DEDUCT_CUSTOMERS.values())
+
 
 def resolve_marketplace_product_id(conn, platform, item):
     """Resolve one parsed order line -> internal products.id via platform_skus.
@@ -239,7 +249,8 @@ def import_marketplace_orders(conn, orders, source_file=None):
     """Upsert parsed marketplace orders (from parse_orders.py) into
     marketplace_orders / marketplace_order_items, then maintain each
     resolved listing's platform_skus.stock mirror via the diff engine
-    (_apply_order_stock_effect). Idempotent: re-importing the same order
+    (_apply_order_stock_effect) — for _ORDER_DEDUCT_PLATFORMS only; other
+    platforms' orders are stored and never touch the mirror. Idempotent: re-importing the same order
     updates the header, rebuilds its lines (handles edits/removals), and
     re-diffs the stock effect against what was already recorded for it.
 
@@ -311,6 +322,8 @@ def import_marketplace_orders(conn, orders, source_file=None):
             stats['items'] += 1
         stats['orders'] += 1
 
+        if o['platform'] not in _ORDER_DEDUCT_PLATFORMS:
+            continue
         effect = _apply_order_stock_effect(
             conn, o['platform'], oid, o.get('status'), o.get('order_date'), items)
         stats['deducted'] += effect['deducted']
@@ -324,10 +337,12 @@ def import_marketplace_orders(conn, orders, source_file=None):
     return stats
 
 
-# Order platforms this ERP tracks (marketplace_orders.platform CHECK). TikTok
-# excluded (D9): no TikTok orders exist in the ERP, so a staleness warning
-# about a TikTok order-import gap would be meaningless.
-_ORDER_PLATFORMS = ('shopee', 'lazada')
+# Platforms exempt from the order-staleness alert (and the /ecommerce order
+# pill, which displays the same signal). The alert exists because a stale
+# order import leaves the platform_skus.stock mirror reading high; TikTok
+# orders never touch the mirror (_ORDER_DEDUCT_PLATFORMS), so a TikTok upload
+# gap costs nothing and there is no 10-day chore to nag about.
+ORDER_STALENESS_EXEMPT = frozenset({'tiktok'})
 
 # D8: weekly cadence (Put's chosen operating rhythm) + weekend/holiday slack.
 # The ONLY freshness rule for order imports -- do not invent a second one.
@@ -335,7 +350,7 @@ ORDER_STALENESS_DAYS = 10
 
 
 def get_last_order_import_dates(conn):
-    """{platform: MAX(last_synced_at)} for shopee/lazada platforms that have
+    """{platform: MAX(last_synced_at)} for every platform that has
     at least one imported order (platforms with zero orders are absent from
     the dict, not mapped to None -- callers use .get()).
 
@@ -347,11 +362,11 @@ def get_last_order_import_dates(conn):
     just the staleness threshold)."""
     return {r['platform']: r['last'] for r in conn.execute(
         "SELECT platform, MAX(last_synced_at) AS last FROM marketplace_orders "
-        "WHERE platform IN ('shopee','lazada') GROUP BY platform").fetchall()}
+        "GROUP BY platform").fetchall()}
 
 
 def get_order_staleness_alerts(conn=None):
-    """Per shopee/lazada platform with >=1 active (is_ignored=0) listing,
+    """Per platform (minus ORDER_STALENESS_EXEMPT) with >=1 active (is_ignored=0) listing,
     warn when the marketplace order file hasn't been imported in over
     ORDER_STALENESS_DAYS days -- or has never been imported at all.
 
@@ -373,20 +388,19 @@ def get_order_staleness_alerts(conn=None):
     moment a fresh order file lands; nothing here needs a human dismiss.
 
     Returns a list of {'platform', 'days_old' (None if never imported),
-    'message'} for platforms currently stale, in _ORDER_PLATFORMS order.
+    'message'} for platforms currently stale, in PLATFORMS order.
     """
     own = conn is None
     if own:
         conn = get_connection()
     try:
         active = {r['platform'] for r in conn.execute(
-            "SELECT DISTINCT platform FROM platform_skus "
-            "WHERE platform IN ('shopee','lazada') AND is_ignored = 0").fetchall()}
+            "SELECT DISTINCT platform FROM platform_skus WHERE is_ignored = 0").fetchall()}
         last_by_platform = get_last_order_import_dates(conn)
 
         alerts = []
-        for platform in _ORDER_PLATFORMS:
-            if platform not in active:
+        for platform in PLATFORMS:
+            if platform not in active or platform in ORDER_STALENESS_EXEMPT:
                 continue
             last = last_by_platform.get(platform)
             label = platform.capitalize()
@@ -1255,7 +1269,7 @@ def get_marketplace_orders(platform=None, limit=500):
                      WHERE i.order_id=o.id AND i.internal_product_id IS NULL) AS n_unmapped
               FROM marketplace_orders o"""
         params = []
-        if platform in ('shopee', 'lazada'):
+        if platform in PLATFORMS:
             sql += " WHERE o.platform = ?"
             params.append(platform)
         sql += " ORDER BY o.order_date DESC, o.id DESC LIMIT ?"

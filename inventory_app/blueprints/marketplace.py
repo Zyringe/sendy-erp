@@ -1,4 +1,4 @@
-"""Marketplace orders blueprint — Shopee/Lazada order-export import + dashboard.
+"""Marketplace orders blueprint — Shopee/Lazada/TikTok order-export import + dashboard.
 
 v1 ingests orders by FILE UPLOAD (Shopee API needs a Key Account Manager; this
 path needs neither API nor approval). Replaces the manual Google tracking sheet.
@@ -9,7 +9,6 @@ import io
 import math
 from urllib.parse import urlsplit, urlunsplit
 
-import pandas as pd
 from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, jsonify, session, abort)
 
@@ -21,8 +20,8 @@ import marketplace_reconcile
 import cashbook_payout_mirror
 from database import get_connection
 from parse_balance import parse_shopee_balance, load_balance_sheet, BalanceError
-from marketplace_files import detect_file
-from parse_orders import parse_shopee_orders, parse_lazada_orders
+from marketplace_files import detect_file, load_order_export
+from models._shared import PLATFORMS
 from parse_income_transfer import (parse_shopee_income, IncomeTransferError,
                                    load_income_sheet, parse_shopee_income_fees)
 from parse_lazada_statement import (parse_lazada_statement, load_lazada_statement_csv,
@@ -58,15 +57,6 @@ def _mirror_payouts_to_cashbook(conn, platform):
     return None
 
 
-def _detect_platform(columns):
-    cols = set(columns)
-    if 'orderItemId' in cols and 'orderNumber' in cols:
-        return 'lazada'
-    if 'หมายเลขคำสั่งซื้อ' in cols:
-        return 'shopee'
-    return None
-
-
 def _skipped_lines_note(stats):
     """Thai flash note for import_marketplace_orders' skipped_lines/
     skipped_order_sns (Task 3.3 — order-driven-platform-deduction plan):
@@ -93,10 +83,11 @@ ROW_LIMIT = 500  # dashboard shows the newest N orders; see caption in the templ
 @bp_marketplace.route('/marketplace')
 def dashboard():
     platform = request.args.get('platform') or None
-    if platform not in ('shopee', 'lazada'):
+    if platform not in PLATFORMS:
         platform = None
     return render_template(
         'marketplace/index.html',
+        platforms=PLATFORMS,
         summary=models.get_marketplace_summary(),
         orders=models.get_marketplace_orders(platform=platform, limit=ROW_LIMIT),
         platform=platform,
@@ -108,17 +99,12 @@ def dashboard():
 def import_orders():
     f = request.files.get('order_file')
     if not f or f.filename == '':
-        flash('กรุณาเลือกไฟล์ order export (.xlsx)', 'warning')
+        flash('กรุณาเลือกไฟล์ order export (.xlsx / .csv)', 'warning')
         return redirect(url_for('marketplace.dashboard'))
     try:
-        df = pd.read_excel(io.BytesIO(f.read()), sheet_name=0, header=0, dtype=str)
+        platform, orders = load_order_export(f.read())
     except Exception as e:
         flash(f'อ่านไฟล์ไม่ได้: {e}', 'danger')
-        return redirect(url_for('marketplace.dashboard'))
-
-    platform = _detect_platform(df.columns)
-    if platform is None:
-        flash('ไม่รู้จักรูปแบบไฟล์ — ต้องเป็น order export จาก Shopee หรือ Lazada', 'danger')
         return redirect(url_for('marketplace.dashboard'))
 
     # Rollback point before the upsert overwrites existing orders' status etc.
@@ -128,8 +114,6 @@ def import_orders():
         warn=_flash_backup_warning)
 
     try:
-        orders = (parse_shopee_orders(df) if platform == 'shopee'
-                  else parse_lazada_orders(df))
         conn = get_connection()
         try:
             stats = models.import_marketplace_orders(conn, orders, f.filename)
@@ -268,6 +252,7 @@ def review():
     with a suggested action per group. Writes NOTHING; B/C/D rows reuse the
     existing IV picker (iv-candidates + link-iv) for the pick action."""
     platform = request.args.get('platform', 'shopee')
+    # tiktok joins in PR-3 (IV linking); until then its worklist would read Shopee codes.
     if platform not in ('shopee', 'lazada'):
         platform = 'shopee'
     conn = get_connection()
@@ -548,14 +533,12 @@ def upload():
         for name, data, kind, platform in staged:
             if kind is None:
                 problems.append(('warning', f'⚠️ {name}: ไม่รู้จักชนิดไฟล์ — ต้องเป็นไฟล์ '
-                                            'Order / Income / Balance จาก Shopee หรือ Lazada ค่ะ'))
+                                            'Order / Income / Balance จาก Shopee หรือ Lazada หรือ Order จาก TikTok ค่ะ'))
                 _log_import(conn, name, notes='marketplace:UNKNOWN')
                 continue
             try:
                 if kind == 'order':
-                    df = pd.read_excel(io.BytesIO(data), sheet_name=0, header=0, dtype=str)
-                    orders = (parse_shopee_orders(df) if platform == 'shopee'
-                              else parse_lazada_orders(df))
+                    platform, orders = load_order_export(data)
                     s = models.import_marketplace_orders(conn, orders, name)
                     done.append(f'📦 {name}: ออเดอร์ {s["orders"]} (ใหม่), จับคู่ {s["lines_resolved"]}')
                     _log_import(conn, name, rows=s['orders'], notes=f'marketplace:order:{platform}')
