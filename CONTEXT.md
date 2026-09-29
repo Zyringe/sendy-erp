@@ -219,6 +219,28 @@
   and หลอด in the VAT book (xp5). See `docs/adr/0018`.
   _Avoid_: alias table.
 
+- **หน่วยฐาน (base unit)** — the หน่วย a product is counted, stocked and costed in
+  (`products.unit_type`). Stock, WACC and `cost_price` are all per base unit. Every other unit
+  is converted to it.
+  _Avoid_: main unit, product unit.
+
+- **อัตราแปลง (conversion ratio)** — how many base units one of another หน่วย is, per product
+  (1 โหล = 12 ตัว). It is stored per bill spelling in `unit_conversions`. A line already in the
+  base unit needs no ratio.
+  _Avoid_: multiplier, factor, pack size.
+
+- **บรรทัดไม่มีอัตราแปลง (unratioed line)** — a bill line whose หน่วย has no conversion ratio for
+  its product. Each place that reads it does something different, deliberately (`docs/adr/0019`).
+  The stock ledger holds it (สต๊อกไม่ตัด). Price evidence skips it. COGS and the marketplace sold
+  count take it as 1 and show how many lines they did that for. The call card keeps its price
+  unconverted. The fix is always the same: add the ratio on `/unit-conversions`.
+
+- **เปลี่ยนหน่วยฐาน (rebase)** — changing a product's base unit, for example from กุรุส to ตัว.
+  Stock, the ledger, cost, prices and every ratio are rescaled together, so no quantity or value
+  moves. A rebase is run as a dated script, never from a page. Changing only how a unit is
+  *spelled* is a relabel, not a rebase.
+  _Avoid_: unit change.
+
 ## Trade documents (เอกสารซื้อ-ขาย — the `/sales` + `/purchases` tables)
 
 - **เอกสาร / เลขที่เอกสาร (document / doc-base)** — one whole invoice, purchase bill, or

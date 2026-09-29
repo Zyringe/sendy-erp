@@ -1,0 +1,80 @@
+# ADR 0019 — Unit conversion: one home for every reader, one named rule per reader family
+
+Status: Accepted · 2026-09-29
+
+## Context
+
+`unit_conversions` answers "how many base units is one of this unit" (1 โหล = 12 ตัว). Before card A,
+about ten places read it with their own SQL: the stock writer, the price resolver, COGS, the marketplace
+sold count, the call card, the quote CLI, the VAT-sub unit selector, review rules and the remap preflight.
+The first plan was one function with an `on_miss` flag. An `/interrogate` round (Fable, Codex Sol and
+Opus, 2026-09-29) showed that this cannot preserve behaviour. The readers differ on five axes, not one:
+
+- **How they compare the bill unit with the base unit.** By the unit's word (the price resolver), by raw
+  spelling after `strip()` (the stock writer, the remap preflight), or by raw spelling as stored (COGS,
+  the call card, the CLI, review rules).
+- **Which spellings they try.** The exact spelling only, or the spelling and then its word through the
+  unit map (ADR 0018).
+- **Whether the base unit or a stored row wins.** Most readers short-circuit the base unit first.
+  `_resolve_unit` reads the row first, and its `ratio_source` is part of the resolver's output.
+- **What a blank unit means.** 1.0 for the resolver and COGS. A held line for the stock writer.
+- **What a miss means.** See Decision 3.
+
+PROD, 2026-09-29: the families agree on today's data. The exact family holds 0 lines that the word family
+would convert. There are 733 rows keyed on a product's own base unit and none of them has a ratio other
+than 1. No variant spelling is in use anywhere. The gap is real in the code and latent in the data. It
+reopens as soon as a non-canonical spelling comes back.
+
+## Decision
+
+1. **`inventory_app/unit_conversion.py` is the one home for reading ratios.** A reader census
+   (`tests/test_unit_reader_census.py`) makes every other direct `SELECT`/`JOIN` on the table a writer,
+   PR2's, or an exemption with a reason.
+2. **Each reader family keeps its own rule under its own name.** No flag chooses between them.
+   `word_ratio` (the price resolver's bill lookup), `conversion_ratio` (the row lookup that
+   `_resolve_unit` and `_bundle_buy_ratio` build on), `exact_ratio` / `exact_ratios` (exact spelling, for
+   the quote CLI, the call card and the VAT-sub selector), and the COGS SQL trio (`base_qty_sql`,
+   `unit_conversion_join`, `unratioed_line_sql`). The stock writer's `_get_base_qty`, the remap preflight
+   and review rules join in PR2, behind the stock replay gate. Their exact, raw-spelling compare is kept
+   (Q11).
+3. **A miss is the caller's policy, named here and not in a parameter:**
+
+   | Reader | A unit with no ratio |
+   |---|---|
+   | stock writer | the line is held: stock is not moved until a ratio exists |
+   | price evidence (`word_ratio`) | the bill is skipped (the lowest-price scan also counts it in `n_unratioed`) |
+   | customer-page cost block (`word_ratio`) | the figure shows —, never a ratio of 1 |
+   | COGS (`base_qty_sql`) | costed at 1, counted, and disclosed on `/accounting` |
+   | marketplace sold count | counted at 1 and disclosed on the product page (Q14) |
+   | call card | the base price stays unconverted and a fixed promo is not applied |
+   | promo bundle gating (`_bundle_buy_ratio`) | 1.0, silently |
+   | quote CLI | the bill is skipped |
+
+4. **Two silent-1.0 sites are kept on purpose (Q16).** `_bundle_buy_ratio` feeds an internal promo
+   gating check, not a number anyone reads. The call card's unconverted price is #668. Both are
+   named here so that neither one reads as an oversight.
+5. **The marketplace sold count moves onto the COGS rule (Q14).** A line in the product's own unit is
+   ratio 1, whatever a row keyed on that unit says. Lines with no ratio are counted and disclosed. On
+   PROD, no number moved (the 0 base-keyed rows above).
+
+## Considered options
+
+- **One `ratio(..., on_miss=)` for everyone.** Rejected. Two of its three values returned the same
+  thing (holding and skipping are what the caller does next). The third made "1.0 because missing"
+  impossible to tell apart from a real 1.0. And it said nothing about the four axes that actually differ.
+- **Unify on the word family.** Rejected for now. It would change COGS (a `กุรุส` line on a product
+  whose row is stored as `กร` reads 1.0 in SQL today and 144 through the word) and the stock ledger.
+  A money change needs its own measurement and Put's call, not a refactor. If M1 stays 0, the canonical
+  compare for the stock side is a separate follow-up PR. It moves `conversion_unit_key` and the pending
+  predicate in lockstep.
+- **A Python-vs-SQL twin test.** Rejected. By design the SQL is the exact family, so the test would
+  either fail on day one or be written to expect the difference. The difference is pinned as expected
+  rows in `tests/test_unit_conversion_families.py` instead.
+
+## Consequences
+
+- A new reader has to pick a named family, or explain itself in the census.
+- The known disagreements are test rows (`tests/test_unit_conversion_families.py`). If one is ever
+  closed, the change is visible there and not a side effect.
+- `sales_filters` still re-exports the SQL trio, for the dated rebase scripts that import it from there.
+- The stock writer's 4-dp round stays with the stock writer. Nothing in the module rounds.
