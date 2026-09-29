@@ -625,3 +625,47 @@ def test_dbf_upload_rescans_review_flags_of_changed_lines(client, tmp_path, monk
     assert resp.status_code == 200, resp.data[:500]
     assert 'นำเข้าสำเร็จ'.encode() in resp.data
     assert _doc_flags('IV7068101') == [], 'stale ตรวจบิล flag survived the DBF re-import'
+
+
+# ── #683: a removed line's flag must not outlive it ─────────────────────────
+
+def _two_line_sale(lines):
+    stcrd = [_stcrd('IV7068301', 1, stkcod='bsn-683', qty=1.0, unit='ตัว',
+                    unitpr=65.0, trnval=65.0, netval=65.0)]
+    if lines == 2:
+        stcrd.append(_stcrd('IV7068301', 2, stkcod='bsn-683', qty=1.0, unit='โหล',
+                            unitpr=65.0, trnval=65.0, netval=65.0))
+    return {
+        'ARTRN': [_artrn('IV7068301', '3', cuscod='C683', docdat=_RECENT)],
+        'APTRN': [], 'STCRD': stcrd,
+        'ARMAS': [{'CUSCOD': 'C683', 'CUSNAM': 'ลูกค้าทดสอบ 683'}],
+        'APMAS': [], 'ARTRNRM': [], 'ARRCPIT': [], 'APRCPIT': [],
+    }
+
+
+def test_dbf_upload_clears_flag_of_a_removed_line(client, tmp_path, monkeypatch):
+    import config
+    import review_rules as rr
+    _login(client)
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES (?, 'ตัว')",
+        ('สินค้าทดสอบ #683',)).lastrowid
+    conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
+                 " VALUES ('bsn-683', 'สินค้าทดสอบ #683', ?, '')", (pid,))
+    conn.commit()
+    conn.close()
+
+    resp = _upload(client, tmp_path, monkeypatch, _two_line_sale(2))
+    assert resp.status_code == 200, resp.data[:500]
+    rr.scan_docs(['IV7068301'])
+    assert _doc_flags('IV7068301') == ['R4_UNUSUAL_UNIT']
+
+    resp = _upload(client, tmp_path, monkeypatch, _two_line_sale(1))
+    assert resp.status_code == 200, resp.data[:500]
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    lines = [r[0] for r in conn.execute(
+        "SELECT doc_no FROM sales_transactions WHERE doc_base = 'IV7068301'")]
+    conn.close()
+    assert lines == ['IV7068301-1'], 'line 2 was not removed, so this test proves nothing'
+    assert _doc_flags('IV7068301') == [], 'flag of the removed line survived the DBF re-import'

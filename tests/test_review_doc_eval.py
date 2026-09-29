@@ -291,6 +291,37 @@ class TestScanAll:
         ).fetchone()[0]
         assert n == 1
 
+    def test_scan_after_import_rescans_docs_with_orphaned_flags(self, tmp_path):
+        """#683: a line deleted outside the batch leaves a flag on a txn_id that
+        no longer exists. The next import's scan clears it, and does not
+        re-scan flagged docs whose lines all still exist."""
+        db_path = _make_db(tmp_path)
+        rr = _import_rr(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        _add_product(conn, 1)
+        old = _add_batch(conn)
+        _add_sales_row(conn, old, "IVO", product_id=None)
+        _add_sales_row(conn, old, "IVO", product_id=None)
+        _add_sales_row(conn, old, "IVK", product_id=None)
+        rr.scan_docs(["IVO", "IVK"], db_path=db_path)
+        gone = conn.execute(
+            "SELECT MAX(id) FROM sales_transactions WHERE doc_base='IVO'").fetchone()[0]
+        conn.execute("DELETE FROM sales_transactions WHERE id=?", (gone,))
+        conn.execute("UPDATE sales_transactions SET product_id=1 WHERE doc_base='IVK'")
+        new = _add_batch(conn)
+        _add_sales_row(conn, new, "IVN", product_id=1)
+        conn.commit()
+
+        rr.scan_after_import(new, db_path=db_path)
+
+        flags = lambda d: [r[0] for r in conn.execute(
+            "SELECT txn_id FROM txn_review_flags WHERE doc_base=?", (d,))]
+        kept = conn.execute(
+            "SELECT id FROM sales_transactions WHERE doc_base='IVO'").fetchone()[0]
+        assert flags("IVO") == [kept]
+        assert len(flags("IVK")) == 1, 'a flagged doc outside the batch with no orphan was re-scanned'
+
 
 # ── Task 6: get_review_feed + suspicious_count + default_since ───────────────
 
