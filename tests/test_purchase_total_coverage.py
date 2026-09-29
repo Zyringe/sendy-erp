@@ -22,15 +22,11 @@ one string, the SUM in another), files outside inventory_app/ (scripts/), and
 any figure computed in Python from fetched rows. The cross-surface test in
 test_494_purchase_total.py is the behavioural half; this is the census.
 """
-import os
 import re
 
 import pytest
 
 from tests import _census
-
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   'inventory_app')
 
 # Raw net aggregates: the shapes test_revenue_filter_coverage.py sweeps, plus
 # two it is blind to (review of #519): an alias with a digit (`s2.net`) and a
@@ -214,7 +210,7 @@ def test_the_sweep_sees_every_customer_key_shape(shape):
 
 
 @pytest.mark.parametrize('shape', ['implicit concatenation', 'plus concatenation',
-                                   'module constant', 'method'])
+                                   'module constant', 'method', 'format chain'])
 def test_the_sweep_sees_every_string_shape(shape):
     src = {
         'implicit concatenation':
@@ -225,6 +221,11 @@ def test_the_sweep_sees_every_string_shape(shape):
             '        "FROM sales_transactions WHERE customer = ?")\n',
         'module constant':
             'Q = "SELECT SUM(net) FROM sales_transactions WHERE customer = ?"\n',
+        # Review of #678 (W1): see test_591's 'format chain'.
+        'format chain':
+            'def report(conn, w):\n    return conn.execute(\"\"\"SELECT SUM(\n'
+            '        net) FROM sales_transactions WHERE customer = {w}\"\"\".format(w=w)\n'
+            '        + " GROUP BY customer").fetchone()\n',
         'method':
             'class Repo:\n    def report(self, conn):\n'
             '        return conn.execute("SELECT SUM(net) FROM sales_transactions '

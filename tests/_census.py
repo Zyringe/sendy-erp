@@ -62,20 +62,35 @@ def code_only(src):
     return '\n'.join(out)
 
 
+def _unwrap_format(node):
+    """`"literal".format(...)` -> the literal node, so a chain operand keeps its
+    text (and its real newlines) instead of becoming an escaped hole."""
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == 'format'
+            and render(node.func.value) is not None):
+        return node.func.value
+    return node
+
+
 def render(node):
     """Source text of a string expression, f-string holes kept as {expr}. A
     `+` chain renders its non-string operands as holes too, so a query built
-    as `"... SUM(" + sales_filters.base_qty_sql() + ") ..."` is read whole.
-    (The 591 and purchase-total walkers used to return None for a chain with a
-    non-string operand and so skipped it; the 627 walker rendered it. This is
-    the 627 behaviour, the superset.)"""
+    as `"... SUM(" + sales_filters.base_qty_sql() + ") ..."` is read whole; a
+    `.format()`d literal inside the chain is unwrapped to its literal first
+    (review of #678: as a hole its newlines were escaped and a pattern needing
+    `\\s*` across a line break stopped matching).
+
+    Relative to the old per-test walkers: 627's rendered such chains, 591's and
+    purchase-total's returned None and let the visitor recurse into the
+    operands. This keeps the 627 reach and the recursion's view of literals."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
         return ''.join(v.value if isinstance(v, ast.Constant)
                        else '{' + ast.unparse(v.value) + '}' for v in node.values)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = render(node.left), render(node.right)
+        lnode, rnode = _unwrap_format(node.left), _unwrap_format(node.right)
+        left, right = render(lnode), render(rnode)
         if left is None and right is None:
             return None
         return ((left if left is not None else '{' + ast.unparse(node.left) + '}')

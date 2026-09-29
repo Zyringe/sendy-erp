@@ -28,16 +28,12 @@ blueprints/bsn.py exclude GR entirely instead (a "latest purchase" is a
 single ROW, not a sum) — that exclusion is pinned by
 test_591_latest_purchase_excludes_gr.py, the behavioural half.
 """
-import os
 import re
 
 import pytest
 
 from tests import _census
 from tests._census import queries as _queries, py_files as _py_files  # noqa: F401
-
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   'inventory_app')
 
 # Raw net/qty aggregates: same shapes test_purchase_total_coverage.py sweeps
 # for sales_transactions (bare, aliased, coalesced, rounded, CASE, a digit
@@ -211,7 +207,8 @@ def test_the_sweep_ignores_what_is_not_a_raw_purchase_aggregate(shape):
     assert _per_function(NOT_SITES[shape], _RAW_AGG) == {}, f'{shape}: false positive'
 
 
-@pytest.mark.parametrize('shape', ['implicit concatenation', 'plus concatenation', 'method'])
+@pytest.mark.parametrize('shape', ['implicit concatenation', 'plus concatenation', 'method',
+                                   'format chain'])
 def test_the_sweep_sees_every_string_shape(shape):
     src = {
         'implicit concatenation':
@@ -220,6 +217,14 @@ def test_the_sweep_sees_every_string_shape(shape):
         'plus concatenation':
             'def report(conn):\n    return conn.execute("SELECT SUM(net) " +\n'
             '        "FROM purchase_transactions WHERE supplier = ?")\n',
+        # Review of #678 (W1): a multi-line literal that is .format()'d and then
+        # chained with `+`. The pre-shared walkers saw the raw literal; a walker
+        # that renders the .format() call as an unparse()d hole sees an escaped
+        # newline there and SUM\( then \s* no longer matches.
+        'format chain':
+            'def report(conn, w):\n    return conn.execute(\"\"\"SELECT SUM(\n'
+            '        net) FROM purchase_transactions WHERE {w}\"\"\".format(w=w)\n'
+            '        + " GROUP BY supplier").fetchone()\n',
         'method':
             'class Repo:\n    def report(self, conn):\n'
             '        return conn.execute("SELECT SUM(net) FROM purchase_transactions '
