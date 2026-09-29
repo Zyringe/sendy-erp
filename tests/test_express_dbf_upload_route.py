@@ -568,3 +568,60 @@ def test_upload_flash_names_the_links_it_deleted(client, tmp_path, monkeypatch):
         "SELECT 1 FROM paid_invoices WHERE doc_no='IV-GONE-FROM-SOURCE'").fetchone()
     conn.close()
     assert gone is None, 'control — the link really was removed'
+
+
+# ── #681: ตรวจบิล re-scan after a DBF upload ─────────────────────────────────
+
+def _upload(client, tmp_path, monkeypatch, tables):
+    import express_dbf_source as eds
+    monkeypatch.setattr(eds, 'open_table', lambda dataset_dir, name: tables[name])
+    zpath = _make_zip(tmp_path, names=list(tables))
+    with open(zpath, 'rb') as f:
+        return client.post('/import-express-dbf/upload',
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data', follow_redirects=True)
+
+
+def _one_line_sale(unit):
+    return {
+        'ARTRN': [_artrn('IV7068101', '3', cuscod='C681', docdat=_RECENT)],
+        'APTRN': [],
+        'STCRD': [_stcrd('IV7068101', 1, stkcod='bsn-681', qty=1.0, unit=unit,
+                         unitpr=65.0, trnval=65.0, netval=65.0)],
+        'ARMAS': [{'CUSCOD': 'C681', 'CUSNAM': 'ลูกค้าทดสอบ 681'}],
+        'APMAS': [], 'ARTRNRM': [], 'ARRCPIT': [], 'APRCPIT': [],
+    }
+
+
+def _doc_flags(doc_base):
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT rule_code FROM txn_review_flags WHERE doc_base = ?", (doc_base,))]
+    finally:
+        conn.close()
+
+
+def test_dbf_upload_rescans_review_flags_of_changed_lines(client, tmp_path, monkeypatch):
+    import config
+    import review_rules as rr
+    _login(client)
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type) VALUES (?, 'ตัว')",
+        ('สินค้าทดสอบ #681',)).lastrowid
+    conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
+                 " VALUES ('bsn-681', 'สินค้าทดสอบ #681', ?, '')", (pid,))
+    conn.commit()
+    conn.close()
+
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('โหล'))
+    assert resp.status_code == 200, resp.data[:500]
+    rr.scan_docs(['IV7068101'])
+    assert _doc_flags('IV7068101') == ['R4_UNUSUAL_UNIT']
+
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('ตัว'))
+    assert resp.status_code == 200, resp.data[:500]
+    assert 'นำเข้าสำเร็จ'.encode() in resp.data
+    assert _doc_flags('IV7068101') == [], 'stale ตรวจบิล flag survived the DBF re-import'
