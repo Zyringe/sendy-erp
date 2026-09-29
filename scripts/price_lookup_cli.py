@@ -87,6 +87,7 @@ sys.path.insert(0, str(ROOT / "inventory_app"))
 
 import config  # noqa: E402  (after sys.path insert, matches other scripts/*.py)
 import price_lookup as pl  # noqa: E402
+import unit_conversion  # noqa: E402
 import vat_math  # noqa: E402
 
 # Same normalization price_lookup.py uses internally (its private
@@ -124,8 +125,9 @@ def _latest_cash_per_piece(conn, product_id, unit_type):
     """Most recent evidence-filtered sale of this product (any customer),
     converted to cash per unit_type — same cash formula price_lookup.py
     uses everywhere (net/qty, then vat_math.cash_from_net, /ratio). A bill in a
-    unit with no unit_conversions row is skipped, never treated as ratio 1
-    (same rule as price_lookup._bill_ratio); checks the 5 most recent
+    unit with no unit_conversions row for its exact spelling is skipped, never
+    treated as ratio 1 (unit_conversion.exact_ratio; the resolver's word_ratio
+    would also try the unit's word); checks the 5 most recent
     evidence-filtered bills before giving up rather than only the single
     latest one."""
     rows = conn.execute(f"""
@@ -134,16 +136,9 @@ def _latest_cash_per_piece(conn, product_id, unit_type):
         ORDER BY st.date_iso DESC, st.id DESC LIMIT 5
     """, (product_id,)).fetchall()
     for row in rows:
-        if row['unit'] == unit_type:
-            ratio = 1.0
-        else:
-            r = conn.execute(
-                "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
-                (product_id, row['unit'])
-            ).fetchone()
-            if r is None:
-                continue
-            ratio = float(r['ratio'])
+        ratio = unit_conversion.exact_ratio(conn, product_id, unit_type, row['unit'])
+        if ratio is None:
+            continue
         cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / ratio
         return round(cash_pp, 2)
     return None

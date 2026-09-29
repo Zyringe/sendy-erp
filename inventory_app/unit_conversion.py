@@ -17,6 +17,7 @@ its own miss action:
   bundle    conversion_ratio     unit WORD           the word                      1.0 silent (promo gating, Q16)
   exact     exact_ratio          raw spelling        that spelling only            None: the quote CLI skips the bill
   exact     exact_ratios         (caller)            that spelling only            the call card keeps its price unconverted
+  options   exact_ratios         (caller)            every stored row              n/a: the VAT-sub selector lists them all
   SQL       base_qty_sql & co.   raw, COALESCE ''    exact join                    1.0, counted by unratioed_line_sql
 
 A blank bill unit is 1.0 in the word and SQL families and a miss in the
@@ -26,9 +27,9 @@ whose row is stored as `กร`: word 144, SQL 1.0 and counted), the difference
 is pinned in tests/test_unit_conversion_families.py, not smoothed over here.
 
 Stays outside this module on purpose: `bsn_sync._get_base_qty` and the other
-stock-side exact readers (PR2), enumerators that list every row
-(`vat_sub.get_unit_options`, `price_lookup._known_ratio_units`,
-`bsn_sync.get_all_unit_conversions`), and the pending-list predicate. The
+stock-side exact readers (PR2), enumerators that list unit NAMES or admin
+rows (`price_lookup._known_ratio_units`, `bsn_sync.get_all_unit_conversions`),
+and the pending-list predicate. The
 reader census (tests/test_unit_reader_census.py) names each with its reason.
 
 Flask-free, stdlib + `bsn_units` only, so it runs on prod under
@@ -107,15 +108,16 @@ def exact_ratio(conn, product_id, unit_type, unit) -> Optional[float]:
 
 
 def exact_ratios(conn, product_ids) -> dict:
-    """{(product_id, bsn_unit): ratio} for every row of `product_ids`, in one
-    query. A row whose ratio is 0 is left out: it answers nothing. No
-    base-unit entry is added; the caller compares with the base unit."""
+    """{(product_id, bsn_unit): ratio} for every stored row of `product_ids`,
+    in one query, in the table's own order (bsn_unit within a product). No
+    base-unit entry is added and nothing is filtered: the call card drops a
+    ratio of 0, the VAT-sub unit selector lists it."""
     ph = ",".join("?" * len(product_ids))
     rows = conn.execute(
         f"SELECT product_id, bsn_unit, ratio FROM unit_conversions WHERE product_id IN ({ph})",
         list(product_ids),
     ).fetchall()
-    return {(r['product_id'], r['bsn_unit']): float(r['ratio']) for r in rows if r['ratio']}
+    return {(r['product_id'], r['bsn_unit']): float(r['ratio']) for r in rows}
 
 
 # ── SQL: a sales line's qty in the product's base unit ───────────────────────

@@ -39,6 +39,7 @@ from typing import Optional
 
 import customer_geo as geo
 import sales_filters
+import unit_conversion
 import vat_math
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -661,16 +662,12 @@ def _assemble_products(conn, names, canon_code, today=None):
                 for pe in (r.get('peers') or []):
                     pe['name'] = name_map.get(pe['code']) or pe['code']
 
-    # Batch-fetch unit_conversions for all product_ids (one query, no per-product churn)
+    # Every product's ratios in one query, no per-product churn. A ratio of 0
+    # answers nothing here.
     if product_rows:
         pid_list = list({row['product_id'] for row in product_rows if row['product_id']})
         ph = ",".join("?" * len(pid_list))
-        uc_rows = conn.execute(
-            f"SELECT product_id, bsn_unit, ratio FROM unit_conversions WHERE product_id IN ({ph})",
-            pid_list,
-        ).fetchall()
-        uc_map = {(r['product_id'], r['bsn_unit']): float(r['ratio'])
-                  for r in uc_rows if r['ratio']}
+        uc_map = {k: r for k, r in unit_conversion.exact_ratios(conn, pid_list).items() if r}
 
         # C1: ONE promo-slot selector, shared verbatim with
         # price_lookup.resolve_price — a qty (bundle/gift) promo can no
