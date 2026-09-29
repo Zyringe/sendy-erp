@@ -1,4 +1,9 @@
-"""2026-09-29 — ถุงมือหนังขุย 1364/1365 onto a `คู่` base, 1 โหล = 12 คู่ (#650).
+"""2026-09-29 — ถุงมือ 1364/1365/1368 onto a `คู่` base, 1 โหล = 12 คู่ (#650).
+
+1364/1365 ran live on 2026-09-29 16:51. 1368 was added later the same day, after
+a sweep of the whole glove category found it holding the identical ratio shape;
+it is the third and last product to carry it. Run it with `--pids 1368` alone —
+the two that are already done would be refused by their own preconditions.
 
 WHY. #650 asked whether the cost per glove was really a cost per PAIR. It is,
 and the ratio is wrong too, which the ticket does not say. Three independent
@@ -33,11 +38,20 @@ WHAT CHANGES, and what deliberately does not:
     pid   unit_type    base           cost            คู่      โหล   tier
     1364  ตัว -> คู่   25.00 -> 50.00  33.25 (same)   2 -> 1  12    drop `1 คู่`
     1365  ตัว -> คู่   21.00 -> 42.00  28.50 (same)   2 -> 1  12    drop `1 คู่`
+    1368  ตัว -> คู่    0.00 (same)    86.09 (same)   2 -> 1  12    none either way
 
 The cost NUMBER does not move; only what it means. 33.25 was always the cost of
 one pair, mislabelled as the cost of one glove. `โหล` stays 12 because once the
 base is a pair, 12 is correct. The `1 คู่` tier goes because it would then say
 the same thing as the base price.
+
+1368 has no price at all, and Put's answer to "fix it or price it" was fix it.
+That makes this run cheaper than its two siblings rather than riskier: with the
+base staying at 0.00 there is no base change for `_epoch_candidates` to read, so
+no repeat customer can move, and the product simply keeps answering ฿0 in every
+unit. What it stops being is a trap — today `คู่ = 2` with `โหล = 12` says a
+dozen is six pairs, so the day anyone gives this product a price, the dozen
+quotes half of it. That is the #650 bug waiting on a price.
 
 Put's rulings, 2026-09-28/29:
   * Base is `คู่`, following sibling 689 ถุงมือยาง S, not `ตัว` with `โหล = 24`.
@@ -102,12 +116,28 @@ RECONCILE_NOTE = 'ปรับยอดคงเหลือ (แปลงหน
 APP_DB_NAME = 'inventory.db'
 BACKUP_REASON = 'pre-glove-pair-rebase-650'
 
-# Every figure read off prod 2026-09-28 and asserted again as a precondition.
+# Every figure read off prod (1364/1365 on 2026-09-28, 1368 on 2026-09-29) and
+# asserted again as a precondition.
+#
+# `drop_tier` is per product, not a constant: 1364/1365 each carried a `1 คู่`
+# tier that says the same thing as the new base and therefore goes, while 1368
+# has no tier at all. A shared constant would have demanded a tier that is not
+# there and refused the run.
 PLAN = {
     1364: dict(label='ถุงมือหนังขุยยาว', old_base=25.0, pair_price=50.0, cost=33.25,
-               preserve=0, drop_orphan=True),
+               preserve=0, drop_orphan=True, drop_tier=True),
     1365: dict(label='ถุงมือหนังขุยสั้น', old_base=21.0, pair_price=42.0, cost=28.50,
-               preserve=0, drop_orphan=False),
+               preserve=0, drop_orphan=False, drop_tier=True),
+    # 1368 is what #650 left as "ยังไม่ได้ตรวจ". Same ratio shape (`คู่` = 2 on a
+    # piece base), same supplier convention, and Put ruled on 2026-09-29 that a
+    # glove's base unit is a PAIR for the whole category, so a `โหล` of them is
+    # 12 คู่. It differs from its two siblings in three ways that the plan has to
+    # carry rather than assume: no tier, no price at all (base stays 0.0, so no
+    # price epoch can move), and bills that balance without any adjusting row —
+    # 1 โหล in on 2025-03-05, 12 คู่ out on 2025-03-06, and the +12 opening the
+    # old sweep back-solved stops being needed once the ratio is right.
+    1368: dict(label='ถุงมือหนังแท้ Eagle One 13in', old_base=0.0, pair_price=0.0,
+               cost=86.09333333333332, preserve=0, drop_orphan=False, drop_tier=False),
 }
 
 # Product-keyed tables and what happens to each. `preconditions` scans
@@ -203,9 +233,13 @@ def preconditions(conn, eng, pids):
 
         tiers = [tuple(t) for t in conn.execute(
             "SELECT qty_label, price FROM product_price_tiers WHERE product_id=? ORDER BY id", (pid,))]
-        if len(tiers) != 1 or tiers[0][0] != DROP_TIER or _money(tiers[0][1]) != _money(plan['pair_price']):
-            bad.append("%s: tiers %r, expected exactly [(%r, %r)]"
-                       % (label, tiers, DROP_TIER, plan['pair_price']))
+        if plan['drop_tier']:
+            if len(tiers) != 1 or tiers[0][0] != DROP_TIER or _money(tiers[0][1]) != _money(plan['pair_price']):
+                bad.append("%s: tiers %r, expected exactly [(%r, %r)]"
+                           % (label, tiers, DROP_TIER, plan['pair_price']))
+        elif tiers:
+            bad.append("%s: tiers %r, plan expects none — a tier would answer the "
+                       "dozen instead of the ratio, which is the thing being fixed" % (label, tiers))
 
         # the replay reads each bill's own unit; anything else and the ratio it
         # would be converted at is not the one this plan reasoned about
@@ -326,10 +360,12 @@ def rebase_one(conn, eng, pid, plan):
                        (pid, NEW_UNIT))
     if cur.rowcount != 1:
         raise RuntimeError("pid %s: %s ratio update touched %s rows" % (pid, NEW_UNIT, cur.rowcount))
-    cur = conn.execute("DELETE FROM product_price_tiers WHERE product_id=? AND qty_label=?",
-                       (pid, DROP_TIER))
-    if cur.rowcount != 1:
-        raise RuntimeError("pid %s: dropping the %r tier touched %s rows" % (pid, DROP_TIER, cur.rowcount))
+    if plan['drop_tier']:
+        cur = conn.execute("DELETE FROM product_price_tiers WHERE product_id=? AND qty_label=?",
+                           (pid, DROP_TIER))
+        if cur.rowcount != 1:
+            raise RuntimeError("pid %s: dropping the %r tier touched %s rows"
+                               % (pid, DROP_TIER, cur.rowcount))
 
     # replay, exactly as bsn_sync.update_unit_conversion_ratio does
     synced_before = bsn_sync._synced_source_ids(conn, pid)
