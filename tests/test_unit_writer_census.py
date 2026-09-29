@@ -1035,6 +1035,10 @@ ALLOWED = {
         'unit_conversions.bsn_unit': ('exempt', "One-off, dated 2026-09-29, the companion to #650: eight gloves gain a \u0e04\u0e39\u0e48 = 1 row so the resolver stops raising on the word. The word is the module constant PAIR_UNIT = \u0e04\u0e39\u0e48 and the ratio the literal 1.0 \u2014 Put's ruling that \u0e15\u0e31\u0e27 on these products already denominates a pair. Nothing is read off a bill, and the script refuses any product whose bills are not all in \u0e42\u0e2b\u0e25."),
         'product_price_tiers.qty_label': ('exempt', 'Same one-off. The single tier it inserts is the module constant NEW_TIER = ("1 \u0e42\u0e2b\u0e25", 77.0), the dozen price the 2026 catalogue prints for 1362, written for that one product only.'),
     },
+    'scripts/2026_09_29_rebase_meta_nails_657.py::main': {
+        'products.unit_type': ('exempt', 'One-off, dated + ticketed #657 (ตะปูคอนกรีต META 970/973 onto the family\'s กล่องเล็ก base), run on prod 2026-09-29 12:24Z. The word written is the module constant BASE = กล่องเล็ก, the unit_type 16 siblings in family 413 already carry; nothing is read off a bill.'),
+        'unit_conversions.bsn_unit': ('exempt', 'Same #657 one-off. The only inserted word is the module constant BOX = กล่อง (ratio 1.0 for 678/680); the DELETE is keyed on BASE and never SETs a unit.'),
+    },
     'scripts/apply_platform_overview_mapping.py::create_stub_product': {
         'products.unit_type': ('exempt', 'Own docstring: "DEPRECATED: one-off from 2026-05-17. Kept for audit trail. Do not re-run."'),
     },
