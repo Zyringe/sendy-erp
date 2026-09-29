@@ -463,6 +463,23 @@ def leave_reject(rid: int):
     return redirect(url_for("hr.leave_list"))
 
 
+@bp_hr.route("/leave/<int:rid>/waive", methods=["POST"])
+def leave_waive(rid: int):
+    """อนุโลม on/off for one approved request (hr.set_pay_waiver)."""
+    on = request.form.get("on") == "1"
+    try:
+        draft_months = hr_mod.set_pay_waiver(rid, on, actor=session.get("username"))
+    except ValueError as e:
+        flash(str(e), "warning")
+        return redirect(url_for("hr.leave_list"))
+    msg = "อนุโลมวันลานี้แล้ว (ไม่หักเงินเดือน)" if on else "ยกเลิกอนุโลมแล้ว"
+    if draft_months:
+        msg += (f" · รอบเงินเดือน {', '.join(draft_months)} ยังเป็น draft — "
+                f"มีผลเมื่อกด \"สร้างรอบใหม่\" (regenerate)")
+    flash(msg, "success")
+    return redirect(url_for("hr.leave_list"))
+
+
 @bp_hr.route("/leave/<int:id>/delete", methods=["POST"])
 def leave_delete(id: int):
     try:
@@ -574,6 +591,11 @@ def payroll_detail(run_id: int):
     # A draft run is exactly when the Finalize button (and its confirm) is
     # reachable (plan.md P1b).
     carry_forward_note = hr_mod.carry_forward_note(run_id)
+    # Both recompute every item's leave, so only where Finalize is reachable.
+    unpaid_leave_stale_note = (
+        None if finalized else hr_mod.unpaid_leave_stale_note(run_id))
+    waiver_double_pay_note = (
+        None if finalized else hr_mod.waiver_double_pay_note(run_id))
     return render_template(
         "hr/payroll_detail.html",
         run=run,
@@ -585,6 +607,8 @@ def payroll_detail(run_id: int):
         carry_consumed_note=carry_consumed_note,
         pending_advance_note=pending_advance_note,
         carry_forward_note=carry_forward_note,
+        unpaid_leave_stale_note=unpaid_leave_stale_note,
+        waiver_double_pay_note=waiver_double_pay_note,
         today_iso=date.today().isoformat(),
         be_year=_be_year,
         fmt_baht=_fmt_baht,
@@ -691,6 +715,7 @@ def payroll_finalize(run_id: int):
         hr_mod.finalize_run(
             run_id,
             confirm_carry=(request.form.get("confirm_carry") == "1"),
+            confirm_waiver=(request.form.get("confirm_waiver") == "1"),
         )
         flash(f"Finalized payroll run #{run_id} เรียบร้อย", "success")
     except hr_mod.PendingAdvanceStampWarning as w:
@@ -701,6 +726,12 @@ def payroll_finalize(run_id: int):
         # normal operator never reaches this branch — same shape as the
         # RosterDriftWarning catch in payroll_reopen below.
         flash(f"{w} — ติ๊กยืนยันแล้วกด Finalize อีกครั้ง", "warning")
+    except hr_mod.WaiverDoublePayWarning as w:
+        # Confirmable, same shape as CarryForwardWarning above.
+        flash(f"{w} — ติ๊กยืนยันแล้วกด Finalize อีกครั้ง", "warning")
+    except hr_mod.StaleUnpaidLeaveError as w:
+        # Hard refusal: only a regenerate fixes it, so no confirm is offered.
+        flash(str(w), "danger")
     except hr_mod.StaleCarryInError as w:
         # Deliberate refusal, NOT a crash — caught explicitly so it does not
         # fall into the generic handler below and read as an unexpected error.

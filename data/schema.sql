@@ -891,7 +891,8 @@ CREATE TABLE leave_requests (
                              CHECK(status IN ('pending','approved','rejected','cancelled')),
     created_by       TEXT,
     created_at       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-, approved_by TEXT, approved_at TEXT);
+, approved_by TEXT, approved_at TEXT, pay_waived INTEGER NOT NULL DEFAULT 0
+    CHECK (pay_waived IN (0,1)));
 
 CREATE TABLE "leave_types" (
     id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3166,6 +3167,7 @@ WHEN (
     OR OLD.leave_type_id     IS NOT NEW.leave_type_id
     OR OLD.reason            IS NOT NEW.reason
     OR OLD.has_medical_cert  IS NOT NEW.has_medical_cert
+    OR OLD.pay_waived        IS NOT NEW.pay_waived
 )
 BEGIN
     INSERT INTO audit_log (table_name, row_id, action, changed_fields)
@@ -3179,6 +3181,7 @@ BEGIN
         UNION ALL SELECT 'leave_type_id',     OLD.leave_type_id,     NEW.leave_type_id     WHERE OLD.leave_type_id     IS NOT NEW.leave_type_id
         UNION ALL SELECT 'reason',            OLD.reason,            NEW.reason            WHERE OLD.reason            IS NOT NEW.reason
         UNION ALL SELECT 'has_medical_cert',  OLD.has_medical_cert,  NEW.has_medical_cert  WHERE OLD.has_medical_cert  IS NOT NEW.has_medical_cert
+        UNION ALL SELECT 'pay_waived',        OLD.pay_waived,        NEW.pay_waived        WHERE OLD.pay_waived        IS NOT NEW.pay_waived
     );
 END;
 
@@ -4798,12 +4801,19 @@ LEFT JOIN categories c          ON c.id   = p.category_id
 LEFT JOIN color_finish_codes cf ON cf.code = p.color_code
 LEFT JOIN stock_levels s        ON s.product_id = p.id;
 
--- data: unit_map (94 rows)
+-- data: unit_map (101 rows)
 INSERT INTO unit_map (book, spelling, word) VALUES
   ('*', '1กิโล', 'กิโลกรัม'),
+  ('*', 'ก.ป', 'กระป๋อง'),
+  ('*', 'ก.ล', 'กล่อง'),
+  ('*', 'ก.ล.', 'กล่อง'),
   ('*', 'กก.', 'กิโลกรัม'),
+  ('*', 'กป.', 'กระป๋อง'),
+  ('*', 'กล.', 'กล่อง'),
   ('*', 'กล.เล็ก', 'กล่องเล็ก'),
   ('*', 'กิโล', 'กิโลกรัม'),
+  ('*', 'ปิ๊บ', 'ปิ๊ป'),
+  ('*', 'เต้า', 'ลูก'),
   ('*', 'แพค', 'แพ็ค'),
   ('BSN5657', 'กก', 'กิโลกรัม'),
   ('BSN5657', 'กน', 'ก้อน'),

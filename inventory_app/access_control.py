@@ -103,6 +103,8 @@ _MANAGER_POST_OK = _STAFF_POST_OK | frozenset([
     'naming.product_preview_name', 'naming.product_save',
     # Phase 5 approval workflow — managers can approve/reject pending leave.
     'hr.leave_approve', 'hr.leave_reject',
+    # อนุโลม: forgive one approved request's salary deduction (hr.set_pay_waiver).
+    'hr.leave_waive',
     # (Phase 7 salary-advance CRUD routes removed in the cashbook Phase 2
     # overhaul — advances are now written via cashbook.new_transaction below,
     # plan.md C5c; /hr/advances is read-only.)
@@ -190,7 +192,7 @@ ROLES = {
                     'desc': 'เต็มสิทธิ์: จัดการผู้ใช้, แก้ไขสินค้า/ข้อมูลทุกอย่าง, เห็นต้นทุน/กำไร, ทุกโมดูล'},
     'manager':     {'label': 'ผู้จัดการ',      'badge': 'bg-warning text-dark',
                     'icon': 'bi-shield-fill',
-                    'desc': 'เห็นต้นทุน/กำไร + สถานะชำระหนี้, อนุมัติลา/เบิกเงิน, แก้ชื่อสินค้า, เข้า HR + บัญชี; จัดการผู้ใช้ไม่ได้'},
+                    'desc': 'เห็นต้นทุน/กำไร + สถานะชำระหนี้, อนุมัติลา/อนุโลมวันลา/เบิกเงิน, แก้ชื่อสินค้า, เข้า HR + บัญชี; จัดการผู้ใช้ไม่ได้'},
     'staff':       {'label': 'พนักงานออฟฟิศ',  'badge': 'bg-secondary',
                     'icon': 'bi-person-fill',
                     'desc': 'นำเข้าไฟล์ทุกชนิด + ดูสต็อก/ยอดขาย, ปรับสต็อก, ผูกรหัส, ตามหนี้ลูกค้า; ไม่เห็นต้นทุน, ไม่เห็นกำไร/ค่าคอม, เข้า HR ไม่ได้'},

@@ -62,6 +62,10 @@ ROUTE_GUARDS_BEFORE_PR3A = {
     'hr.payroll_reopen': _ADMIN, 'hr.payroll_item_edit': _ADMIN,
     # hr.py::_require_admin_or_manager
     'hr.leave_approve': ('admin', 'manager'), 'hr.leave_reject': ('admin', 'manager'),
+    # Not a pre-PR3A guard: added with the leave waiver (mig 196), declared
+    # ADMIN_MANAGER like leave_approve. Listed so the oracle agrees and the
+    # exact-cells sweep moves no cell for it.
+    'hr.leave_waive': ('admin', 'manager'),
     # hr.py::_require_pay_role — wider than the two above ON PURPOSE, and the
     # same set as the hr blueprint's own default, which is why it needs no row
     # in PAGES and why these two cells do not move.

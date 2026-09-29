@@ -474,7 +474,8 @@ _MATERNITY_EPISODE_GAP_DAYS = 30
 
 
 def _maternity_episodes(requests):
-    """Group maternity requests into distinct leaves — [[(start, end, days)…]…].
+    """Group maternity requests into distinct leaves —
+    [[(start, end, days, waived)…]…].
 
     `requests` may be in any order; episodes come back in date order, each
     holding the rows of one leave.
@@ -482,7 +483,7 @@ def _maternity_episodes(requests):
     episodes = []
     running_end = None
     for req in sorted(requests, key=lambda q: (q[0], q[1])):
-        start, end, _days = req
+        start, end = req[0], req[1]
         if (running_end is not None
                 and (start - running_end).days <= _MATERNITY_EPISODE_GAP_DAYS):
             episodes[-1].append(req)
@@ -524,10 +525,11 @@ def _split_by_month(req_start: date, req_end: date, total_days: float):
     return out
 
 
-def _allocate_excess_by_month(requests, allowance: float) -> dict:
-    """{year_month: days past `allowance`}, charged chronologically.
+def _allocate_excess_by_month(requests, allowance: float):
+    """({year_month: days past `allowance`}, {(year_month, start): forgiven}),
+    charged chronologically.
 
-    `requests` is a chronologically ordered [(start, end, days)]. Each is split
+    `requests` is a chronologically ordered [(start, end, days, waived)]. Each is split
     into its per-month portions, the portions are walked oldest-first, and the
     part of a month's portion that falls past the allowance is attributed to
     THAT month. So the allowance is consumed in date order and its excess is
@@ -540,18 +542,28 @@ def _allocate_excess_by_month(requests, allowance: float) -> dict:
     maternity cap against one month's days alone) were the two defects it
     replaced.
 
+    A WAIVED request (อนุโลม, `leave_requests.pay_waived`) still consumes the
+    allowance in date order, so a later non-waived request crosses the line
+    exactly where it would without the waiver. Its own past-allowance days go
+    to the second dict, keyed by (year_month, request start) for the payslip
+    note, instead of to the deduction. Each unit lands in exactly one of the
+    two, so the deduction is never "total minus waived" — that subtraction is
+    what re-creates the 1e-4 residue the epsilon below guards against.
+
     `allowance` may be float('inf') for an unlimited type → nothing is unpaid.
     """
     units = []
-    for req_start, req_end, days in requests:
-        units.extend(_split_by_month(req_start, req_end, days))
+    for req_start, req_end, days, waived in requests:
+        units.extend((ym, portion, waived, req_start)
+                     for ym, portion in _split_by_month(req_start, req_end, days))
     # Stable sort → strictly chronological across requests, while two requests
     # landing in the same month keep their own (start_date, id) order.
     units.sort(key=lambda u: u[0])
 
     used = 0.0
     out = {}
-    for ym, portion in units:
+    forgiven = {}
+    for ym, portion, waived, req_start in units:
         room = max(0.0, allowance - used)
         excess = portion - room
         # _split_by_month rounds each portion to 4dp, so the portions of a
@@ -560,9 +572,72 @@ def _allocate_excess_by_month(requests, allowance: float) -> dict:
         # quota (measured: 0.0001 days → ฿0.05 and a "เกินสิทธิ 0.0001 วัน" note
         # on the payslip).
         if excess > _DAY_EPS:
-            out[ym] = round(out.get(ym, 0.0) + excess, 4)
+            if waived:
+                key = (ym, req_start)
+                forgiven[key] = round(forgiven.get(key, 0.0) + excess, 4)
+            else:
+                out[ym] = round(out.get(ym, 0.0) + excess, 4)
         used += portion
-    return out
+    return out, forgiven
+
+
+# Prefix of the payslip note for forgiven (อนุโลม) days. finalize_run's
+# double-pay guard looks for it, so it is one constant, not two literals.
+_WAIVER_NOTE_PREFIX = "อนุโลม"
+
+
+def _waiver_note(code: str, start: date, days: float) -> str:
+    return (f"{_WAIVER_NOTE_PREFIX} {code} {start.day:02d}/{start.month:02d} "
+            f"ไม่หัก {days:g} วัน")
+
+
+def set_pay_waiver(req_id: int, on: bool, actor: str,
+                   conn: Optional[sqlite3.Connection] = None,
+                   db_path: Optional[str] = None):
+    """Mark (or unmark) one APPROVED leave request อนุโลม: payroll stops
+    deducting salary for its unpaid days. Returns the touched months that
+    have a DRAFT run for the employee's company — those change only on the
+    next regenerate, and the caller says so.
+
+    Read, check, write and audit are one BEGIN IMMEDIATE on one connection,
+    so a finalize or an approval change cannot land between the check and the
+    write. Refuses (ValueError, nothing written) unless the request is
+    approved, and when any month it touches (`_split_by_month`) already has a
+    finalized run for the employee's company: that payslip is issued.
+    """
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        req = c.execute(
+            """SELECT lr.status, lr.start_date, lr.end_date, lr.days,
+                      lr.pay_waived, e.company_id
+                 FROM leave_requests lr
+                 JOIN employees e ON e.id = lr.employee_id
+                WHERE lr.id = ?""",
+            (req_id,),
+        ).fetchone()
+        if req is None:
+            raise ValueError("ไม่พบคำขอลานี้")
+        if req["status"] != "approved":
+            raise ValueError("อนุโลมได้เฉพาะคำขอลาที่อนุมัติแล้ว")
+        months = [ym for ym, _ in _split_by_month(
+            _to_date(req["start_date"]), _to_date(req["end_date"]),
+            float(req["days"] or 0))]
+        closed = _runs_with_status(c, req["company_id"], months, "finalized")
+        if closed:
+            raise ValueError(
+                f"เดือนนี้ปิดรอบแล้ว ต้อง reopen ก่อน ({', '.join(closed)})")
+        new = 1 if on else 0
+        if req["pay_waived"] != new:
+            c.execute("UPDATE leave_requests SET pay_waived = ? WHERE id = ?",
+                      (new, req_id))
+            c.execute(
+                """INSERT INTO audit_log
+                     (table_name, row_id, action, changed_fields, user)
+                   VALUES ('leave_requests', ?, 'UPDATE', ?, ?)""",
+                (req_id,
+                 json.dumps({"pay_waived": [req["pay_waived"], new]}),
+                 actor),
+            )
+        return _runs_with_status(c, req["company_id"], months, "draft")
 
 
 def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
@@ -582,6 +657,10 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     The share comes from `_allocate_excess_by_month`, so an allowance is
     consumed in date order and its excess is deducted once, in the month that
     actually crossed it.
+
+    A request with `pay_waived = 1` (อนุโลม) contributes 0 unpaid days from
+    either source and gets an "อนุโลม <code> <DD/MM> ไม่หัก <n> วัน" note for
+    the days it forgave in THIS month. It still consumes its allowance share.
 
     Both allowances are judged over a COHORT — the whole set of requests the
     allowance applies to — never over one payroll month's slice, and the excess
@@ -621,7 +700,7 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     type_by_code = {r["code"]: r for r in types.values()}
 
     reqs = c.execute(
-        """SELECT leave_type_id, start_date, end_date, days
+        """SELECT leave_type_id, start_date, end_date, days, pay_waived
              FROM leave_requests
              WHERE employee_id = ? AND status = 'approved'
              ORDER BY start_date, id""",
@@ -645,13 +724,20 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
         if rs is None or re_ is None or re_ < rs:
             continue
         days = float(r["days"] or 0)
+        waived = bool(r["pay_waived"])
         t = types[r["leave_type_id"]]
         code = t["code"]
         if not t["is_paid"]:
-            # UNPAID type → unconditionally unpaid, no allowance involved.
-            unpaid += _overlap_days(rs, re_, period_start, period_end, days)
+            # UNPAID type → unconditionally unpaid, no allowance involved —
+            # unless waived, when it contributes nothing and says so.
+            in_month = _overlap_days(rs, re_, period_start, period_end, days)
+            if waived:
+                if in_month > _DAY_EPS:
+                    notes.append(_waiver_note(code, rs, in_month))
+            else:
+                unpaid += in_month
             continue
-        by_code.setdefault(code, []).append((rs, re_, days))
+        by_code.setdefault(code, []).append((rs, re_, days, waived))
 
     for code in sorted(by_code):
         requests = by_code[code]
@@ -663,6 +749,16 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
             continue
 
         share = 0.0
+        forgiven = {}
+
+        def _take(alloc):
+            nonlocal share
+            excess, waived_excess = alloc
+            share += excess.get(year_month, 0.0)
+            for (ym, start), d in waived_excess.items():
+                if ym == year_month:
+                    forgiven[start] = forgiven.get(start, 0.0) + d
+
         if code == "MATERNITY":
             allowance = float(type_by_code[code]["max_paid_days"] or 0) or float("inf")
             if allowance != float("inf"):
@@ -673,16 +769,19 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
                     if not any(q[0] <= period_end and q[1] >= period_start
                                for q in episode):
                         continue
-                    share += _allocate_excess_by_month(
-                        episode, allowance).get(year_month, 0.0)
+                    _take(_allocate_excess_by_month(episode, allowance))
         else:
             for cohort_year in sorted({q[0].year for q in touching}):
                 allowance = _entitlement(code, cohort_year)
                 if allowance == float("inf"):
                     continue
                 cohort = [q for q in requests if q[0].year == cohort_year]
-                share += _allocate_excess_by_month(cohort, allowance).get(
-                    year_month, 0.0)
+                _take(_allocate_excess_by_month(cohort, allowance))
+
+        # Independent of the deduction below: a month can forgive days while
+        # deducting none.
+        for start in sorted(forgiven):
+            notes.append(_waiver_note(code, start, round(forgiven[start], 4)))
 
         if share <= _DAY_EPS:
             continue
@@ -1121,6 +1220,22 @@ def collectable_this_month(c: sqlite3.Connection, employee_id: int,
     }
 
 
+def _runs_with_status(c: sqlite3.Connection, company_id, months, status: str):
+    """The subset of `months` (sorted) that has a payroll run of `company_id`
+    in `status`. One lookup shared by the advance cap and the leave waiver, so
+    "is this month closed" has a single answer."""
+    months = sorted(set(months))
+    if not months:
+        return []
+    marks = ",".join("?" * len(months))
+    return [r["year_month"] for r in c.execute(
+        f"""SELECT DISTINCT year_month FROM payroll_runs
+             WHERE company_id = ? AND status = ? AND year_month IN ({marks})
+             ORDER BY year_month""",
+        [company_id, status, *months],
+    ).fetchall()]
+
+
 class AdvanceCapWarning(Exception):
     """A salary-advance entry would exceed what year_month can actually pay
     this employee, OR lands in a month whose payroll run is already
@@ -1163,12 +1278,8 @@ def check_advance_cap(c: sqlite3.Connection, employee_id: int, target_month: str
     emp_row = c.execute(
         "SELECT company_id FROM employees WHERE id = ?", (employee_id,)
     ).fetchone()
-    target_finalized = c.execute(
-        """SELECT 1 FROM payroll_runs
-            WHERE year_month = ? AND company_id = ? AND status = 'finalized'
-            LIMIT 1""",
-        (target_month, emp_row["company_id"]),
-    ).fetchone() is not None
+    target_finalized = bool(
+        _runs_with_status(c, emp_row["company_id"], [target_month], "finalized"))
 
     over_cap = projected > status["collectable"]
     if not over_cap and not target_finalized:
@@ -2025,11 +2136,111 @@ def carry_forward_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
         return _carry_forward_message(n, total, rows)
 
 
+class StaleUnpaidLeaveError(ValueError):
+    """This run's stored `unpaid_leave_days` no longer matches the leave data."""
+
+
+def _run_items_with_leave(c, run_id: int):
+    """[(item row, unpaid_days, notes)] recomputed NOW for every item of
+    `run_id` — what `_build_item` would store if the run were regenerated."""
+    run = c.execute("SELECT year_month FROM payroll_runs WHERE id = ?",
+                    (run_id,)).fetchone()
+    if run is None:
+        return []
+    start, end = _month_bounds(run["year_month"])
+    out = []
+    for it in c.execute(
+            """SELECT pi.employee_id, pi.unpaid_leave_days,
+                      pi.other_additions_note,
+                      COALESCE(e.nickname, e.full_name) AS name
+                 FROM payroll_items pi
+                 JOIN employees e ON e.id = pi.employee_id
+                WHERE pi.run_id = ?
+                ORDER BY pi.employee_id""", (run_id,)).fetchall():
+        days, notes = _compute_unpaid_days(c, it["employee_id"],
+                                           run["year_month"], start, end)
+        out.append((it, days, notes))
+    return out
+
+
+def stale_unpaid_leave(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                       db_path: Optional[str] = None):
+    """[(name, stored, expected)] for items whose `unpaid_leave_days` differs
+    from what the leave data says now — an อนุโลม toggled, or leave approved or
+    edited, after the run was generated. Same philosophy as `stale_carry_in`:
+    refuse at the finalize boundary; the fix is always a regenerate."""
+    with _ConnCtx(conn, db_path) as c:
+        return [
+            (it["name"], round(float(it["unpaid_leave_days"] or 0), 4), days)
+            for it, days, _notes in _run_items_with_leave(c, run_id)
+            if round(float(it["unpaid_leave_days"] or 0), 4) != days
+        ]
+
+
+def _stale_unpaid_message(rows) -> str:
+    detail = " · ".join(
+        f"{n}: สลิปบอก {s:g} วัน แต่ข้อมูลลาตอนนี้บอก {e:g} วัน"
+        for n, s, e in rows)
+    return (
+        f"finalize รอบนี้ไม่ได้ — วันลาไม่รับค่าจ้างในสลิปไม่ตรงกับข้อมูลลาแล้ว "
+        f"({len(rows)} คน) {detail} · มีการอนุโลม/อนุมัติ/แก้วันลาหลังสร้างรอบ "
+        f"· ต้องสร้างรอบใหม่ก่อน (กด \"สร้างรอบใหม่\")"
+    )
+
+
+def unpaid_leave_stale_note(run_id: int,
+                            conn: Optional[sqlite3.Connection] = None,
+                            db_path: Optional[str] = None):
+    """The run-page banner for a stale unpaid-leave count, or None. Same text
+    finalize_run raises."""
+    with _ConnCtx(conn, db_path) as c:
+        rows = stale_unpaid_leave(run_id, conn=c)
+        return _stale_unpaid_message(rows) if rows else None
+
+
+class WaiverDoublePayWarning(Exception):
+    """An employee is forgiven twice: a waived leave request AND a hand-keyed
+    other_additions noted อนุโลม. Confirmable — the hand-keyed row may be for
+    something else — same shape as CarryForwardWarning."""
+
+
+def waiver_double_pay(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                      db_path: Optional[str] = None):
+    """Names of items whose recomputed notes carry an อนุโลม waiver note AND
+    whose other_additions_note mentions อนุโลม."""
+    with _ConnCtx(conn, db_path) as c:
+        return [
+            it["name"] for it, _days, notes in _run_items_with_leave(c, run_id)
+            if any(n.startswith(_WAIVER_NOTE_PREFIX) for n in notes)
+            and _WAIVER_NOTE_PREFIX in (it["other_additions_note"] or "")
+        ]
+
+
+def _double_pay_message(names) -> str:
+    return (
+        f"อาจจ่ายซ้ำ {len(names)} คน ({', '.join(names)}): มีทั้งวันลาที่อนุโลม "
+        f"(ระบบไม่หักแล้ว) และรายการเพิ่มที่คีย์มือว่า \"อนุโลม\" — "
+        f"ถ้าคีย์มือไว้แทนการอนุโลมเดียวกัน ให้ลบรายการเพิ่มนั้นก่อน "
+        f"· ถ้าเป็นคนละเรื่อง ติ๊กยืนยันด้านล่างเพื่อ finalize ต่อ"
+    )
+
+
+def waiver_double_pay_note(run_id: int,
+                           conn: Optional[sqlite3.Connection] = None,
+                           db_path: Optional[str] = None):
+    """The run-page warning for a possible double อนุโลม, or None. Same text
+    finalize_run raises."""
+    with _ConnCtx(conn, db_path) as c:
+        names = waiver_double_pay(run_id, conn=c)
+        return _double_pay_message(names) if names else None
+
+
 # ── finalize a payroll run (stamps salary advances) ──────────────────────────
 def finalize_run(run_id: int,
                   conn: Optional[sqlite3.Connection] = None,
                   db_path: Optional[str] = None,
-                  confirm_carry: bool = False):
+                  confirm_carry: bool = False,
+                  confirm_waiver: bool = False):
     """Mark a draft run finalized and STAMP the salary advances it consumed.
 
     If the run is already finalized this is a no-op (returns the row; does
@@ -2044,6 +2255,10 @@ def finalize_run(run_id: int,
     `confirm_carry` (plan.md P1b): raises CarryForwardWarning, inside the
     lock and before any mutation, when this run has an item whose net went
     negative — unless the caller has already acknowledged it.
+
+    `confirm_waiver`: same, for WaiverDoublePayWarning (an อนุโลม both waived
+    on the leave and keyed by hand). StaleUnpaidLeaveError has no confirm: a
+    stale unpaid-leave count is fixed only by regenerating.
     Returns the payroll_runs row (or None if run_id unknown).
     """
     with _ConnCtx(conn, db_path, lock=True) as c:
@@ -2103,9 +2318,15 @@ def finalize_run(run_id: int,
                 f"ยอดนี้คำนวณตอนสร้างรอบ และรอบก่อนเปลี่ยนไปหลังจากนั้น "
                 f"· ทางแก้: กด \"สร้างรอบใหม่\" (regenerate) รอบนี้ แล้วยอดจะถูกต้องเอง"
             )
+        stale_leave = stale_unpaid_leave(run_id, conn=c)
+        if stale_leave:
+            raise StaleUnpaidLeaveError(_stale_unpaid_message(stale_leave))
         cn, ctotal, crows = pending_carry_forward(run_id, conn=c)
         if cn and not confirm_carry:
             raise CarryForwardWarning(_carry_forward_message(cn, ctotal, crows))
+        double = waiver_double_pay(run_id, conn=c)
+        if double and not confirm_waiver:
+            raise WaiverDoublePayWarning(_double_pay_message(double))
 
         _, period_end = _month_bounds(run["year_month"])
 

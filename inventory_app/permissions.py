@@ -235,6 +235,9 @@ PAGES = {
     'hr.leave_reject':
         Access(ADMIN_MANAGER, 'rejecting leave is line-management work, not the shareholder\'s',
                deny=FORBID),
+    'hr.leave_waive':
+        Access(ADMIN_MANAGER, 'waiving a leave deduction (อนุโลม) is the approver\'s call, not the shareholder\'s',
+               deny=FORBID),
 
     # commission: the area is MANAGEMENT for the dashboards; these ten are the
     # RULES the engine computes from, and only admin edits those.
