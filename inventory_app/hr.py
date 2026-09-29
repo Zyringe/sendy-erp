@@ -2136,11 +2136,111 @@ def carry_forward_note(run_id: int, conn: Optional[sqlite3.Connection] = None,
         return _carry_forward_message(n, total, rows)
 
 
+class StaleUnpaidLeaveError(ValueError):
+    """This run's stored `unpaid_leave_days` no longer matches the leave data."""
+
+
+def _run_items_with_leave(c, run_id: int):
+    """[(item row, unpaid_days, notes)] recomputed NOW for every item of
+    `run_id` — what `_build_item` would store if the run were regenerated."""
+    run = c.execute("SELECT year_month FROM payroll_runs WHERE id = ?",
+                    (run_id,)).fetchone()
+    if run is None:
+        return []
+    start, end = _month_bounds(run["year_month"])
+    out = []
+    for it in c.execute(
+            """SELECT pi.employee_id, pi.unpaid_leave_days,
+                      pi.other_additions_note,
+                      COALESCE(e.nickname, e.full_name) AS name
+                 FROM payroll_items pi
+                 JOIN employees e ON e.id = pi.employee_id
+                WHERE pi.run_id = ?
+                ORDER BY pi.employee_id""", (run_id,)).fetchall():
+        days, notes = _compute_unpaid_days(c, it["employee_id"],
+                                           run["year_month"], start, end)
+        out.append((it, days, notes))
+    return out
+
+
+def stale_unpaid_leave(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                       db_path: Optional[str] = None):
+    """[(name, stored, expected)] for items whose `unpaid_leave_days` differs
+    from what the leave data says now — an อนุโลม toggled, or leave approved or
+    edited, after the run was generated. Same philosophy as `stale_carry_in`:
+    refuse at the finalize boundary; the fix is always a regenerate."""
+    with _ConnCtx(conn, db_path) as c:
+        return [
+            (it["name"], round(float(it["unpaid_leave_days"] or 0), 4), days)
+            for it, days, _notes in _run_items_with_leave(c, run_id)
+            if round(float(it["unpaid_leave_days"] or 0), 4) != days
+        ]
+
+
+def _stale_unpaid_message(rows) -> str:
+    detail = " · ".join(
+        f"{n}: สลิปบอก {s:g} วัน แต่ข้อมูลลาตอนนี้บอก {e:g} วัน"
+        for n, s, e in rows)
+    return (
+        f"finalize รอบนี้ไม่ได้ — วันลาไม่รับค่าจ้างในสลิปไม่ตรงกับข้อมูลลาแล้ว "
+        f"({len(rows)} คน) {detail} · มีการอนุโลม/อนุมัติ/แก้วันลาหลังสร้างรอบ "
+        f"· ต้องสร้างรอบใหม่ก่อน (กด \"สร้างรอบใหม่\")"
+    )
+
+
+def unpaid_leave_stale_note(run_id: int,
+                            conn: Optional[sqlite3.Connection] = None,
+                            db_path: Optional[str] = None):
+    """The run-page banner for a stale unpaid-leave count, or None. Same text
+    finalize_run raises."""
+    with _ConnCtx(conn, db_path) as c:
+        rows = stale_unpaid_leave(run_id, conn=c)
+        return _stale_unpaid_message(rows) if rows else None
+
+
+class WaiverDoublePayWarning(Exception):
+    """An employee is forgiven twice: a waived leave request AND a hand-keyed
+    other_additions noted อนุโลม. Confirmable — the hand-keyed row may be for
+    something else — same shape as CarryForwardWarning."""
+
+
+def waiver_double_pay(run_id: int, conn: Optional[sqlite3.Connection] = None,
+                      db_path: Optional[str] = None):
+    """Names of items whose recomputed notes carry an อนุโลม waiver note AND
+    whose other_additions_note mentions อนุโลม."""
+    with _ConnCtx(conn, db_path) as c:
+        return [
+            it["name"] for it, _days, notes in _run_items_with_leave(c, run_id)
+            if any(n.startswith(_WAIVER_NOTE_PREFIX) for n in notes)
+            and _WAIVER_NOTE_PREFIX in (it["other_additions_note"] or "")
+        ]
+
+
+def _double_pay_message(names) -> str:
+    return (
+        f"อาจจ่ายซ้ำ {len(names)} คน ({', '.join(names)}): มีทั้งวันลาที่อนุโลม "
+        f"(ระบบไม่หักแล้ว) และรายการเพิ่มที่คีย์มือว่า \"อนุโลม\" — "
+        f"ถ้าคีย์มือไว้แทนการอนุโลมเดียวกัน ให้ลบรายการเพิ่มนั้นก่อน "
+        f"· ถ้าเป็นคนละเรื่อง ติ๊กยืนยันด้านล่างเพื่อ finalize ต่อ"
+    )
+
+
+def waiver_double_pay_note(run_id: int,
+                           conn: Optional[sqlite3.Connection] = None,
+                           db_path: Optional[str] = None):
+    """The run-page warning for a possible double อนุโลม, or None. Same text
+    finalize_run raises."""
+    with _ConnCtx(conn, db_path) as c:
+        names = waiver_double_pay(run_id, conn=c)
+        return _double_pay_message(names) if names else None
+
+
 # ── finalize a payroll run (stamps salary advances) ──────────────────────────
 def finalize_run(run_id: int,
                   conn: Optional[sqlite3.Connection] = None,
                   db_path: Optional[str] = None,
-                  confirm_carry: bool = False):
+                  confirm_carry: bool = False,
+                  confirm_waiver: bool = False):
     """Mark a draft run finalized and STAMP the salary advances it consumed.
 
     If the run is already finalized this is a no-op (returns the row; does
@@ -2155,6 +2255,10 @@ def finalize_run(run_id: int,
     `confirm_carry` (plan.md P1b): raises CarryForwardWarning, inside the
     lock and before any mutation, when this run has an item whose net went
     negative — unless the caller has already acknowledged it.
+
+    `confirm_waiver`: same, for WaiverDoublePayWarning (an อนุโลม both waived
+    on the leave and keyed by hand). StaleUnpaidLeaveError has no confirm: a
+    stale unpaid-leave count is fixed only by regenerating.
     Returns the payroll_runs row (or None if run_id unknown).
     """
     with _ConnCtx(conn, db_path, lock=True) as c:
@@ -2214,9 +2318,15 @@ def finalize_run(run_id: int,
                 f"ยอดนี้คำนวณตอนสร้างรอบ และรอบก่อนเปลี่ยนไปหลังจากนั้น "
                 f"· ทางแก้: กด \"สร้างรอบใหม่\" (regenerate) รอบนี้ แล้วยอดจะถูกต้องเอง"
             )
+        stale_leave = stale_unpaid_leave(run_id, conn=c)
+        if stale_leave:
+            raise StaleUnpaidLeaveError(_stale_unpaid_message(stale_leave))
         cn, ctotal, crows = pending_carry_forward(run_id, conn=c)
         if cn and not confirm_carry:
             raise CarryForwardWarning(_carry_forward_message(cn, ctotal, crows))
+        double = waiver_double_pay(run_id, conn=c)
+        if double and not confirm_waiver:
+            raise WaiverDoublePayWarning(_double_pay_message(double))
 
         _, period_end = _month_bounds(run["year_month"])
 
