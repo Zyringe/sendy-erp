@@ -246,6 +246,46 @@ def _salary_pay_event(db, ids):
     return accepted
 
 
+def _ledger_accepts(db, ids, write):
+    """Which accounts a cashbook_ledger writer accepts: each attempt runs in its
+    own database.immediate, so a refusal rolls back and the next starts clean."""
+    import database
+    accepted = set()
+    for code, aid in ids.items():
+        conn = _conn(db)
+        try:
+            with database.immediate(conn):
+                write(conn, code, aid)
+            accepted.add(code)
+        except ValueError:
+            pass
+        finally:
+            conn.close()
+    return accepted
+
+
+def _ledger_post_salary(db, ids):
+    import cashbook_ledger as ledger
+    conn = _conn(db)
+    items = {r['nickname']: r['id'] for r in conn.execute(
+        'SELECT pi.id, e.nickname FROM payroll_items pi JOIN employees e ON e.id = pi.employee_id')}
+    conn.close()
+    assert set(items) == set(ids), items
+    return _ledger_accepts(db, ids, lambda c, code, aid: ledger.post_salary(
+        c, item_id=items[code], account_id=aid, pay_date='2026-09-28', actor='test'))
+
+
+def _ledger_post_commission(db, ids):
+    import cashbook_ledger as ledger
+
+    def write(c, code, aid):
+        pid = c.execute(
+            "INSERT INTO commission_payouts (year_month, salesperson_code, amount_paid, paid_date)"
+            " VALUES ('2026-09', 'T594', 100.0, '2026-09-19')").lastrowid
+        ledger.post_commission(c, payout_id=pid, account_id=aid, actor='test')
+    return _ledger_accepts(db, ids, write)
+
+
 # The route's OWN refusal wording. record_payout refuses with a different
 # sentence, so a route that lost its check would fall through to that one —
 # which is exactly what this probe must be able to tell apart.
@@ -290,6 +330,8 @@ PROBES = {
     'commission_record_payout':   ('PAYABLE', _commission_record_payout),
     'salary_pay_event':           ('PAYABLE', _salary_pay_event),
     'commission_route':           ('PAYABLE', _commission_route),
+    'ledger_post_salary':         ('PAYABLE', _ledger_post_salary),
+    'ledger_post_commission':     ('PAYABLE', _ledger_post_commission),
 }
 
 EXPECTED_SETS = {'OPERATING': OPERATING_SET, 'PAYABLE': PAYABLE_SET, 'EXPECTED': EXPECTED_SET}

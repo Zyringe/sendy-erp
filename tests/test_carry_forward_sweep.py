@@ -103,6 +103,11 @@ APP_DECISIONS = {
     "templates/me/payslip_list.html":
         "P1c — employee-facing payslip list; same display decision as the "
         "admin payslip template above.",
+    "cashbook_ledger.py":
+        "EXEMPT (card F PR-1) — post_salary copies payroll_items.net_pay into "
+        "the salary pay-event row and refuses net_pay <= 0, exactly as "
+        "hr.post_salary_payment does (moved there in PR-3). It reads the "
+        "engine's already-clamped net_pay and does no carry arithmetic.",
     "templates/cashbook/new.html":
         "P2 (Release 2) — reads d.net_pay from the advance_history JSON the "
         "client renders for the entry form; changes only when P2 extends "
