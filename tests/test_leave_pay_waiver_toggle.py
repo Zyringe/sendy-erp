@@ -381,3 +381,44 @@ def test_me_leave_shows_no_badge(db):
     assert '03/2569' in html or '2026-03-02' in html or '02/03' in html, \
         "control: the waived request is on the page"
     assert 'อนุโลม' not in html
+
+
+# ── status changes clear it too (Put: approved-only; a waiver never returns) ──
+
+@pytest.mark.parametrize('new_status', ['pending', 'rejected', 'cancelled'])
+def test_admin_edit_of_status_clears_the_flag(db, new_status):
+    c = _connect(db)
+    eid = _mk_employee(c, f'WS_{new_status}')
+    rid = _add_leave(c, eid, waived=1)
+    form = _edit_form(c, rid, status=new_status)
+    c.close()
+    since = _max_audit(db)
+    cl = _client('admin', db)
+    assert cl.post(f'/hr/leave/{rid}/edit', data=form).status_code == 302
+    assert _waived(db, rid) == 0
+    assert any(f.get('pay_waived') == [1, 0]
+               for f, _u in _audit_since(db, since, rid))
+
+
+def test_partial_status_write_clears_the_flag(db):
+    """The partial branch (approve/reject/cancel) as a generic writer."""
+    c = _connect(db)
+    eid = _mk_employee(c, 'WS_PART')
+    rid = _add_leave(c, eid, waived=1)
+    c.close()
+    since = _max_audit(db)
+    import hr_queries
+    hr_queries.update_leave_request(rid, {'status': 'cancelled'})
+    assert _waived(db, rid) == 0
+    assert any(f.get('pay_waived') == [1, 0]
+               for f, _u in _audit_since(db, since, rid))
+
+
+def test_partial_write_without_status_change_keeps_the_flag(db):
+    c = _connect(db)
+    eid = _mk_employee(c, 'WS_SAME')
+    rid = _add_leave(c, eid, waived=1)
+    c.close()
+    import hr_queries
+    hr_queries.update_leave_request(rid, {'status': 'approved', 'approved_by': 'x'})
+    assert _waived(db, rid) == 1
