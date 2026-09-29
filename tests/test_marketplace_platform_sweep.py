@@ -19,6 +19,14 @@ a loop, `platform != 'tiktok'`, a default argument `platform='shopee'`). The
 settlement/IV functions default to 'shopee' on purpose (PR-2/PR-3 scope) and
 are not matched here. The DB CHECK is the enforcement; this only moves the
 failure into CI.
+
+PR-3 backlog: two-platform maps shaped as a dict or a SQL CASE, which neither
+regex sees. Each must learn tiktok before settlement/IV linking opens to it:
+  - marketplace_match._CUST_CODE            {'shopee': ..., 'lazada': ...}
+  - models.marketplace._RECON_CUSTOMER      .get(platform, 'หน้าร้านS') falls back silently
+  - models.marketplace._BILLED_BASIS_SQL    CASE WHEN mo.platform='lazada' ... ELSE (shopee)
+  - models.marketplace.get_marketplace_order  the same billed-basis CASE, a second copy
+  (and marketplace_match's own billed-basis CASE, the third copy)
 """
 import os
 import re
