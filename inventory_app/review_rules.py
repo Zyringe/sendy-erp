@@ -31,6 +31,7 @@ import statistics
 from typing import Optional, List
 
 import config
+import unit_conversion
 from models import promotions as promo_models
 
 # ── Detection thresholds ─────────────────────────────────────────────────────
@@ -85,16 +86,10 @@ def _get_product(conn, product_id: int):
 
 def _get_ratio(conn, product_id: int, bsn_unit: str, unit_type: str):
     """Return (ratio, found) where ratio=1.0 and found=True when unit==unit_type,
-    or the unit_conversions ratio when found, or (None, False) when missing."""
-    if bsn_unit == unit_type:
-        return 1.0, True
-    row = conn.execute(
-        "SELECT ratio FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
-        (product_id, bsn_unit)
-    ).fetchone()
-    if row:
-        return float(row['ratio']), True
-    return None, False
+    or the unit_conversions ratio when found, or (None, False) when missing.
+    Raw compare, no strip (unit_conversion.exact_ratio)."""
+    ratio = unit_conversion.exact_ratio(conn, product_id, unit_type, bsn_unit)
+    return ratio, ratio is not None
 
 
 # ── Promo helper (date-parameterized, NOT get_active_promotion()) ─────────────

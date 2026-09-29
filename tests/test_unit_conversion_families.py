@@ -33,7 +33,7 @@ import price_lookup
 import review_rules
 import sales_filters
 import unit_conversion
-from models import bsn_sync, ecommerce_overview, vat_sub
+from models import bsn_sync, ecommerce_overview, mapping, vat_sub
 import call_card
 
 UNITS = [None, '', 'ตัว', ' ตัว', 'โหล', 'หล', 'กุรุส', 'กร', 'แผง', 'กล่อง']
@@ -42,10 +42,10 @@ _CLI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     'scripts', 'price_lookup_cli.py')
 
 
-def _product(conn, name, base_sell_price=100.0):
+def _product(conn, name, base_sell_price=100.0, unit_type='ตัว'):
     pid = conn.execute(
-        "INSERT INTO products (product_name, unit_type, base_sell_price) VALUES (?, 'ตัว', ?)",
-        (name, base_sell_price)).lastrowid
+        "INSERT INTO products (product_name, unit_type, base_sell_price) VALUES (?, ?, ?)",
+        (name, unit_type, base_sell_price)).lastrowid
     conn.executemany(
         "INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, ?, ?)",
         [(pid, 'โหล', 12.0), (pid, 'กร', 144.0), (pid, 'ตัว', 5.0), (pid, 'แผง', 0.0)])
@@ -248,15 +248,49 @@ def test_cli_family(conn):
     assert got == CLI
 
 
-# Not moved by PR1 (they are PR2's), pinned here so the table shows the
-# stock family next to the others.
+# ── exact, stock side: the stock writer, the remap preflight, review rules ──
+
+# Stock compares after strip() and rounds only a converted qty to 4 dp: the
+# base branch hands back the qty itself (int stays int), a ratio-0 row gives
+# 0.0. The lookup is the raw spelling.
 STOCK = {None: None, '': None, 'ตัว': 1, ' ตัว': 1, 'โหล': 12.0, 'หล': None,
          'กุรุส': None, 'กร': 144.0, 'แผง': 0.0, 'กล่อง': None}
 
 
 def test_stock_family(conn):
     pid = _product(conn, 'stock')
-    assert {u: bsn_sync._get_base_qty(conn, pid, 'ตัว', u, 1) for u in UNITS} == STOCK
+    got = {u: bsn_sync._get_base_qty(conn, pid, 'ตัว', u, 1) for u in UNITS}
+    assert {u: repr(v) for u, v in got.items()} == {u: repr(v) for u, v in STOCK.items()}
+
+
+def test_stock_rounds_only_the_converted_branch(conn):
+    pid = _product(conn, 'stock round')
+    assert repr(bsn_sync._get_base_qty(conn, pid, 'ตัว', 'ตัว', 0.12345)) == '0.12345'
+    assert repr(bsn_sync._get_base_qty(conn, pid, 'ตัว', 'โหล', 0.12345)) == '1.4814'
+
+
+# unit_type stored with a trailing space: stock strips both sides, review
+# compares raw and so reads the rogue ตัว=5 row instead.
+UNITS_WS = ['ตัว', 'ตัว ', ' ตัว', '\u2003ตัว']
+STOCK_WS = {'ตัว': 1, 'ตัว ': 1, ' ตัว': 1, '\u2003ตัว': 1}
+REVIEW_WS = {'ตัว': (5.0, True), 'ตัว ': (1.0, True), ' ตัว': (None, False),
+             '\u2003ตัว': (None, False)}
+MISSING_WS = {'ตัว': [], 'ตัว ': [], ' ตัว': [], '\u2003ตัว': []}
+
+
+def test_stock_side_with_whitespace_in_unit_type(conn):
+    pid = _product(conn, 'ws', unit_type='ตัว ')
+    assert {u: bsn_sync._get_base_qty(conn, pid, 'ตัว ', u, 1) for u in UNITS_WS} == STOCK_WS
+    assert {u: review_rules._get_ratio(conn, pid, u, 'ตัว ') for u in UNITS_WS} == REVIEW_WS
+    assert {u: mapping.missing_unit_ratios(conn, pid, [{'unit': u}])
+            for u in UNITS_WS} == MISSING_WS
+
+
+def test_stock_with_a_null_unit_type_raises(conn):
+    """products.unit_type is NOT NULL; the writer never guarded it."""
+    pid = _product(conn, 'null type')
+    with pytest.raises(AttributeError):
+        bsn_sync._get_base_qty(conn, pid, None, 'ตัว', 1)
 
 
 REVIEW = {None: (None, False), '': (None, False), 'ตัว': (1.0, True), ' ตัว': (None, False),
@@ -267,3 +301,16 @@ REVIEW = {None: (None, False), '': (None, False), 'ตัว': (1.0, True), ' �
 def test_review_rules_family(conn):
     pid = _product(conn, 'review')
     assert {u: review_rules._get_ratio(conn, pid, u, 'ตัว') for u in UNITS} == REVIEW
+
+
+# The remap preflight: which of the rows' units the destination could not
+# convert. A ratio-0 row exists, so it is not missing.
+MISSING = {None: [None], '': [''], 'ตัว': [], ' ตัว': [], 'โหล': [], 'หล': ['หล'],
+           'กุรุส': ['กุรุส'], 'กร': [], 'แผง': [], 'กล่อง': ['กล่อง']}
+
+
+def test_remap_preflight_family(conn):
+    pid = _product(conn, 'remap')
+    assert {u: mapping.missing_unit_ratios(conn, pid, [{'unit': u}]) for u in UNITS} == MISSING
+    assert mapping.missing_unit_ratios(
+        conn, pid, [{'unit': u} for u in ('หล', 'กล่อง', 'โหล', 'หล')]) == ['กล่อง', 'หล']
