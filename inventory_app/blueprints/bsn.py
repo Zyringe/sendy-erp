@@ -462,7 +462,9 @@ def mapping_save():
                     confirm_duplicate=bool(item.get('confirm_duplicate')),
                 )
             except models.DuplicateSkuError as exc:
-                return jsonify({'ok': False, 'duplicate_of': exc.duplicate_of}), 409
+                return jsonify({'ok': False, 'duplicate_of': exc.duplicate_of,
+                                'duplicate_kind': exc.kind,
+                                'candidates': exc.candidates}), 409
             except models.SuggestionAlreadyStagedError as exc:
                 return jsonify({'ok': False, 'error':
                                 f'{exc.bsn_code} มีการ stage/สร้างไปแล้ว (status={exc.existing_status}) '
