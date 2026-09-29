@@ -37,6 +37,7 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Optional
 
+import database
 from config import DATABASE_PATH
 
 
@@ -48,21 +49,9 @@ def _connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     return conn
 
 
-class ConnectionCleanupError(RuntimeError):
-    """Cleanup failed on the way out of a payroll write.
-
-    `primary_error` is what actually went wrong — the body's exception, or a
-    commit that would not land. `cleanup_error` is what failed while unwinding
-    (a rollback or a close). Both are typed attributes rather than a traceback
-    chain, because `raise X from Y` reads "X was caused by Y" and here the
-    order is the reverse: the cleanup failure is a consequence, never the cause
-    (Codex review of PR #367). Python 3.9, so no ExceptionGroup.
-    """
-
-    def __init__(self, primary_error, cleanup_error):
-        super().__init__(f"{primary_error} · ตามด้วยการเก็บกวาดที่ล้มเหลว: {cleanup_error}")
-        self.primary_error = primary_error
-        self.cleanup_error = cleanup_error
+# One class, owned by database.py (card F): tests and callers that name
+# hr.ConnectionCleanupError see the same object.
+ConnectionCleanupError = database.ConnectionCleanupError
 
 
 class _ConnCtx:
@@ -1318,7 +1307,7 @@ def _active_employees_for_month(c, company_id: int, period_start, period_end):
     ).fetchall()
 
 
-class CallerTransactionInFlight(RuntimeError):
+class CallerTransactionInFlight(database.CallerTransactionInFlight):
     """A payroll write was asked to run on a connection that already has a
     transaction open, so this function cannot guarantee its check and its write
     are serialized. Refused rather than downgraded: the caller would otherwise
@@ -1340,13 +1329,16 @@ def _begin_immediate(c) -> None:
     so an unknown boundary is refused, not assumed. Opening one anyway and
     committing would also flush the caller's unrelated work.
     """
-    if c.in_transaction:
+    try:
+        database.begin_immediate(c)
+    except database.CallerTransactionInFlight:
+        # payroll wording kept; this wrapper is also the monkeypatch point
+        # hr's own probes use (card F plan §3a)
         raise CallerTransactionInFlight(
             "ทำรายการเงินเดือนบน connection ที่เปิด transaction ค้างไว้ไม่ได้ — "
             "commit หรือ rollback ให้เรียบร้อยก่อน (หรือไม่ต้องส่ง conn มา) "
             "เพราะการตรวจกับการเขียนต้องอยู่ใน transaction เดียวกันจึงจะกันการชนกันได้"
-        )
-    c.execute("BEGIN IMMEDIATE")
+        ) from None
 
 
 def _regenerate_would_drop(c, run_id: int, active_ids):

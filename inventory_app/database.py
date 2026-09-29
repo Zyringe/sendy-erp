@@ -27,6 +27,7 @@ Migration runner contract:
   - On failure: the script's own BEGIN/COMMIT is rolled back; boot fails
     loudly (safe default)
 """
+import contextlib
 import sqlite3
 import os
 import sys
@@ -403,6 +404,83 @@ def script_connection(name, *, operator, reason, db_path=None):
     return _prepare(conn, actor.Actor(
         source='manual', who=operator.strip(), kind='script',
         detail=f'{os.path.basename(name)}: {reason.strip()}'))
+
+
+# ── Write transactions (card F): one primitive for check-then-write ─────────
+
+class CallerTransactionInFlight(RuntimeError):
+    """A write was asked to run on a connection that already has a transaction
+    open, so its check and its write cannot be guaranteed to be serialized.
+    Refused rather than downgraded. Commit or roll back before calling."""
+
+
+class ConnectionCleanupError(RuntimeError):
+    """Cleanup failed on the way out of a write.
+
+    `primary_error` is what actually went wrong — the body's exception, or a
+    commit that would not land. `cleanup_error` is what failed while unwinding
+    (a rollback or a close). Both are typed attributes rather than a traceback
+    chain, because `raise X from Y` reads "X was caused by Y" and here the
+    order is the reverse: the cleanup failure is a consequence, never the cause
+    (Codex review of PR #367). Python 3.9, so no ExceptionGroup.
+    """
+
+    def __init__(self, primary_error, cleanup_error):
+        super().__init__(f"{primary_error} · ตามด้วยการเก็บกวาดที่ล้มเหลว: {cleanup_error}")
+        self.primary_error = primary_error
+        self.cleanup_error = cleanup_error
+
+
+def begin_immediate(conn) -> None:
+    """Take the write lock NOW, before anything is read that a decision rests on.
+
+    Under the default deferred isolation a connection holds no lock until its
+    first write, so a check-then-write pair is two separate transactions and
+    another worker fits between them (Railway runs `gunicorn -w 2`).
+
+    Raises `CallerTransactionInFlight` when the connection is already inside a
+    transaction: a caller's DEFERRED transaction cannot be told from an
+    IMMEDIATE one, so an unknown boundary is refused, not assumed.
+    """
+    if conn.in_transaction:
+        raise CallerTransactionInFlight(
+            "เขียนข้อมูลบน connection ที่เปิด transaction ค้างไว้ไม่ได้: "
+            "commit หรือ rollback ให้เรียบร้อยก่อน (หรือไม่ต้องส่ง conn มา) "
+            "เพราะการตรวจกับการเขียนต้องอยู่ใน transaction เดียวกันจึงจะกันการชนกันได้"
+        )
+    conn.execute("BEGIN IMMEDIATE")
+
+
+@contextlib.contextmanager
+def immediate(conn):
+    """BEGIN IMMEDIATE on `conn` now (refuses an in-flight transaction). On a
+    clean exit: commit. On any exception: rollback, re-raise. If the commit
+    itself fails: rollback (ConnectionCleanupError if that fails too) and raise
+    the commit error. Never closes `conn`: the caller owns it.
+
+    The exit logic is hr._ConnCtx.__exit__ for a borrowed connection.
+    `begin_immediate` is looked up at call time, so a test that patches
+    `database.begin_immediate` sees every caller.
+    """
+    begin_immediate(conn)
+    try:
+        yield conn
+    except BaseException as exc:
+        if conn.in_transaction:
+            try:
+                conn.rollback()
+            except Exception as rollback_err:
+                raise ConnectionCleanupError(exc, rollback_err)
+        raise
+    if conn.in_transaction:
+        try:
+            conn.commit()
+        except BaseException as commit_err:
+            try:
+                conn.rollback()
+            except Exception as rollback_err:
+                raise ConnectionCleanupError(commit_err, rollback_err)
+            raise
 
 
 def _list_migration_files():
