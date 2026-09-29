@@ -5,6 +5,7 @@ module docstring for the overall file-split rationale. No behavior changes.
 
 from datetime import date
 
+import document_kind
 import sales_filters
 from database import get_connection
 
@@ -145,7 +146,7 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     # Sales count doc_base (the invoice); doc_no is one LINE of it (#496).
     # Purchases below keep doc_no: on purchase_transactions it IS the document.
     s = conn.execute(f"""
-        SELECT COUNT(DISTINCT CASE WHEN doc_base NOT LIKE 'SR%' THEN doc_base END)
+        SELECT COUNT(DISTINCT CASE WHEN {document_kind.not_return_sql()} THEN doc_base END)
                                    AS doc_count,
                COALESCE(SUM({sales_filters.sales_net_sql()}), 0) AS total_net,
                COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS total_qty
@@ -214,7 +215,7 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     # ── Top 10 ลูกค้า ─────────────────────────────────────────────────────────
     top_customers = conn.execute(f"""
         SELECT customer,
-               COUNT(DISTINCT CASE WHEN doc_base NOT LIKE 'SR%' THEN doc_base END)
+               COUNT(DISTINCT CASE WHEN {document_kind.not_return_sql()} THEN doc_base END)
                                       AS doc_count,
                SUM({sales_filters.sales_net_sql()}) AS total_net
         FROM sales_transactions
@@ -361,7 +362,7 @@ def get_product_trade_summary(product_id, date_from=None, date_to=None, unit=Non
             SELECT s.doc_base, s.unit,
                    SUM({sales_filters.sales_qty_sql('s')}) AS qty,
                    SUM(CASE WHEN s.qty > 0 AND (s.net IS NULL OR s.net = 0)
-                             AND s.doc_base NOT LIKE 'SR%'
+                             AND {document_kind.not_return_sql('s', 'sales')}
                             THEN s.qty ELSE 0 END) AS free_qty
             FROM sales_transactions s
             WHERE {where} AND s.doc_base IN ({','.join('?' * len(docs))})

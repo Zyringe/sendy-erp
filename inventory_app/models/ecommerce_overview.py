@@ -48,6 +48,7 @@ so it is the complete listing set for this purpose.
 import json
 import re
 
+import document_kind
 import unit_conversion
 from database import get_connection
 
@@ -169,7 +170,7 @@ def _sold_since_by_pid(conn, platform, snapshot_date, pids=None):
           LEFT JOIN products p ON p.id = st.product_id
           {unit_conversion.unit_conversion_join()}
          WHERE st.date_iso > ?
-           AND st.doc_no NOT LIKE 'SR%'
+           AND {document_kind.not_return_sql('st', 'sales', col='doc_no')}
            AND st.doc_no NOT LIKE 'HS%'
            AND {non_stock_clause('st')}
            AND st.customer IN ({ph})
