@@ -203,6 +203,11 @@ def preview_file(path, report_type, db_path=None):
         import config
         import models
         recs = models.parse_payment_csv(path)
+        # Count over the MERGED receipts, the same collapse import_payment_records
+        # applies before it writes (S4, Card E): counting raw records made the
+        # preview say `new 3` where the commit reports `imported 2, merged 1`.
+        # A record without a re_no passes through the merge and counts as new.
+        merged_recs = models._merge_duplicate_receipts(recs)
         conn = sqlite3.connect(db_path or config.DATABASE_PATH)
         try:
             existing = {row[0] for row in conn.execute("SELECT re_no FROM received_payments")}
@@ -211,7 +216,7 @@ def preview_file(path, report_type, db_path=None):
             # BEFORE the opt-in checkbox is worth offering — same rule the
             # sales/purchase preview follows.
             removed = 0
-            for r in models._merge_duplicate_receipts(recs):
+            for r in merged_recs:
                 if r.get("re_no") not in existing:
                     continue
                 incoming = [iv["iv_no"] for iv in (r.get("iv_list") or [])]
@@ -225,10 +230,11 @@ def preview_file(path, report_type, db_path=None):
                     (r["re_no"], *incoming)).fetchone()[0]
         finally:
             conn.close()
-        new = sum(1 for r in recs if r["re_no"] not in existing)
+        new = sum(1 for r in merged_recs if r.get("re_no") not in existing)
         return {"type": report_type, "ok": True, "count": len(recs),
-                "detail": {"new": new, "existing": len(recs) - new,
-                           "removed": removed}}
+                "detail": {"new": new, "existing": len(merged_recs) - new,
+                           "removed": removed,
+                           "merged": len(recs) - len(merged_recs)}}
 
     if report_type == "credit_notes_ar":
         # import_credit_notes uses internal SAVEPOINT/RELEASE, so a manual

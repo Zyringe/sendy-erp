@@ -33,6 +33,12 @@ import parse_weekly                       # noqa: E402
 
 from tests.conftest import SALES_SAMPLE_LINES, PURCHASE_SAMPLE_LINES  # noqa: E402
 
+# The ขาย/ซื้อ text door is retired (Card E, ADR 0020). This file exercises the
+# dormant door code, so it runs with the registry reopened; the retirement
+# itself is pinned in test_retired_report_types.py, which does not.
+pytestmark = pytest.mark.usefixtures('unretired_text_door')
+
+
 
 # ── fixture files ───────────────────────────────────────────────────────────
 
@@ -120,7 +126,7 @@ def spy_import_weekly(monkeypatch):
     import models
     calls = []
 
-    def _spy(entries, file_type, filename, apply_removals):
+    def _spy(entries, file_type, filename, *, apply_removals):
         calls.append({'entries': entries, 'file_type': file_type,
                       'filename': filename, 'apply_removals': apply_removals})
         return {'imported': len(entries), 'batch_id': None}
@@ -145,13 +151,13 @@ def test_commit_blocks_full_history_sales(history_sales_csv, spy_import_weekly):
     """A stale or crafted POST that skips preview must still be refused —
     the guard lives inside commit_file, not only in the preview path."""
     with pytest.raises(import_router.HistoryExportBlocked):
-        import_router.commit_file(history_sales_csv, 'sales')
+        import_router.commit_file(history_sales_csv, 'sales', apply_removals=False)
     assert spy_import_weekly == [], 'blocked file must never reach import_weekly'
 
 
 def test_commit_blocks_full_history_purchase(history_purch_csv, spy_import_weekly):
     with pytest.raises(import_router.HistoryExportBlocked):
-        import_router.commit_file(history_purch_csv, 'purchase')
+        import_router.commit_file(history_purch_csv, 'purchase', apply_removals=False)
     assert spy_import_weekly == []
 
 
@@ -165,17 +171,20 @@ def test_history_block_message_is_thai_and_names_the_express_zip_route(history_s
 
 
 def test_normal_weekly_file_is_not_blocked(sample_sales_file, spy_import_weekly):
-    out = import_router.commit_file(sample_sales_file, 'sales', filename='ขาย_x.csv')
+    out = import_router.commit_file(sample_sales_file, 'sales', filename='ขาย_x.csv',
+                                    apply_removals=False)
     assert out['ok'] is True
     assert len(spy_import_weekly) == 1
 
 
 # ── finding 2: removal default + explicit opt-in ────────────────────────────
 
-def test_commit_defaults_to_no_source_line_removals(sample_sales_file, spy_import_weekly):
-    """Destructive default is the bug: a FILTERED export's missing lines must
+def test_commit_passes_an_explicit_no_removals_through(sample_sales_file, spy_import_weekly):
+    """(`commit_file` has no default any more: the caller says False.)
+    Destructive default was the bug: a FILTERED export's missing lines must
     NOT be reversed unless the operator says the export is complete."""
-    import_router.commit_file(sample_sales_file, 'sales', filename='ขาย_x.csv')
+    import_router.commit_file(sample_sales_file, 'sales', filename='ขาย_x.csv',
+                              apply_removals=False)
     assert spy_import_weekly[0]['apply_removals'] is False
 
 
@@ -185,8 +194,9 @@ def test_commit_propagates_explicit_complete_export_optin(sample_sales_file, spy
     assert spy_import_weekly[0]['apply_removals'] is True
 
 
-def test_commit_purchase_defaults_to_no_removals(sample_purchase_file, spy_import_weekly):
-    import_router.commit_file(sample_purchase_file, 'purchase', filename='ซื้อ_x.csv')
+def test_commit_purchase_passes_an_explicit_no_removals_through(sample_purchase_file, spy_import_weekly):
+    import_router.commit_file(sample_purchase_file, 'purchase', filename='ซื้อ_x.csv',
+                              apply_removals=False)
     assert spy_import_weekly[0]['apply_removals'] is False
 
 
@@ -230,7 +240,8 @@ def test_preview_and_commit_reject_a_bad_file_identically(partial_sales_csv, spy
     with pytest.raises(ValueError) as prev_exc:
         import_router.preview_file(partial_sales_csv, 'sales')
     with pytest.raises(ValueError) as commit_exc:
-        import_router.commit_file(partial_sales_csv, 'sales', filename='ขาย_partial.csv')
+        import_router.commit_file(partial_sales_csv, 'sales', filename='ขาย_partial.csv',
+                                  apply_removals=False)
     assert str(prev_exc.value) == str(commit_exc.value)
     assert spy_import_weekly == [], 'a rejected file must never reach import_weekly'
 
@@ -277,7 +288,7 @@ def test_preview_refuses_a_file_whose_date_header_cannot_be_read(no_date_filter_
 def test_commit_refuses_a_file_whose_date_header_cannot_be_read(
         no_date_filter_csv, spy_import_weekly):
     with pytest.raises(import_router.HistoryExportBlocked):
-        import_router.commit_file(no_date_filter_csv, 'sales')
+        import_router.commit_file(no_date_filter_csv, 'sales', apply_removals=False)
     assert spy_import_weekly == []
 
 

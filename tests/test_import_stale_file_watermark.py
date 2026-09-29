@@ -39,6 +39,11 @@ from io import BytesIO                                             # noqa: E402
 
 import pytest                                                      # noqa: E402
 
+# The ขาย/ซื้อ text door is retired (Card E, ADR 0020). This file exercises the
+# dormant door code, so it runs with the registry reopened; the retirement
+# itself is pinned in test_retired_report_types.py, which does not.
+pytestmark = pytest.mark.usefixtures('unretired_text_door')
+
 from tests.conftest import (                                       # noqa: E402
     SALES_SAMPLE_LINES, PURCHASE_SAMPLE_LINES,
 )
