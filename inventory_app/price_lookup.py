@@ -69,6 +69,7 @@ _UNIT_REBASE_SOURCES = (
     'script:2026_09_19_rebase_689_767',
     'script:2026_09_20_rebase_gross_603',
     'script:2026_09_28_rebase_dozen_649',
+    'script:2026_09_29_rebase_gloves_650',
 )
 
 # ⭐ FOUR questions are asked of `ar_writeoffs` in this repo, and they do NOT
