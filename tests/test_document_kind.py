@@ -60,6 +60,21 @@ def test_hs_is_a_sale_on_both_readings():
     assert _run(dk.is_return_sql('', 'sales'), 'HS6901001') == 0
 
 
+def test_side_and_alias_are_required():
+    with pytest.raises(TypeError):
+        dk.is_return_sql()
+    with pytest.raises(TypeError):
+        dk.not_return_sql('s')
+    with pytest.raises(TypeError):
+        dk.is_return('SR1')
+
+
+def test_python_twin_is_ascii_only_like_sqlite_like():
+    # str.upper() would fold U+017F (long s) to 'S'; SQLite LIKE does not.
+    assert dk.is_return('\u017fR1', 'sales') is False
+    assert _run(dk.is_return_sql('', 'sales'), '\u017fR1') == 0
+
+
 def test_bad_side_fails_loud():
     with pytest.raises(ValueError):
         dk.is_return_sql('', 'sale')

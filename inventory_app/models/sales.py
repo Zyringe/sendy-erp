@@ -140,7 +140,7 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
 
     # A local, not an inline call: test_last_purchase_population_coverage's
     # doc-count pattern cannot read past parentheses inside the CASE.
-    not_return = document_kind.not_return_sql()
+    not_return = document_kind.not_return_sql('', 'sales')
     # ── Summary this month ────────────────────────────────────────────────────
     # Sales are NET of returns (#627): a credit note subtracts, so its rows are
     # in the population, and every sales query here drops the documents
