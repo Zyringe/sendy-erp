@@ -29,7 +29,8 @@ def db(tmp_path):
     database.init_db(path)
     c = sqlite3.connect(path)
     c.execute("PRAGMA foreign_keys = ON")
-    c.execute("INSERT INTO cashbook_accounts (id, code) VALUES (5, '392')")
+    c.execute("INSERT INTO cashbook_accounts (id, code) VALUES (1, '392')")
+    c.execute("INSERT INTO cashbook_accounts (id, code) VALUES (5, 'กิติยา')")
     c.commit()
     c.close()
     _seed(path)
@@ -89,8 +90,9 @@ def test_apply_changes_only_txn_date_and_audits(db):
     assert len(_q(db, "SELECT 1 FROM audit_log")) == n_audit + 2
     explicit = [r for r in rows if r[1] == 'Put']
     assert len(explicit) == 1
-    assert json.loads(explicit[0][0]) == {'txn_date': ['2026-06-01', '2026-06-30'],
-                                          'reason': 'Q7 B: match salary_advances 26'}
+    assert json.loads(explicit[0][0]) == {'txn_date': ['2026-06-01', '2026-06-30']}
+    assert _q(db, "SELECT change_source, change_reason FROM audit_log WHERE user='Put'") == [
+        ('2026-09-30_redate_cashbook_642.py', 'Q7 B: match salary_advances 26')]
 
 
 def test_second_apply_is_refused_and_writes_nothing(db, capsys):
@@ -106,6 +108,8 @@ def test_second_apply_is_refused_and_writes_nothing(db, capsys):
     ("UPDATE cashbook_transactions SET salary_advance_id=NULL WHERE id=642", 'salary_advance_id'),
     ("UPDATE cashbook_transactions SET txn_date='2026-06-02' WHERE id=642", 'txn_date'),
     ("UPDATE cashbook_transactions SET amount=3001 WHERE id=642", 'amount is'),
+    ("UPDATE cashbook_transactions SET account_id=1 WHERE id=642", 'account_id'),
+    ("UPDATE cashbook_transactions SET direction='income' WHERE id=642", 'direction'),
     ("DELETE FROM salary_advances WHERE id=26", None),
     ("UPDATE salary_advances SET advance_date='2026-06-29' WHERE id=26", 'advance_date'),
     ("UPDATE salary_advances SET amount=2999 WHERE id=26", 'amount is'),

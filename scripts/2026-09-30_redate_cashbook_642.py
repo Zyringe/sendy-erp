@@ -28,6 +28,9 @@ ADVANCE_ID = 26
 OLD_DATE = '2026-06-01'
 NEW_DATE = '2026-06-30'
 AMOUNT = 3000.0
+ACCOUNT_ID = 5  # code 'กิติยา' (id 1 is code '392'; plan §2b said 392, corrected)
+DIRECTION = 'expense'
+SOURCE = '2026-09-30_redate_cashbook_642.py'
 RUN_ID = 6
 REASON = 'Q7 B: match salary_advances 26'
 
@@ -66,6 +69,10 @@ def _check_preconditions(conn):
     if row['txn_date'] != OLD_DATE:
         raise Refused(f'row {ROW_ID}: txn_date is {row["txn_date"]!r}, expected {OLD_DATE!r}'
                       ' (already re-dated, or not the row this fix was written for)')
+    if row['account_id'] != ACCOUNT_ID:
+        raise Refused(f'row {ROW_ID}: account_id is {row["account_id"]!r}, expected {ACCOUNT_ID}')
+    if row['direction'] != DIRECTION:
+        raise Refused(f'row {ROW_ID}: direction is {row["direction"]!r}, expected {DIRECTION!r}')
     if row['amount'] != AMOUNT:
         raise Refused(f'row {ROW_ID}: amount is {row["amount"]!r}, expected {AMOUNT}')
     adv = conn.execute("SELECT * FROM salary_advances WHERE id = ?", (ADVANCE_ID,)).fetchone()
@@ -104,14 +111,18 @@ def run(db, operator, apply):
             if cur.rowcount != 1:
                 raise Failed(f'UPDATE touched {cur.rowcount} rows, expected 1')
             conn.execute(
-                "INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)"
-                " VALUES ('cashbook_transactions', ?, 'UPDATE', ?, ?)",
-                (ROW_ID, json.dumps({'txn_date': [OLD_DATE, NEW_DATE], 'reason': REASON},
-                                    ensure_ascii=False), operator))
+                "INSERT INTO audit_log (table_name, row_id, action, changed_fields, user,"
+                " change_source, change_reason)"
+                " VALUES ('cashbook_transactions', ?, 'UPDATE', ?, ?, ?, ?)",
+                (ROW_ID, json.dumps({'txn_date': [OLD_DATE, NEW_DATE]}, ensure_ascii=False),
+                 operator, SOURCE, REASON))
             totals_after = _month_totals(conn, row['account_id'], row['direction'])
             if totals_after != totals_before:
                 raise Failed(f'June-2026 SUM/COUNT moved: {totals_before} -> {totals_after}')
             after = _row_line(conn)
+            for a in conn.execute("SELECT id, code, display_name FROM cashbook_accounts WHERE id IN (1, ?)",
+                                  (ACCOUNT_ID,)):
+                print('account:', dict(a))
             print('before:', before)
             print('after: ', after)
             print(f'June-2026 (account {row["account_id"]}, {row["direction"]}) SUM/COUNT unchanged: {totals_after}')
@@ -140,8 +151,8 @@ def run(db, operator, apply):
             raise Failed(f're-read: {mismatched} advance rows still differ from advance_date, expected 0')
         n_audit = fresh.execute(
             "SELECT COUNT(*) FROM audit_log WHERE table_name='cashbook_transactions' AND row_id=?"
-            " AND action='UPDATE' AND user=? AND changed_fields LIKE ?",
-            (ROW_ID, operator, f'%{REASON}%')).fetchone()[0]
+            " AND action='UPDATE' AND user=? AND change_source=? AND change_reason=?",
+            (ROW_ID, operator, SOURCE, REASON)).fetchone()[0]
         if apply and n_audit < 1:
             raise Failed('re-read: explicit audit_log row missing')
         print(f're-read (fresh connection): txn_date={got}, advance rows with date != advance_date={mismatched}'
