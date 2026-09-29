@@ -146,6 +146,18 @@
             {% elif r.status == 'rejected' %}<span class="badge bg-danger">ปฏิเสธ</span>
             {% else %}<span class="badge bg-secondary">ยกเลิก</span>
             {% endif %}
+            {% if r.pay_waived %}<span class="badge bg-info text-dark" data-badge="waived">อนุโลม</span>{% endif %}
+            {% if r.status == 'approved' and can_post('hr.leave_waive') %}
+            <form method="post" action="{{ url_for('hr.leave_waive', rid=r.id) }}"
+                  class="d-inline" data-action="waive"
+                  onsubmit="return confirm('{{ 'ยกเลิกอนุโลม' if r.pay_waived else 'อนุโลม (ไม่หักเงินเดือน)' }} คำขอลา #{{ r.id }}?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="on" value="{{ '0' if r.pay_waived else '1' }}">
+              <button type="submit" class="btn btn-sm btn-link p-0 ms-1 small">
+                {{ 'ยกเลิกอนุโลม' if r.pay_waived else 'อนุโลม' }}
+              </button>
+            </form>
+            {% endif %}
           </td>
           <td class="text-center">
             {% if r.has_medical_cert %}<i class="bi bi-check-circle text-success"></i>{% else %}–{% endif %}
@@ -239,6 +251,13 @@
             <label class="form-label small">เหตุผล</label>
             <input type="text" name="reason" class="form-control form-control-sm"
                    value="{{ r.reason or '' }}">
+          </div>
+          <div class="mt-2 small" data-waiver-state="{{ r.pay_waived }}">
+            อนุโลม (ไม่หักเงินเดือน):
+            <strong>{{ 'ใช่' if r.pay_waived else 'ไม่' }}</strong>
+            {% if r.pay_waived %}
+            <div class="text-muted">แก้ประเภท วันที่ หรือจำนวนวัน จะยกเลิกอนุโลมอัตโนมัติ</div>
+            {% endif %}
           </div>
         </div>
         <div class="modal-footer">

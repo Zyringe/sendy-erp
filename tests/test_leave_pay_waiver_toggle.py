@@ -313,3 +313,71 @@ def test_admin_edit_of_reason_only_keeps_the_flag(db):
     assert c.execute("SELECT reason FROM leave_requests WHERE id=?",
                      (rid,)).fetchone()[0] == 'changed words only'
     c.close()
+
+
+# ── UI: badge + toggle on /hr/leave, read-only state on the edit form ────────
+
+def _leave_page(db, role, eid):
+    cl = _client(role, db)
+    r = cl.get(f'/hr/leave?month=&employee_id={eid}')
+    return r.status_code, r.get_data(as_text=True)
+
+
+def _waive_form(rid):
+    return f'action="/hr/leave/{rid}/waive"'
+
+
+@pytest.mark.parametrize('role', ['admin', 'manager'])
+def test_leave_page_shows_toggle_to_approvers(db, role):
+    c = _connect(db)
+    eid = _mk_employee(c, f'WU_{role}')
+    rid = _add_leave(c, eid, waived=1)
+    pending = _add_leave(c, eid, start='2026-03-09', end='2026-03-09',
+                         status='pending')
+    c.close()
+    status, html = _leave_page(db, role, eid)
+    assert status == 200
+    assert _waive_form(rid) in html
+    assert _waive_form(pending) not in html, "approved rows only"
+    assert 'data-badge="waived"' in html
+
+
+@pytest.mark.parametrize('role', ['shareholder', 'staff', 'general'])
+def test_leave_page_hides_toggle_from_everyone_else(db, role):
+    c = _connect(db)
+    eid = _mk_employee(c, f'WV_{role}')
+    rid = _add_leave(c, eid, waived=1)
+    c.close()
+    status, html = _leave_page(db, role, eid)
+    assert _waive_form(rid) not in html
+    if role == 'shareholder':
+        assert status == 200, "shareholder reads the page, the control is what is gated"
+        assert 'data-badge="waived"' in html
+
+
+def test_admin_edit_form_shows_state_read_only_with_hint(db):
+    c = _connect(db)
+    eid = _mk_employee(c, 'WF_ADM')
+    rid = _add_leave(c, eid, waived=1)
+    c.close()
+    status, html = _leave_page(db, 'admin', eid)
+    assert status == 200
+    assert 'data-waiver-state="1"' in html
+    assert 'จะยกเลิกอนุโลมอัตโนมัติ' in html
+    assert 'name="pay_waived"' not in html, "the edit form must not write the flag"
+
+
+def test_me_leave_shows_no_badge(db):
+    c = _connect(db)
+    eid = _mk_employee(c, 'WM_ME')
+    c.execute("UPDATE employees SET user_id=4242 WHERE id=?", (eid,))
+    _add_leave(c, eid, waived=1)
+    c.commit()
+    c.close()
+    cl = _client('general', db, user_id=4242)
+    r = cl.get('/me/leave')
+    assert r.status_code == 200
+    html = r.get_data(as_text=True)
+    assert '03/2569' in html or '2026-03-02' in html or '02/03' in html, \
+        "control: the waived request is on the page"
+    assert 'อนุโลม' not in html
