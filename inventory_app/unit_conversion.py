@@ -14,7 +14,7 @@ its own miss action:
   family    entry point          base-unit compare   lookup                        miss
   word      word_ratio           unit WORD           spelling, then its word       None: price evidence skips the bill
   resolve   conversion_ratio     (caller, row wins)  spelling, then a word scan    price_lookup._resolve_unit decides
-  bundle    conversion_ratio     unit WORD           the word                      1.0 silent (promo gating, Q16)
+  bundle    conversion_ratio     unit WORD           the word, then a word scan    1.0 silent (promo gating, Q16)
   exact     exact_ratio          raw spelling        that spelling only            None: the quote CLI skips the bill
   exact     exact_ratios         (caller)            that spelling only            the call card keeps its price unconverted
   options   exact_ratios         (caller)            every stored row              n/a: the VAT-sub selector lists them all
@@ -29,8 +29,8 @@ is pinned in tests/test_unit_conversion_families.py, not smoothed over here.
 Stays outside this module on purpose: `bsn_sync._get_base_qty` and the other
 stock-side exact readers (PR2), enumerators that list unit NAMES or admin
 rows (`price_lookup._known_ratio_units`, `bsn_sync.get_all_unit_conversions`),
-and the pending-list predicate. The
-reader census (tests/test_unit_reader_census.py) names each with its reason.
+and the pending-list predicate. The reader census
+(tests/test_unit_reader_census.py) names each with its reason.
 
 Flask-free, stdlib + `bsn_units` only, so it runs on prod under
 /opt/venv/bin/python. Python 3.9: no `X | None` syntax.
