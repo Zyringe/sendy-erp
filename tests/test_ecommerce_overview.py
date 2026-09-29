@@ -7,6 +7,7 @@ Covers the core-math block from projects/ecommerce-revamp/plan.md:
 Seeds a clean-schema DB directly (empty_db_conn), same style as
 tests/test_conversion_buildable.py. Oracle = hand-computed expected numbers.
 """
+import os
 import sqlite3
 from pathlib import Path
 
@@ -525,8 +526,8 @@ def test_freshness_last_order_import_and_days_old(empty_db_conn):
 
 def test_freshness_last_order_import_none_when_marketplace_orders_empty(empty_db_conn):
     """New-install case: marketplace_orders carries zero rows -- must not
-    crash, and every platform (incl. tiktok, which structurally can never
-    have order rows -- CHECK excludes it) reads last_order_import/
+    crash, and every platform (incl. tiktok, exempt from order freshness)
+    reads last_order_import/
     order_days_old as None."""
     fresh = models.get_marketplace_freshness()
     for platform in ('shopee', 'lazada', 'tiktok'):
@@ -535,18 +536,25 @@ def test_freshness_last_order_import_none_when_marketplace_orders_empty(empty_db
 
 
 def test_freshness_tiktok_last_order_import_always_none(empty_db_conn):
-    """D9: TikTok orders don't exist in the ERP (CHECK excludes the
-    platform) -- even with shopee/lazada order rows present, tiktok's
-    last_order_import must stay None, never accidentally inherit a value."""
+    """The pill is a second display of the staleness signal, and TikTok is
+    exempt from it (models.marketplace.ORDER_STALENESS_EXEMPT: TikTok orders
+    never deduct the mirror, so there is no upload chore to nag about). Even
+    with a TikTok order row present, tiktok's last_order_import stays None.
+    Control: the Shopee row in the same DB does show."""
     c = empty_db_conn
+    mig_197 = os.path.join(os.path.dirname(__file__), '..', 'data', 'migrations',
+                           '197_marketplace_orders_tiktok.sql')
+    with open(mig_197, encoding='utf-8') as f:
+        c.executescript(f.read())
     c.execute(
         "INSERT INTO marketplace_orders (platform, order_sn, last_synced_at) "
         "VALUES ('shopee', 'ORD-1', datetime('now','localtime'))")
     c.execute(
         "INSERT INTO marketplace_orders (platform, order_sn, last_synced_at) "
-        "VALUES ('lazada', 'ORD-2', datetime('now','localtime'))")
+        "VALUES ('tiktok', 'ORD-3', datetime('now','localtime','-40 days'))")
     c.commit()
     fresh = models.get_marketplace_freshness()
+    assert fresh['shopee']['last_order_import'] is not None
     assert fresh['tiktok']['last_order_import'] is None
     assert fresh['tiktok']['order_days_old'] is None
 
