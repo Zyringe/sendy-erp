@@ -142,6 +142,56 @@
 </form>
 {% endif %}
 
+{# ── เพิ่มหน่วยที่มีแต่ในแคตตาล็อก (#656): คำที่ไม่เคยมาบนบิล ตารางรอกำหนดจึงไม่เคยเสนอ ── #}
+{% if can_post('bsn.unit_conversions_add') %}
+<div class="card mb-4">
+  <div class="card-header fw-600">เพิ่มหน่วยจากแคตตาล็อก (หน่วยที่ไม่เคยมาบนบิล)</div>
+  <div class="card-body">
+    <p class="small text-subtle mb-3">
+      ใช้เมื่อแคตตาล็อกพิมพ์ราคาเป็นหน่วยที่ไม่เคยออกบิล เช่น ชุด / แผ่น / กล่องเล็ก.
+      ถ้าหน่วยนั้นมีบิลรออยู่ ให้กำหนดในตารางรอกำหนดด้านบนแทน. ถ้ามีหน่วยนี้อยู่แล้ว ให้กด "แก้ไข" ในตารางด้านล่าง
+    </p>
+    <form id="add-catalogue-unit" method="post" action="{{ url_for('bsn.unit_conversions_add') }}"
+          class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="q" value="{{ search }}">
+      <div class="col-12 col-lg-5">
+        <label class="form-label small mb-1" for="acu-search">ค้นหาสินค้า</label>
+        <input type="search" id="acu-search" class="form-control form-control-sm"
+               placeholder="พิมพ์ชื่อสินค้า หรือรหัส…" autocomplete="off">
+        <div id="acu-results" class="list-group mt-1"></div>
+      </div>
+      <div class="col-12 col-sm-4 col-lg-2">
+        <label class="form-label small mb-1" for="acu-pid">รหัสสินค้า (ID)</label>
+        <input type="number" id="acu-pid" name="product_id" class="form-control form-control-sm"
+               min="1" step="1" inputmode="numeric" required>
+      </div>
+      <div class="col-12 col-sm-8 col-lg-5">
+        <label class="form-label small mb-1" for="acu-unit">หน่วยในแคตตาล็อก</label>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">1</span>
+          <input type="text" id="acu-unit" name="unit" list="known-unit-words"
+                 class="form-control" placeholder="เช่น ชุด" maxlength="40" required>
+          <span class="input-group-text">=</span>
+          <input type="number" name="ratio" class="form-control" step="any" min="0.0001"
+                 placeholder="เช่น 12" required>
+          <span class="input-group-text" id="acu-unit-type">หน่วยระบบ</span>
+        </div>
+      </div>
+      <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div class="small text-subtle" id="acu-picked">ยังไม่ได้เลือกสินค้า</div>
+        <button type="submit" class="btn btn-sm btn-primary">
+          <i class="bi bi-plus-circle me-1"></i>เพิ่มหน่วย
+        </button>
+      </div>
+    </form>
+    <datalist id="known-unit-words">
+      {% for w in unit_words %}<option value="{{ w }}">{% endfor %}
+    </datalist>
+  </div>
+</div>
+{% endif %}
+
 {# ── ส่วนแก้ไข conversion ที่มีอยู่แล้ว ─────────────────────────────────────── #}
 <div class="card">
   <div class="card-header d-flex align-items-center gap-3 flex-wrap">
@@ -264,6 +314,58 @@ function toggleEdit(id) {
   document.getElementById('edit-btn-' + id).classList.toggle('d-none');
   document.getElementById('save-btn-' + id).classList.toggle('d-none');
 }
+
+(function () {
+  const $search = document.getElementById('acu-search');
+  if (!$search) return;
+  const $results = document.getElementById('acu-results');
+  const $pid = document.getElementById('acu-pid');
+  const $picked = document.getElementById('acu-picked');
+  const $unitType = document.getElementById('acu-unit-type');
+  let timer;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function pick(it) {
+    $pid.value = it ? it.id : $pid.value;
+    $picked.textContent = it ? `เลือก: ${it.name} (ID ${it.id}, หน่วยระบบ ${it.unit})`
+                             : 'ไม่พบสินค้ารหัสนี้';
+    $unitType.textContent = it ? it.unit : 'หน่วยระบบ';
+    $results.innerHTML = '';
+  }
+
+  async function search(q) {
+    const r = await fetch(`/api/products/search?q=${encodeURIComponent(q)}&limit=10`);
+    return (await r.json()).items || [];
+  }
+
+  $search.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = $search.value.trim();
+    if (!q) { $results.innerHTML = ''; return; }
+    timer = setTimeout(async () => {
+      const items = await search(q);
+      $results.innerHTML = items.map((it, i) => `
+        <button type="button" class="list-group-item list-group-item-action py-1" data-i="${i}">
+          <span class="fw-600">${escapeHtml(it.name)}</span>
+          <span class="small text-muted">ID ${it.id} · ${escapeHtml(it.unit || '')}</span>
+        </button>`).join('');
+      $results.querySelectorAll('[data-i]').forEach(btn => {
+        btn.addEventListener('click', () => pick(items[+btn.dataset.i]));
+      });
+    }, 200);
+  });
+
+  $pid.addEventListener('change', async () => {
+    const id = $pid.value.trim();
+    if (!id) return;
+    pick((await search(id)).find(it => String(it.id) === id) || null);
+  });
+})();
 </script>
 
 {% endblock %}
