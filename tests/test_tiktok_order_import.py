@@ -243,3 +243,14 @@ def test_cancelled_tiktok_order_shows_in_returns_as_tiktok(conn):
     html = _client().get('/marketplace/returns').get_data(as_text=True)
     row = _row_html(html, '585883444661159817')
     assert 'TikTok' in row and 'Lazada' not in row
+
+
+@pytest.mark.parametrize('tab', ['deposits', 'reconcile'])
+def test_settlement_does_not_offer_tiktok_yet(conn, tab):
+    """Settlement for TikTok is PR-2/PR-3. Until then ?platform=tiktok must fall
+    back to Shopee: _RECON_CUSTOMER.get(..., 'หน้าร้านS') would otherwise
+    reconcile TikTok orders against Shopee IVs. Control: lazada is kept."""
+    html = _client().get(f'/marketplace/settlement?platform=tiktok&tab={tab}').get_data(as_text=True)
+    assert '<h4 class="mb-0">Settlement — Shopee</h4>' in html
+    html = _client().get(f'/marketplace/settlement?platform=lazada&tab={tab}').get_data(as_text=True)
+    assert '<h4 class="mb-0">Settlement — Lazada</h4>' in html

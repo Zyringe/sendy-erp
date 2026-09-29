@@ -56,9 +56,14 @@ EXEMPT = {
         'Legacy ecommerce_listings import from order files (Shopee/Lazada parsers by '
         'hand-picked platform). Not the order import; TikTok listings arrive via '
         'platform_skus.',
+    ('blueprints/marketplace.py', "def settlement():"):
+        'Settlement page whitelist: TikTok settlement and IV reconcile are PR-2/PR-3. '
+        "Without it ?platform=tiktok reconciled TikTok orders against Shopee IVs "
+        "(_RECON_CUSTOMER.get falls back to 'หน้าร้านS').",
     ('templates/marketplace/settlement.html', "หน้าร้าน{{ 'S' if platform"):
-        "Express customer code for the รับชำระหนี้ worksheet. Settlement for tiktok "
-        "is PR-2/PR-3; the page's platform whitelist does not offer tiktok yet.",
+        "Express customer code for the รับชำระหนี้ worksheet. Only reachable for "
+        "shopee/lazada: settlement() whitelists the platform (exempt above) until "
+        "PR-2/PR-3 opens it to tiktok.",
 }
 
 

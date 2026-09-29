@@ -212,6 +212,10 @@ def settlement():
                   Was the standalone /marketplace/reconciliation page.
     """
     platform = request.args.get('platform', 'shopee')
+    # tiktok joins in PR-2/PR-3 (settlement + IV linking); until then
+    # _RECON_CUSTOMER.get would reconcile its orders against Shopee IVs.
+    if platform not in ('shopee', 'lazada'):
+        platform = 'shopee'
     tab = request.args.get('tab', 'deposits')
     if tab not in ('deposits', 'reconcile'):
         tab = 'deposits'
