@@ -180,7 +180,9 @@ def test_the_insert_itself_cannot_overwrite(seeded, monkeypatch):
     result = models.add_catalogue_unit_conversion(P, 'กล.', 12)
 
     assert result == {'exists': True, 'stored_as': 'กล่อง', 'ratio': 6.0}
-    assert _rows(seeded) == [('กล่อง', 6.0)]
+    # The stand-in row was written inside the function's own transaction, so
+    # it rolls back with it; what matters is that no 12 was ever committed.
+    assert _rows(seeded) == []
 
 
 # ── is_base_unit ──────────────────────────────────────────────────────────

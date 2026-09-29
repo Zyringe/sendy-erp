@@ -39,7 +39,7 @@ _STAFF_POST_OK = frozenset([
     'login', 'logout',
     'toggle_book',                       # book view switch — all roles (Q6: C)
     'bsn.mapping_save', 'bsn.unit_conversions_save', 'bsn.unit_conversions_edit',
-    'bsn.unit_conversions_dismiss',
+    'bsn.unit_conversions_dismiss', 'bsn.unit_conversions_add',
     # Decision B — staff may import everything; the unified box (/import-data)
     # snapshots the DB before writing (see guarded_backup call sites).
     'bsn.unified_import', 'bsn.unified_import_confirm', 'bsn.express_dbf_upload',
@@ -436,6 +436,7 @@ _ENDPOINT_MODULE = {
     'bsn.unit_conversions_save': 'data',
     'bsn.unit_conversions_edit': 'data',
     'bsn.unit_conversions_dismiss': 'data',
+    'bsn.unit_conversions_add': 'data',
     'naming.index': 'data',
     'naming.dict_preview': 'data',
     'naming.dict_apply': 'data',

@@ -101,6 +101,7 @@ from .bsn_sync import (
     save_unit_conversions, dismiss_pending_unit_conversion,
     update_unit_conversion_ratio, get_all_unit_conversions,
     upsert_unit_conversion, cross_unit_hazard,
+    add_catalogue_unit_conversion, known_unit_words,
 )
 from .mapping import (
     upsert_mapping, get_pending_mappings, get_orphan_mappings,
