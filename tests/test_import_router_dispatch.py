@@ -86,7 +86,7 @@ def test_sales_routes_to_import_weekly_canonical(monkeypatch, weekly_path):
     seen = {}
     monkeypatch.setattr(parse_weekly, "parse_sales", lambda p: ["e1", "e2"])
     monkeypatch.setattr(models, "import_weekly",
-                        lambda entries, kind, fn, apply_removals=True:
+                        lambda entries, kind, fn, apply_removals:
                         seen.update(kind=kind, n=len(entries), rm=apply_removals)
                         or {"inserted": 2})
     out = import_router.commit_file(weekly_path, "sales", filename="ขาย_x.csv")
