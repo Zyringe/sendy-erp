@@ -125,6 +125,14 @@
   shareholder passes the access gate and then finds the contents hidden.
   **When you change one, say out loud which one you changed and check the other.**
 
+- **อนุโลม (leave pay waiver)** — forgiving the **pay deduction** of one approved leave
+  request, nothing else. The leave still counts as leave taken (it uses up quota and still
+  forfeits เบี้ยขยัน); only the salary that request would have cost is not withheld. It covers
+  both ways a day becomes unpaid: a leave past its quota (**เกินสิทธิ**) and a leave filed as
+  **ลาไม่รับค่าจ้าง**. Whole request only; admin or manager decides it; a month whose payroll
+  is finalized cannot be changed. _Avoid_: using อนุโลม for a bonus or for restoring
+  เบี้ยขยัน — those are separate payroll lines.
+
 ## Trade partners & money owed (การค้า / การเงิน)
 
 > Two senses per real-world party, named separately: the **directory sense** (who they
