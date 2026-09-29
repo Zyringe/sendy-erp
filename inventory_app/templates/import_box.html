@@ -57,10 +57,10 @@
                   <i class="bi bi-clipboard-check me-1"></i>ไปตรวจบิล ({{ r.review_flagged }} ใบ)
                 </a>
                 {% endif %}
-              {% elif r.blocked == 'history' %}
+              {% elif r.blocked in ('history', 'retired') %}
                 {# Keep this panel free of nested <div> — tests match it as one
-                   block via data-block="history". #}
-                <div class="alert alert-danger small mb-0" data-block="history">
+                   block via data-block="history" / "retired". #}
+                <div class="alert alert-danger small mb-0" data-block="{{ r.blocked }}">
                   <i class="bi bi-slash-circle me-1"></i>{{ r.msg }}
                   <a href="{{ url_for('bsn.express_dbf_import') }}"
                      class="btn btn-sm btn-outline-danger mt-2">
@@ -114,7 +114,9 @@
                 </select>
               </td>
               <td class="text-end font-mono">
-                {% if row.error %}
+                {% if row.blocked %}
+                  —
+                {% elif row.error %}
                   <span class="text-danger small">อ่านไม่ได้</span>
                 {% elif row.count is not none %}
                   {{ row.count }}
@@ -124,6 +126,7 @@
                       {%- if d.new is defined %}ใหม่ {{ d.new }}{% endif -%}
                       {%- if d.changed is defined %} · แก้ {{ d.changed }}{% endif -%}
                       {%- if d.existing is defined %} · เดิม {{ d.existing }}{% endif -%}
+                      {%- if d.merged %} · รวมซ้ำ {{ d.merged }}{% endif -%}
                       {%- if d.unmapped %} · <span class="text-warning">ยังไม่ผูกรหัส {{ d.unmapped }}</span>{% endif -%}
                     </div>
                   {% endif %}
@@ -173,9 +176,9 @@
                 {% endif %}
               </td>
               <td class="small text-subtle">
-                {% if row.blocked == 'history' %}
+                {% if row.blocked in ('history', 'retired') %}
                 {# No nested <div> inside this panel — see the results block. #}
-                <div class="alert alert-danger small mb-0 py-1" data-block="history">
+                <div class="alert alert-danger small mb-0 py-1" data-block="{{ row.blocked }}">
                   {{ row.error }}
                   <a href="{{ url_for('bsn.express_dbf_import') }}"
                      class="btn btn-sm btn-outline-danger mt-1">
@@ -273,8 +276,10 @@
         <div class="card-header"><i class="bi bi-upload me-2 text-accent"></i>ลากไฟล์ Express รายสัปดาห์มาที่นี่ (หลายไฟล์พร้อมกันได้)</div>
         <div class="card-body">
           <div class="alert alert-info mb-3">
-            <i class="bi bi-magic me-1"></i>ระบบตรวจชนิดรายงานให้อัตโนมัติ — ขาย · ซื้อ · การรับชำระหนี้ · การจ่ายชำระหนี้ ·
-            ใบลดหนี้ (รับคืน/ส่งคืน) · ลูกหนี้/เจ้าหนี้คงค้าง — แล้วให้ดูตัวอย่างก่อนยืนยัน
+            <i class="bi bi-magic me-1"></i>ระบบตรวจชนิดรายงานให้อัตโนมัติ — การรับชำระหนี้ · การจ่ายชำระหนี้ ·
+            ใบลดหนี้ (รับคืน/ส่งคืน) — แล้วให้ดูตัวอย่างก่อนยืนยัน.
+            ขาย · ซื้อ · ลูกหนี้/เจ้าหนี้คงค้าง มาจาก zip รายวันที่หน้า
+            <a href="{{ url_for('bsn.express_dbf_import') }}">นำเข้า Express (DBF)</a>
           </div>
           <div class="small text-subtle mb-3">
             <i class="bi bi-shield-check me-1"></i>ทุกการนำเข้าจะสำรองฐานข้อมูลอัตโนมัติก่อน

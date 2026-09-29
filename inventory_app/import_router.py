@@ -108,26 +108,47 @@ def detect_express_report(path):
 # dropdown while the detector still emits it is worse still: no <option> matches,
 # so the browser selects the FIRST one ('ขาย') and an unchanged confirm would
 # feed a ลูกหนี้คงค้าง report to the SALES importer (Codex review, 2026-08-22).
+# Import-time alias, kept for tests that pin the set; the guards below read the
+# registry at CALL time.
 RETIRED_REPORT_TYPES = report_types.retired_keys()
+
+
+class RetiredReportType(ValueError):
+    """The report type is retired in the registry (`retired_reason`). A
+    ValueError so callers that already caught the AR/AP refusal keep working."""
+
+
+def _refuse_if_retired(report_type):
+    """Dispatcher-level twin of the route's retired-row block (Card E, ADR 0020).
+
+    Reads `report_types.retired_keys()` at CALL time, not the alias above, so
+    one registry change (or the `unretired_text_door` test fixture) moves every
+    layer together. Runs before any read of the file."""
+    if report_type in report_types.retired_keys():
+        raise RetiredReportType(report_types.retired_reason_for(report_type))
+
 
 _EXPRESS_KIND = report_types.express_kinds()
 
 
-def commit_file(path, report_type, filename=None, db_path=None,
-                apply_removals=False):
+def commit_file(path, report_type, filename=None, db_path=None, *,
+                apply_removals):
     """Dispatch one detected file to its CANONICAL importer and commit.
 
     Returns a uniform summary: {type, ok, summary}. Raises ValueError for an
     unknown report_type (a programmer/detection error); importer runtime errors
     propagate so the caller can isolate per-file. Importers are reused as-is —
     sales/payments_in go to their canonical homes, never the express twins.
+    Raises RetiredReportType for a registry-retired type (ขาย/ซื้อ, AR/AP).
 
-    apply_removals defaults to **False** (sales/purchase AND payments_in): a
+    apply_removals has NO default (the route is the only caller and says what it
+    means). The route passes **False** unless the operator ticked it: a
     รหัสสินค้า- or พนักงานขาย-FILTERED Express export yields partial invoices whose
     filtered-out lines look deleted, and reversing them mass-deletes real stock
     (for payments_in: real receipt→invoice links). The operator opts in per-file
     on the preview page by confirming the file is a complete weekly export.
     """
+    _refuse_if_retired(report_type)
     if report_type == "payments_in":
         import models
         # Same opt-in as sales/purchase: a receipt's iv_list is only the
@@ -166,7 +187,9 @@ def commit_file(path, report_type, filename=None, db_path=None,
 
 def preview_file(path, report_type, db_path=None):
     """Read-only preview for one file. Returns {type, ok, count, detail}.
-    Writes NOTHING (counts/dry-runs only). Raises ValueError on unknown type."""
+    Writes NOTHING (counts/dry-runs only). Raises ValueError on unknown type,
+    RetiredReportType (a ValueError) on a retired one."""
+    _refuse_if_retired(report_type)
     if report_type in ("sales", "purchase"):
         import models
         from parse_weekly import parse_sales, parse_purchases
