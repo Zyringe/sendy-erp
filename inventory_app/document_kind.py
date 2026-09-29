@@ -37,6 +37,12 @@ def _col(alias, col):
     return '{}.{}'.format(alias, col) if alias else col
 
 
+def return_prefix(side):
+    """The return prefix itself ('SR' / 'GR') for the one caller that needs it
+    as text: a regex over a report line (parse_weekly._SR_DOC_LINE)."""
+    return _prefix(side)
+
+
 def is_return_sql(alias, side, col='doc_base'):
     """SQL predicate: the row's document is a return (SR on sales, GR on purchase)."""
     return "{} LIKE '{}%'".format(_col(alias, col), _prefix(side))

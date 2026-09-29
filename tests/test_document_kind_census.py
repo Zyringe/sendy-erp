@@ -14,6 +14,12 @@ Enumerating `startswith` only for these two literals is deliberate: `'SR'` as
 a bare value is also the paid_invoices.doc_kind enum and a display-label key,
 which are not prefix tests.
 
+Not seen, by design: report-format PARSERS whose pattern names the document kind as
+part of a text layout (parse_weekly._SR_MASTER_RE, models/payments.py's
+`(?:IV|SR)\\S+`, the DBF builders' RECTYP tests). They read a report line, they
+do not decide what a return is; the one skip-the-returns rule among them
+(parse_weekly._SR_DOC_LINE) is routed through document_kind.return_prefix.
+
 Exemptions carry a reason. The HS exclusions ("a cash sale is never a
 receivable") are a different question and are not this sweep's business.
 """
@@ -24,19 +30,31 @@ import pytest
 
 from tests import _census
 
+# file -> (exact number of hits it is allowed, why). A COUNT, not a whole-file
+# pass, so reverting a migrated line in the same file still goes red (review of
+# #678, W2).
 EXEMPT = {
-    'scripts/2026_09_19_fix_pack_ratios_592.py':
+    'parse_weekly.py': (1,
+        '_SR_MASTER_RE parses the SR credit-note MASTER row of the Express report '
+        'layout (SR number, date, customer, ...): a text-format parser, not a '
+        'decision about what a return is. The skip-the-returns rule in the same '
+        'file, _SR_DOC_LINE, is built from document_kind.return_prefix.'),
+    'scripts/parse_express_credit_notes.py': (1,
+        '_MAIN_RE parses the GR record row of an Express purchase credit-note '
+        'report (report-layout regex in a standalone script).'),
+    'scripts/2026_09_19_fix_pack_ratios_592.py': (1,
         'Dated one-off correction script for a measured set (#592); it ran '
-        'once and is kept for the record, not maintained.',
-    'scripts/reimport_2026_04_28/import_credit_notes.py':
+        'once and is kept for the record, not maintained.'),
+    'scripts/reimport_2026_04_28/import_credit_notes.py': (3,
         'Historical re-import script for 2026-04-28; superseded by the app '
-        'importer (inventory_app/import_credit_notes.py), which is migrated.',
-    'scripts/parse_express_purchase_history.py':
+        'importer (inventory_app/import_credit_notes.py), which is migrated.'),
+    'scripts/parse_express_purchase_history.py': (2,
         'Standalone parser script for a one-time purchase-history backfill; '
-        'runs outside the app and does not import its modules.',
+        'runs outside the app and does not import its modules.'),
 }
 
-_LIKE_PREFIX = re.compile(r'\b(?:SR|GR)%', re.IGNORECASE)
+# `SR%` (a LIKE pattern) or `SR\d` (a regex over a report line).
+_LIKE_PREFIX = re.compile(r'\b(?:SR|GR)(?:%|\\d)', re.IGNORECASE)
 _PREFIX_LITERALS = ('SR', 'GR')
 
 
@@ -66,9 +84,9 @@ def _census_files():
 def test_no_hand_typed_return_prefix_outside_document_kind():
     found = {}
     for rel, path in _census_files().items():
-        if rel in EXEMPT:
-            continue
         hits = _hits(_census.read(path))
+        if rel in EXEMPT:
+            continue        # count pinned by test_exemptions_are_real_and_reasoned
         if hits:
             found[rel] = hits
     assert not found, (
@@ -81,13 +99,15 @@ def test_no_hand_typed_return_prefix_outside_document_kind():
 def test_exemptions_are_real_and_reasoned():
     files = _census_files()
     stale = []
-    for rel, why in EXEMPT.items():
+    for rel, (n, why) in EXEMPT.items():
         assert len(why) > 40, f'{rel}: explain WHY it is exempt'
         if rel not in files:
             stale.append(f'{rel} (file no longer exists)')
-        elif not _hits(_census.read(files[rel])):
-            stale.append(f'{rel} (no longer types the prefix)')
-    assert not stale, "Remove these stale EXEMPT entries:\n  " + "\n  ".join(stale)
+            continue
+        got = len(_hits(_census.read(files[rel])))
+        if got != n:
+            stale.append(f'{rel} (exempt for {n} hit(s), now has {got})')
+    assert not stale, "Fix these EXEMPT entries:\n  " + "\n  ".join(stale)
 
 
 SEEN = {
@@ -97,6 +117,7 @@ SEEN = {
     'lowercase':       'q = "doc_base like \'sr%\'"',
     'in_fstring':      'q = f"WHERE {p}doc_base LIKE \'SR%\'"',
     'triple_quoted':   'q = """\n  SELECT 1\n  WHERE doc_base LIKE \'SR%\'\n"""',
+    'regex_over_a_line': "r = re.compile(r'\\d{2}\\s+SR\\d')",
     'startswith':      "x = doc.startswith('SR')",
     'startswith_gr':   'x = (d or "").startswith("GR")',
     'startswith_tuple': "x = doc.startswith(('IV', 'SR'))",

@@ -60,6 +60,14 @@ def test_hs_is_a_sale_on_both_readings():
     assert _run(dk.is_return_sql('', 'sales'), 'HS6901001') == 0
 
 
+def test_parse_weekly_return_line_regex_is_unchanged():
+    # W3: _SR_DOC_LINE is built from return_prefix(); it must equal the literal it replaced.
+    import parse_weekly
+    assert parse_weekly._SR_DOC_LINE.pattern == r'\d{2}/\d{2}/\d{2}\s+SR\d'
+    assert parse_weekly._SR_DOC_LINE.flags == __import__('re').compile('x').flags
+    assert dk.return_prefix('purchase') == 'GR'
+
+
 def test_side_and_alias_are_required():
     with pytest.raises(TypeError):
         dk.is_return_sql()

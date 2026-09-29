@@ -6,6 +6,8 @@ import datetime
 import os
 import re
 
+import document_kind
+
 
 def _clean(line: str) -> str:
     return line.strip().strip('"').replace('\xa0', ' ')
@@ -142,7 +144,8 @@ def _is_skip(s: str) -> bool:
 # 269 of 272 unmatched transaction-candidate lines were SR docs. The other 3
 # were IV lines with a NEGATIVE unit price, which _validate_parse now surfaces
 # instead of dropping silently.
-_SR_DOC_LINE = re.compile(r'\d{2}/\d{2}/\d{2}\s+SR\d')
+_SR_DOC_LINE = re.compile(
+    r'\d{2}/\d{2}/\d{2}\s+' + document_kind.return_prefix('sales') + r'\d')
 
 
 def _validate_parse(filepath: str, entries: list, rejected: list, candidates: int):
