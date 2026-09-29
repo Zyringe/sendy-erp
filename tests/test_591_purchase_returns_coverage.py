@@ -28,14 +28,12 @@ blueprints/bsn.py exclude GR entirely instead (a "latest purchase" is a
 single ROW, not a sum) — that exclusion is pinned by
 test_591_latest_purchase_excludes_gr.py, the behavioural half.
 """
-import ast
-import os
 import re
 
 import pytest
 
-APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   'inventory_app')
+from tests import _census
+from tests._census import queries as _queries, py_files as _py_files  # noqa: F401
 
 # Raw net/qty aggregates: same shapes test_purchase_total_coverage.py sweeps
 # for sales_transactions (bare, aliased, coalesced, rounded, CASE, a digit
@@ -61,70 +59,13 @@ MUST_USE_HELPER = {
 }
 
 
-def _render(node):
-    """Source text of a string expression, f-string holes kept as {expr}."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return ''.join(v.value if isinstance(v, ast.Constant)
-                       else '{' + ast.unparse(v.value) + '}' for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _render(node.left), _render(node.right)
-        if left is not None and right is not None:
-            return left + right
-    return None
-
-
-def _queries(src):
-    """(function qualname, text) for every string VALUE in `src`. A docstring
-    or any other bare string statement is prose, never a query."""
-    out = []
-
-    def visit(node, scope):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, scope + [child.name])
-            elif isinstance(child, ast.Expr) and _render(child.value) is not None:
-                continue
-            elif _render(child) is not None:
-                out.append(('.'.join(scope) or '<module>', _render(child)))
-            else:
-                visit(child, scope)
-
-    visit(ast.parse(src), [])
-    return out
-
-
 def _per_function(src, pattern):
     """{function: hits of `pattern` in its purchase_transactions queries}"""
-    counts = {}
-    for func, sql in _queries(src):
-        if 'purchase_transactions' not in sql:
-            continue
-        n = len(pattern.findall(sql))
-        if n:
-            counts[func] = counts.get(func, 0) + n
-    return counts
-
-
-def _py_files():
-    for root, _dirs, names in os.walk(APP):
-        if any(part in root for part in ('__pycache__', 'instance', 'static')):
-            continue
-        for n in names:
-            if n.endswith('.py'):
-                path = os.path.join(root, n)
-                yield os.path.relpath(path, APP).replace(os.sep, '/'), path
+    return _census.per_function(src, pattern, 'purchase_transactions')
 
 
 def _app_counts(pattern):
-    out = {}
-    for rel, path in _py_files():
-        with open(path, encoding='utf-8') as f:
-            src = f.read()
-        for func, n in _per_function(src, pattern).items():
-            out[f'{rel}::{func}'] = n
-    return out
+    return _census.app_counts(pattern, 'purchase_transactions')
 
 
 # ── The census ───────────────────────────────────────────────────────────────
@@ -266,7 +207,8 @@ def test_the_sweep_ignores_what_is_not_a_raw_purchase_aggregate(shape):
     assert _per_function(NOT_SITES[shape], _RAW_AGG) == {}, f'{shape}: false positive'
 
 
-@pytest.mark.parametrize('shape', ['implicit concatenation', 'plus concatenation', 'method'])
+@pytest.mark.parametrize('shape', ['implicit concatenation', 'plus concatenation', 'method',
+                                   'format chain'])
 def test_the_sweep_sees_every_string_shape(shape):
     src = {
         'implicit concatenation':
@@ -275,6 +217,14 @@ def test_the_sweep_sees_every_string_shape(shape):
         'plus concatenation':
             'def report(conn):\n    return conn.execute("SELECT SUM(net) " +\n'
             '        "FROM purchase_transactions WHERE supplier = ?")\n',
+        # Review of #678 (W1): a multi-line literal that is .format()'d and then
+        # chained with `+`. The pre-shared walkers saw the raw literal; a walker
+        # that renders the .format() call as an unparse()d hole sees an escaped
+        # newline there and SUM\( then \s* no longer matches.
+        'format chain':
+            'def report(conn, w):\n    return conn.execute(\"\"\"SELECT SUM(\n'
+            '        net) FROM purchase_transactions WHERE {w}\"\"\".format(w=w)\n'
+            '        + " GROUP BY supplier").fetchone()\n',
         'method':
             'class Repo:\n    def report(self, conn):\n'
             '        return conn.execute("SELECT SUM(net) FROM purchase_transactions '

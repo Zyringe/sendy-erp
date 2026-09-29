@@ -9,6 +9,7 @@ from flask import Blueprint, render_template, request, jsonify, abort
 
 import cashflow
 import customer_geo
+import document_kind
 import marketplace_match
 import models
 import payments_alloc
@@ -230,7 +231,7 @@ def sales_trip():
                   FROM sales_transactions s
                   WHERE s.customer_code = c.code
                     AND s.doc_base IS NOT NULL
-                    AND s.doc_base NOT LIKE 'SR%'
+                    AND {document_kind.not_return_sql('s', 'sales')}
                     AND s.doc_base NOT LIKE 'HS%'
                     -- HS is paid on the spot, never a receivable (#514)
                     -- "paid" means an ACTIVE receipt, same contract as

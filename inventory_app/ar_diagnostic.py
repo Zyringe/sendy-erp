@@ -23,6 +23,7 @@ Two rules make the output trustworthy rather than reassuring:
      reported per-document as `unexplained`. Hiding a satang inside a
      tolerance is how a reconciliation stops being one.
 """
+import document_kind
 
 # Ordered: the FIRST reason that fits claims the document. Order matters — it
 # is what keeps the buckets disjoint, and it runs most-specific-first so a
@@ -41,7 +42,7 @@ _REASONS = [
      'บิลถูกใบลดหนี้ล้างพอดี และใบลดหนี้ยังเปิดค้างอยู่ใน snapshot เอง — '
      'Express แยกเป็น 2 ใบ, Sendy หักกลบให้ ยอดรวมเท่ากัน ทั้งคู่ถูก'),
     ('credit_note',
-     'ใบลดหนี้ SR — payments_alloc._settlement_rows กรอง SR% ออกโดยตั้งใจ'),
+     'ใบลดหนี้ SR — payments_alloc._settlement_rows กรองเอกสาร SR ออกโดยตั้งใจ'),
     ('cash_sale',
      'ขายสด HS — _settlement_rows กรอง HS% ออกโดยตั้งใจ'),
     ('not_yet_imported',
@@ -171,7 +172,7 @@ def build_ar_reconciliation(snapshot_rows, derived_rows,
               and _r2(d.get('credit_notes')) == s_amt
               and offsets.get(doc) == s_amt and s_amt):
             reason = 'credit_note_offset'
-        elif doc.startswith('SR'):
+        elif document_kind.is_return(doc, 'sales'):
             reason = 'credit_note'
         elif doc.startswith('HS'):
             reason = 'cash_sale'

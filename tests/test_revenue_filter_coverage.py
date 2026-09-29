@@ -18,12 +18,12 @@ gets told at CI time instead of by a wrong number on a page.
 The allowlist below is the record of DELIBERATE exceptions. Adding an entry is
 fine — silently leaving a surface unguarded is not.
 """
-import io
 import os
 import re
-import tokenize
 
 import pytest
+
+from tests._census import code_only as _code_only, py_files as _py_files  # noqa: F401
 
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    'inventory_app')
@@ -105,37 +105,6 @@ _SUM_NET = re.compile(
     # product list moved onto the helper.
     r'|\{sales_filters\.(?:purchase|sales)_net_sql\()',
     re.IGNORECASE | re.DOTALL)
-
-
-def _code_only(src):
-    """`src` with comments and docstrings removed.
-
-    A guard token found in prose is not a guard. Writing the words
-    "excludes_revenue = 1" into a docstring — which is exactly what the
-    2026-08-31 fix to models/payments.py did, while explaining that it uses a
-    DIFFERENT filter — silently marked the whole file as participating.
-    """
-    out = []
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
-            if tok.type == tokenize.COMMENT:
-                continue
-            if tok.type == tokenize.STRING and tok.line.lstrip().startswith(('"""', "'''")):
-                continue
-            out.append(tok.string)
-    except (tokenize.TokenError, IndentationError):
-        return src          # unparseable: fall back to the raw text, never skip
-    return '\n'.join(out)
-
-
-def _py_files():
-    for root, _dirs, names in os.walk(APP):
-        if any(part in root for part in ('__pycache__', 'instance', 'static')):
-            continue
-        for n in names:
-            if n.endswith('.py'):
-                path = os.path.join(root, n)
-                yield os.path.relpath(path, APP).replace(os.sep, '/'), path
 
 
 def _unguarded_files():

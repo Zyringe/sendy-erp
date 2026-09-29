@@ -12,6 +12,7 @@ import math
 import uuid as _uuid
 
 import bsn_units
+import document_kind
 import unit_conversion
 
 from .stock_filters import is_non_stock_code, non_stock_clause
@@ -313,10 +314,10 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, product_ids=None):
             # purchase branch (note == 'BSN ซื้อ') skips it; the generic IN path
             # raises stock at the current average cost.
             is_purchase_return = (
-                file_type == 'purchase' and (row['doc_no'] or '').startswith('GR')
+                file_type == 'purchase' and document_kind.is_return(row['doc_no'], 'purchase')
             )
             is_sales_return = (
-                file_type == 'sales' and (row['doc_no'] or '').startswith('SR')
+                file_type == 'sales' and document_kind.is_return(row['doc_no'], 'sales')
             )
             if is_purchase_return:
                 row_txn_type = 'OUT'

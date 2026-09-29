@@ -24,6 +24,7 @@ from collections import defaultdict
 
 from database import get_connection
 import bsn_units
+import document_kind
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS, _get_base_qty
 
 # Mirrors express_dbf_source._SCOPE_RECTYP — kept as a separate literal
@@ -496,7 +497,7 @@ def _ledger_check(conn, payload_rows):
         # derivation exactly — the ONLY two shapes a real sales sync ever
         # writes: a normal line (OUT, negative, 'BSN ขาย') or an SR return
         # line (IN, positive, 'BSN ขาย-คืน').
-        is_sr = doc_no.startswith('SR')
+        is_sr = document_kind.is_return(doc_no, 'sales')
         expected_note = 'BSN ขาย-คืน' if is_sr else 'BSN ขาย'
         expected_txn_type = 'IN' if is_sr else 'OUT'
         exact_rows = [t for t in candidates if t['note'] == expected_note]

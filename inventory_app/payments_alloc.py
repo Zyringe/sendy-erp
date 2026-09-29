@@ -88,6 +88,7 @@ from statistics import median
 from typing import Optional
 
 from config import DATABASE_PATH
+import document_kind
 import vat_math
 
 # Float-noise tolerance for "is this settled / overpaid".
@@ -166,7 +167,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
     and is the key for anything shown on a code-keyed customer page (#499).
     """
     sale_conds = ["st.doc_base IS NOT NULL",
-                  "st.doc_base NOT LIKE 'SR%'",
+                  document_kind.not_return_sql('st', 'sales'),
                   "st.doc_base NOT LIKE 'HS%'"]
     sale_params = []
     if customer:
@@ -218,7 +219,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                    st.doc_base                 AS sr_doc_base,
                    ROUND(SUM(st.net), 2)       AS sr_net
             FROM sales_transactions st
-            WHERE st.doc_base LIKE 'SR%'
+            WHERE {document_kind.is_return_sql('st', 'sales')}
               {sr_date_cap}
               AND st.ref_invoice IS NOT NULL
               AND st.ref_invoice <> ''
@@ -292,7 +293,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
                     SELECT st.doc_base AS sr_doc_base,
                            st.ref_invoice AS ref_invoice
                     FROM sales_transactions st
-                    WHERE st.doc_base LIKE 'SR%'
+                    WHERE {document_kind.is_return_sql('st', 'sales')}
                       AND st.ref_invoice IS NOT NULL
                       AND st.ref_invoice <> ''
                       AND st.doc_base NOT IN
@@ -311,7 +312,7 @@ def _settlement_rows(conn, customer=None, date_from=None, date_to=None,
             SELECT ref_invoice                AS iv_no,
                    ROUND(SUM(net), 2)         AS credit_notes
             FROM sales_transactions
-            WHERE doc_base LIKE 'SR%'
+            WHERE {document_kind.is_return_sql('', 'sales')}
               {sr_date_cap_bare}
               AND ref_invoice IS NOT NULL
               AND ref_invoice <> ''
@@ -474,7 +475,7 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
     where = " AND ".join(pay_conds)
 
     sale_filter = ("st2.doc_base IS NOT NULL "
-                   "AND st2.doc_base NOT LIKE 'SR%' "
+                   f"AND {document_kind.not_return_sql('st2', 'sales')} "
                    "AND st2.doc_base NOT LIKE 'HS%'")
 
     # Billable-invoice gate: iv_no must have ≥1 billable sales line, exactly
@@ -529,7 +530,7 @@ def cash_in_rows(conn=None, db_path=None, date_from=None, date_to=None):
             UNION
             SELECT st.doc_base AS sr_doc_base, st.ref_invoice AS ref_invoice
             FROM sales_transactions st
-            WHERE st.doc_base LIKE 'SR%'
+            WHERE {document_kind.is_return_sql('st', 'sales')}
               AND st.ref_invoice IS NOT NULL
               AND st.ref_invoice <> ''
               AND st.doc_base NOT IN (SELECT sr_doc_base FROM credit_note_amounts)
@@ -712,10 +713,10 @@ def unattributable_sr_count(conn=None, db_path=None):
     Counts SR *rows* (one per sales_transactions line), matching the
     grain of the synthetic `_ins_sr` helper and of how SR rows are stored.
     """
-    sql = """
+    sql = f"""
         SELECT COUNT(*) AS n
         FROM sales_transactions
-        WHERE doc_base LIKE 'SR%'
+        WHERE {document_kind.is_return_sql('', 'sales')}
           AND (ref_invoice IS NULL OR ref_invoice = '')
     """
     with _ConnCtx(conn, db_path) as c:

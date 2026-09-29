@@ -26,11 +26,13 @@ Python from fetched rows (sales_doc's per-document total), Jinja or JS
 arithmetic, and a table name that arrives at run time. The behavioural half
 is test_627_sales_net_of_returns.py.
 """
-import ast
 import os
 import re
 
 import pytest
+
+from tests import _census
+from tests._census import queries as _queries, read as _read  # noqa: F401
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(_ROOT, 'inventory_app')
@@ -157,79 +159,16 @@ _GIVEAWAY_OUT = re.compile(r'\{sales_filters\.not_a_sale_clause\(')
 _ANY_REVENUE_GUARD = re.compile(r'not_a_sale_clause|revenue_filter|excludes_revenue')
 
 
-def _render(node):
-    """Source text of a string expression, f-string holes kept as {expr}. A
-    `+` chain renders its non-string operands as holes too, so a query built
-    as `"... SUM(" + sales_filters.base_qty_sql() + ") ..."` is read whole."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):
-        return ''.join(v.value if isinstance(v, ast.Constant)
-                       else '{' + ast.unparse(v.value) + '}' for v in node.values)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _render(node.left), _render(node.right)
-        if left is None and right is None:
-            return None
-        return ((left if left is not None else '{' + ast.unparse(node.left) + '}')
-                + (right if right is not None else '{' + ast.unparse(node.right) + '}'))
-    return None
-
-
-def _queries(src):
-    """(function qualname, text) for every string VALUE in `src`. A docstring
-    or any other bare string statement is prose, never a query."""
-    out = []
-
-    def visit(node, scope):
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                visit(child, scope + [child.name])
-            elif isinstance(child, ast.Expr) and _render(child.value) is not None:
-                continue
-            elif _render(child) is not None:
-                out.append(('.'.join(scope) or '<module>', _render(child)))
-            else:
-                visit(child, scope)
-
-    visit(ast.parse(src), [])
-    return out
-
-
 def _sales_queries(src):
     return [(f, sql) for f, sql in _queries(src) if 'sales_transactions' in sql]
 
 
 def _per_function(src, pattern):
-    counts = {}
-    for func, sql in _sales_queries(src):
-        n = len(pattern.findall(sql))
-        if n:
-            counts[func] = counts.get(func, 0) + n
-    return counts
-
-
-def _py_files():
-    for base, prefix in ((APP, ''), (SCRIPTS, 'scripts/')):
-        for root, _dirs, names in os.walk(base):
-            if any(part in root for part in ('__pycache__', 'instance', 'static')):
-                continue
-            for n in names:
-                if n.endswith('.py'):
-                    path = os.path.join(root, n)
-                    yield prefix + os.path.relpath(path, base).replace(os.sep, '/'), path
-
-
-def _read(path):
-    with open(path, encoding='utf-8') as f:
-        return f.read()
+    return _census.per_function(src, pattern, 'sales_transactions')
 
 
 def _app_counts(pattern):
-    out = {}
-    for rel, path in _py_files():
-        for func, n in _per_function(_read(path), pattern).items():
-            out[f'{rel}::{func}'] = n
-    return out
+    return _census.app_counts(pattern, 'sales_transactions', include_scripts=True)
 
 
 def _function_queries(site):

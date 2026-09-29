@@ -15,6 +15,7 @@ subtracted a second time — cashbook opex already includes the
 import calendar as _cal
 from datetime import date
 
+import document_kind
 import sales_filters
 import unit_conversion
 from database import get_connection
@@ -49,7 +50,7 @@ _MARCH_2026_END = '2026-03-31'
 # was measured on a population that already included HS inside SUM(net); the
 # 2026-07-21 comment excluding HS was the misreading, not the identity.
 # Every sales_transactions query in this P&L carries
-# `AND doc_no NOT LIKE 'SR%'`.
+# document_kind.not_return_sql(col='doc_no') (the SR exclusion).
 # (SR/HS rows stay stored as-is — SR syncs to stock as an IN; NEVER flip that.)
 
 
@@ -150,10 +151,11 @@ def _cogs_basis_months(conn, date_from, date_to):
           LEFT JOIN products p ON p.id = st.product_id
           {uc_join}
          WHERE st.date_iso >= ? AND st.date_iso <= ?
-           AND st.doc_no NOT LIKE 'SR%'
+           AND {not_return}
          GROUP BY ym
          ORDER BY ym
     """.format(cut=sales_filters.COGS_HISTORICAL_FROM,
+               not_return=document_kind.not_return_sql('st', 'sales', col='doc_no'),
                base_qty=unit_conversion.base_qty_sql(),
                unit_cost=sales_filters.cogs_unit_cost_sql(),
                uc_join=unit_conversion.unit_conversion_join()),
@@ -266,9 +268,10 @@ def get_accounting_summary(date_from=None, date_to=None):
                COUNT(DISTINCT doc_base) AS doc_count
           FROM sales_transactions
          WHERE date_iso >= ? AND date_iso <= ?
-           AND doc_no NOT LIKE 'SR%'
+           AND {not_return}
            AND {not_a_sale}
-    """.format(not_a_sale=sales_filters.not_a_sale_clause()), (date_from, date_to)).fetchone()
+    """.format(not_return=document_kind.not_return_sql('', 'sales', col='doc_no'),
+               not_a_sale=sales_filters.not_a_sale_clause()), (date_from, date_to)).fetchone()
     sales_net = float(s['total_net'])
 
     # ── COGS (ทุน ณ วันขาย from the cutover, ทุนเฉลี่ยวันนี้ before it — the
@@ -287,14 +290,15 @@ def get_accounting_summary(date_from=None, date_to=None):
           LEFT JOIN products p ON p.id = st.product_id
           {uc_join}
          WHERE st.date_iso >= ? AND st.date_iso <= ?
-           AND st.doc_no NOT LIKE 'SR%'
+           AND {not_return}
            -- NO excludes_revenue filter here, on purpose: a giveaway's goods
            -- really left the warehouse, so their cost is a real expense.
            -- Dropping it too would hand the margin back. See sales_filters.
            -- HS cash sales COUNTED here too, same reason — the goods really
            -- left the warehouse, and HS posts its COGS to the same 51-01 GL
            -- account IV uses (#514).
-    """.format(base_qty=unit_conversion.base_qty_sql(),
+    """.format(not_return=document_kind.not_return_sql('st', 'sales', col='doc_no'),
+               base_qty=unit_conversion.base_qty_sql(),
                unit_cost=sales_filters.cogs_unit_cost_sql(),
                no_ledger=sales_filters.no_ledger_line_sql(),
                unratioed=unit_conversion.unratioed_line_sql(),
@@ -433,7 +437,7 @@ def get_accounting_summary(date_from=None, date_to=None):
         LEFT JOIN brands    b ON b.id = p.brand_id
         """ + unit_conversion.unit_conversion_join() + """
         WHERE st.date_iso >= ? AND st.date_iso <= ?
-          AND st.doc_no NOT LIKE 'SR%'
+          AND """ + document_kind.not_return_sql('st', 'sales', col='doc_no') + """
           AND """ + sales_filters.not_a_sale_clause('st') + """
         GROUP BY b.id, b.name, b.name_th, b.is_own_brand, b.sort_order
         ORDER BY COALESCE(b.is_own_brand, 0) DESC,
