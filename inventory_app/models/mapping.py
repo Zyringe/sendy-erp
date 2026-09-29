@@ -9,6 +9,7 @@ for every affected product) — acyclic, flagged in the Phase 12 report.
 """
 from database import get_connection
 import bsn_units
+import unit_conversion
 
 from . import _shared
 
@@ -372,9 +373,9 @@ def missing_unit_ratios(conn, new_pid: int, rows) -> list:
     row at all: all 9 purchase rows vanished, the 13 sales rows landed, and
     stock went 24 -> -558.
 
-    Mirrors bsn_sync._get_base_qty's resolution exactly — unit_type match
-    first, then the unit_conversions lookup — so this check cannot disagree
-    with the sync it guards. Shared by repoint_bsn_code (which refuses) and
+    Asks the same unit_conversion.exact_ratio(strip=True) that
+    bsn_sync._get_base_qty does, so this check cannot disagree with the sync
+    it guards. Shared by repoint_bsn_code (which refuses) and
     scripts/remap_bsn_code.py's dry-run (which warns), so a preview can never
     say "fine" about a move that the apply will reject.
     """
@@ -389,14 +390,8 @@ def missing_unit_ratios(conn, new_pid: int, rows) -> list:
     missing = set()
     for r in rows:
         unit = r['unit']
-        if unit is not None and unit.strip() == (unit_type or '').strip():
-            continue
-        if conn.execute(
-            "SELECT 1 FROM unit_conversions WHERE product_id=? AND bsn_unit=?",
-            (new_pid, unit),
-        ).fetchone():
-            continue
-        missing.add(unit)
+        if unit_conversion.exact_ratio(conn, new_pid, unit_type or '', unit, strip=True) is None:
+            missing.add(unit)
     return sorted(missing)
 
 

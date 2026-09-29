@@ -1,5 +1,5 @@
 """Census: every direct read of `unit_conversions` outside unit_conversion.py
-is a writer, PR2's, or exempt with a reason.
+is a writer or exempt with a reason.
 
 Card A (ADR 0019) gave the "how many base units is one of this unit" question
 one home, `inventory_app/unit_conversion.py`, with a named entry point per
@@ -57,24 +57,16 @@ _ONE_OFF = ('A dated one-off data fix, already run on prod and kept for its audi
 _PREFLIGHT = ('Migration preflight on a backup copy: reproduces the migration\'s own '
               'twin-ratio joins to report what it would change. It mirrors migration '
               'SQL, it is not a runtime reader.')
-_PR2 = ('The exact family on the stock side (raw spelling, no map). It moves to '
-        'unit_conversion in PR2 of card A, with the stock replay as its gate.')
-
-# site -> (status, reason). status: 'writer' | 'pending:PR2' | 'exempt'.
+# site -> (status, reason). status: 'writer' | 'exempt'.
 ALLOWED = {
     # ── inventory_app ─────────────────────────────────────────────────────
-    'models/bsn_sync.py::_get_base_qty': ('pending:PR2', _PR2 + ' The stock writer itself: '
-                                          'strip compare, 4-dp round, None holds the line.'),
-    'models/mapping.py::missing_unit_ratios': ('pending:PR2', _PR2 + ' Predicts which units '
-                                               'the stock writer would hold after a remap.'),
-    'review_rules.py::_get_ratio': ('pending:PR2', _PR2 + ' R4 predicts the stock writer '
-                                    '("สต๊อกจะไม่ตัด") and writes txn_review_flags.'),
     'models/bsn_sync.py::add_catalogue_unit_conversion': ('writer', _WRITER),
     'models/bsn_sync.py::get_pending_unit_conversions': (
         'exempt',
         'The /unit-conversions pending list: a NOT EXISTS predicate for held lines '
         'that still need a ratio. It answers a set, not a ratio, and must change in '
-        'lockstep with conversion_unit_key and _get_base_qty (the Q11 follow-up), '
+        'lockstep with conversion_unit_key and the stock family\'s '
+        'unit_conversion.exact_ratio(strip=True) (the Q11 follow-up), '
         'never on its own.'),
     'models/bsn_sync.py::get_all_unit_conversions': (
         'exempt',
@@ -184,7 +176,7 @@ ALLOWED = {
         'price-implied one for Put to eyeball. It converts nothing.'),
 }
 
-_VALID_STATUS = {'writer', 'pending:PR2', 'exempt'}
+_VALID_STATUS = {'writer', 'exempt'}
 
 
 def test_every_reader_is_declared():
