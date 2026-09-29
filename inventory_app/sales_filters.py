@@ -176,7 +176,7 @@ def not_a_purchase_return_clause(alias=''):
     window in `blueprints/bsn.py::mapping`. `alias` as for not_a_sale_clause().
 
     NULL-safe on purpose: `doc_base` is a nullable column, and a bare
-    a bare `NOT LIKE` on the GR prefix in a WHERE clause evaluates to NULL — not TRUE —
+    `doc_base NOT LIKE 'GR%'` in a WHERE clause evaluates to NULL — not TRUE —
     for a NULL doc_base, which would silently drop a real purchase with
     unknown doc_base from the "latest purchase" window instead of just
     failing to recognize it as GR. (supplier_net_sql()/supplier_qty_sql()'s
