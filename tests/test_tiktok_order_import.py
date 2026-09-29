@@ -218,7 +218,7 @@ def test_dashboard_badges_tiktok_and_waits_for_income(conn):
     assert 'รอไฟล์ Income' in row
     assert '~ประมาณ' not in row
     # Control: the filter really narrowed to TikTok, and the other orders render too.
-    assert html.count('js-order-detail') == 3
+    assert html.count('class="js-order-detail"') == 3
 
 
 def test_dashboard_summary_counts_tiktok(conn):

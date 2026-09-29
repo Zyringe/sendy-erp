@@ -63,32 +63,25 @@ EXEMPT = {
 
 
 def _offending_lines(rel):
+    """[(line, context)] per hit; context = the line, 12 above and 2 below (a
+    whitelist sits under its def, above its flash). Located by offset, so two
+    identical lines in one file each get their own context."""
     with open(os.path.join(APP, rel), encoding='utf-8') as f:
         text = f.read()
+    lines = text.split('\n')
     hits = []
     for rx in (PAIR, BINARY):
         for m in rx.finditer(text):
-            start = text.rfind('\n', 0, m.start()) + 1
-            end = text.find('\n', m.end())
-            hits.append(text[start:end if end != -1 else None])
+            i = text.count('\n', 0, m.start())
+            hits.append((lines[i], '\n'.join(lines[max(0, i - 12):i + 3])))
     return hits
 
 
-def _exempt_reason(rel, line, lines_before):
-    for (f, frag), reason in EXEMPT.items():
-        if f == rel and (frag in line or frag in lines_before):
-            return reason
+def _exempt_key(rel, line, ctx):
+    for (f, frag) in EXEMPT:
+        if f == rel and (frag in line or frag in ctx):
+            return (f, frag)
     return None
-
-
-def _context(rel, line):
-    """The line, 12 above and 2 below: a whitelist sits under its def, above its flash."""
-    with open(os.path.join(APP, rel), encoding='utf-8') as f:
-        lines = f.read().split('\n')
-    for i, ln in enumerate(lines):
-        if ln == line:
-            return '\n'.join(lines[max(0, i - 12):i + 3])
-    return ''
 
 
 def test_every_platform_check_is_within_the_registry(empty_db_conn):
@@ -111,11 +104,10 @@ def test_no_unlisted_two_platform_literal_in_marketplace_code():
     assert len(SWEPT) >= 15, 'control: the marketplace templates were listed'
     unlisted, used = [], set()
     for rel in SWEPT:
-        for line in _offending_lines(rel):
-            ctx = _context(rel, line)
-            reason = _exempt_reason(rel, line, ctx)
-            if reason:
-                used.update(k for k in EXEMPT if k[0] == rel and (k[1] in line or k[1] in ctx))
+        for line, ctx in _offending_lines(rel):
+            key = _exempt_key(rel, line, ctx)
+            if key:
+                used.add(key)
             else:
                 unlisted.append(f'{rel}: {line.strip()}')
     assert not unlisted, 'shopee/lazada-only literal (derive from PLATFORMS, or exempt with a reason):\n' \

@@ -1,5 +1,6 @@
 {# Shared marketplace order drill-down modal. Include once per page; any element
    with class `js-order-detail` and `data-order-id` opens it. #}
+{% from 'macros.html' import PLAT_LABEL %}
 <div class="modal fade" id="orderDetailModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-scrollable">
     <div class="modal-content">
@@ -45,6 +46,7 @@
 // block in base.html) is available — otherwise new bootstrap.Modal() throws and
 // no click handlers ever attach.
 document.addEventListener('DOMContentLoaded', function () {
+  const PLAT_LABEL = {{ PLAT_LABEL | tojson }};
   const fmt = n => (n == null ? '–' : Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}));
   // Fee-breakdown body for the ค่าธรรมเนียม hover — same format as the settlement
   // page tooltip: item/credit lines first, then each deduction, footer = net.
@@ -82,7 +84,7 @@ document.addEventListener('DOMContentLoaded', function () {
         load.classList.add('d-none'); body.classList.remove('d-none');
         document.getElementById('odSn').textContent = o.order_sn;
         document.getElementById('odSummary').textContent = o.status || '';
-        document.getElementById('odPlatform').textContent = o.platform;
+        document.getElementById('odPlatform').textContent = PLAT_LABEL[o.platform] || o.platform;
         document.getElementById('odBuyer').textContent = o.buyer_name || '–';
         document.getElementById('odShip').textContent = [o.ship_address, o.buyer_phone].filter(Boolean).join(' · ') || '–';
         document.getElementById('odDates').textContent = (o.order_date ? o.order_date.slice(0,10) : '–') + ' / ' + (o.settled_at || 'ยังไม่โอน');
@@ -115,7 +117,7 @@ document.addEventListener('DOMContentLoaded', function () {
             <td class="text-end">${fmt(it.item_subtotal)}</td>
           </tr>`).join('') : '<tr><td colspan="5" class="text-muted text-center">ไม่มีรายการสินค้า</td></tr>');
 
-        // ---- Timeline: order → Shopee released to wallet → bank deposit ----
+        // ---- Timeline: order → platform released to wallet → bank deposit ----
         const step = (lbl, val, cls) =>
           `<div class="d-flex flex-column align-items-center text-center" style="flex:1">
              <span class="badge ${val ? cls : 'bg-light text-muted border'}">${val || '—'}</span>
@@ -126,7 +128,7 @@ document.addEventListener('DOMContentLoaded', function () {
           <div class="d-flex align-items-start justify-content-between border rounded p-2 bg-light small">
             ${step('วันสั่งซื้อ', o.order_date ? o.order_date.slice(0,10) : '', 'bg-secondary')}
             ${arrow}
-            ${step('Shopee โอนเข้า wallet', o.settled_at, 'bg-info text-dark')}
+            ${step((PLAT_LABEL[o.platform] || o.platform) + ' โอนเข้า wallet', o.settled_at, 'bg-info text-dark')}
             ${arrow}
             ${step('เข้าบัญชีธนาคาร', d.payout ? d.payout.deposit_date : '', 'bg-success')}
           </div>`;

@@ -113,6 +113,16 @@
 {% endmacro %}
 
 
+{# One label per marketplace platform (models._shared.PLATFORMS). platform_badge
+   is the only way a marketplace page labels an order's platform, so a TikTok
+   order can never fall into an `if shopee else Lazada` branch. #}
+{% set PLAT_LABEL = {'shopee': 'Shopee', 'lazada': 'Lazada', 'tiktok': 'TikTok'} %}
+{% set PLAT_COLOR = {'shopee': '#ee4d2d', 'lazada': '#003087', 'tiktok': '#111111'} %}
+{% macro platform_badge(platform) -%}
+<span class="badge" style="background:{{ PLAT_COLOR.get(platform, '#6c757d') }}">{{ PLAT_LABEL.get(platform, platform) }}</span>
+{%- endmacro %}
+
+
 {# ecommerce-revamp (Phase 4): red/amber/dead/ok alert badge for a
    get_marketplace_overview() row -- shared by templates/ecommerce.html
    (list) and templates/ecommerce_product.html (detail header). #}

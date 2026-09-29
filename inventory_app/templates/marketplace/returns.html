@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
+{% from 'macros.html' import platform_badge %}
 {% block title %}คืนสินค้า + ยกเลิก – Marketplace{% endblock %}
-{% block page_title %}คืนสินค้า + ยกเลิก (Shopee / Lazada){% endblock %}
+{% block page_title %}คืนสินค้า + ยกเลิก (Shopee / Lazada / TikTok){% endblock %}
 
 {% block content %}
 
@@ -44,7 +45,7 @@
     <div class="stat-card" style="border-left:4px solid #10b981">
       <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>ออเดอร์ทั้งหมด</div>
       <div class="stat-card-value mt-1">{{ data.total_orders | fmt_qty }}</div>
-      <div class="stat-card-sub text-muted">Shopee + Lazada</div>
+      <div class="stat-card-sub text-muted">ทุกช่องทาง</div>
     </div>
   </div>
 </div>
@@ -62,7 +63,7 @@
     <tbody>
       {% for r in data.returns %}
       <tr>
-        <td>{% if r.platform == 'shopee' %}<span class="badge bg-danger">Shopee</span>{% else %}<span class="badge bg-primary">Lazada</span>{% endif %}</td>
+        <td>{{ platform_badge(r.platform) }}</td>
         <td><code class="small">{{ r.order_sn }}</code></td>
         <td class="small text-muted">{{ r.date }}</td>
         <td class="small">{{ r.product or '—' }}</td>
@@ -90,7 +91,7 @@
     <tbody>
       {% for r in data.cancelled %}
       <tr>
-        <td>{% if r.platform == 'shopee' %}<span class="badge bg-danger">Shopee</span>{% else %}<span class="badge bg-primary">Lazada</span>{% endif %}</td>
+        <td>{{ platform_badge(r.platform) }}</td>
         <td><code class="small">{{ r.order_sn }}</code></td>
         <td class="small text-muted">{{ r.date }}</td>
         <td class="small">{{ r.product or '—' }}</td>

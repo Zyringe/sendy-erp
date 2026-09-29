@@ -1,43 +1,37 @@
 {% extends 'base.html' %}
+{% from 'macros.html' import platform_badge, PLAT_LABEL, PLAT_COLOR %}
 {% block title %}คำสั่งซื้อ Marketplace – ERP{% endblock %}
-{% block page_title %}คำสั่งซื้อ Marketplace (Shopee / Lazada){% endblock %}
+{% block page_title %}คำสั่งซื้อ Marketplace (Shopee / Lazada / TikTok){% endblock %}
 
 {% block content %}
 
-{% set sp = summary.get('shopee', {}) %}
-{% set lz = summary.get('lazada', {}) %}
 {% set unmapped = summary.get('_unmapped_lines', 0) %}
+{% set ns = namespace(total=0) %}
 
-{# ── Summary cards ── #}
+{# ── Summary cards: one per platform, then the total ── #}
 <div class="row g-3 mb-4">
-  <div class="col-sm-6 col-md-3">
-    <div class="stat-card" style="border-left:4px solid #ee4d2d">
-      <div class="stat-card-label"><i class="bi bi-bag-heart me-1"></i>Shopee</div>
-      <div class="stat-card-value text-danger mt-1">{{ sp.get('orders', 0) | fmt_qty }}</div>
-      <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ sp.get('gmv', 0) | fmt_price }}</div>
+  {% for p in platforms %}
+  {% set s = summary.get(p, {}) %}
+  {% set ns.total = ns.total + s.get('orders', 0) %}
+  <div class="col-sm-6 col-md">
+    <div class="stat-card" style="border-left:4px solid {{ PLAT_COLOR[p] }}">
+      <div class="stat-card-label"><i class="bi bi-shop me-1"></i>{{ PLAT_LABEL[p] }}</div>
+      <div class="stat-card-value mt-1">{{ s.get('orders', 0) | fmt_qty }}</div>
+      <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ s.get('gmv', 0) | fmt_price }}</div>
       <div class="stat-card-sub text-muted">
-        {% if sp.get('last_import') %}นำเข้าออเดอร์ล่าสุด {{ sp.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
+        {% if s.get('last_import') %}นำเข้าออเดอร์ล่าสุด {{ s.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
       </div>
     </div>
   </div>
-  <div class="col-sm-6 col-md-3">
-    <div class="stat-card" style="border-left:4px solid #003087">
-      <div class="stat-card-label"><i class="bi bi-shop me-1"></i>Lazada</div>
-      <div class="stat-card-value text-primary mt-1">{{ lz.get('orders', 0) | fmt_qty }}</div>
-      <div class="stat-card-sub">ออเดอร์ · ยอดรวม ฿{{ lz.get('gmv', 0) | fmt_price }}</div>
-      <div class="stat-card-sub text-muted">
-        {% if lz.get('last_import') %}นำเข้าออเดอร์ล่าสุด {{ lz.last_import[:16] }}{% else %}ยังไม่มีข้อมูล{% endif %}
-      </div>
-    </div>
-  </div>
-  <div class="col-sm-6 col-md-3">
+  {% endfor %}
+  <div class="col-sm-6 col-md">
     <div class="stat-card" style="border-left:4px solid #10b981">
       <div class="stat-card-label"><i class="bi bi-receipt me-1"></i>ออเดอร์ทั้งหมด</div>
-      <div class="stat-card-value mt-1">{{ (sp.get('orders', 0) + lz.get('orders', 0)) | fmt_qty }}</div>
-      <div class="stat-card-sub text-muted">Shopee + Lazada</div>
+      <div class="stat-card-value mt-1">{{ ns.total | fmt_qty }}</div>
+      <div class="stat-card-sub text-muted">{% for p in platforms %}{{ PLAT_LABEL[p] }}{% if not loop.last %} + {% endif %}{% endfor %}</div>
     </div>
   </div>
-  <div class="col-sm-6 col-md-3">
+  <div class="col-sm-6 col-md">
     <a href="{{ url_for('marketplace.unmapped') }}" class="text-decoration-none">
       <div class="stat-card" style="border-left:4px solid {% if unmapped %}#f59e0b{% else %}#10b981{% endif %}">
         <div class="stat-card-label"><i class="bi bi-link-45deg me-1"></i>ออเดอร์ยังไม่จับคู่สินค้า</div>
@@ -63,17 +57,18 @@
   <i class="bi bi-info-circle me-1"></i>
   <strong>ค่าธรรมเนียม / ยอดที่ได้รับ:</strong> Shopee แสดงค่าคอม+ค่าบริการจากไฟล์ (ยอดที่ได้รับจริงต้องกระทบกับ
   <strong>settlement</strong> อีกที) ·
-  Lazada ไฟล์ order ไม่มีค่าคอม จึงแสดง "-" จนกว่าจะดึง finance statement
+  Lazada ไฟล์ order ไม่มีค่าคอม จึงแสดง "-" จนกว่าจะดึง finance statement ·
+  TikTok ไฟล์ order ไม่มีค่าธรรมเนียม ยอดรับจึงขึ้น "รอไฟล์ Income" จนกว่าจะนำเข้าไฟล์ Income
 </div>
 
 {# ── Filter ── #}
 <div class="btn-group btn-group-sm mb-3" role="group">
   <a href="{{ url_for('marketplace.dashboard') }}"
      class="btn btn-outline-secondary {% if not platform %}active{% endif %}">ทั้งหมด</a>
-  <a href="{{ url_for('marketplace.dashboard', platform='shopee') }}"
-     class="btn btn-outline-danger {% if platform == 'shopee' %}active{% endif %}">Shopee</a>
-  <a href="{{ url_for('marketplace.dashboard', platform='lazada') }}"
-     class="btn btn-outline-primary {% if platform == 'lazada' %}active{% endif %}">Lazada</a>
+  {% for p in platforms %}
+  <a href="{{ url_for('marketplace.dashboard', platform=p) }}"
+     class="btn btn-outline-secondary {% if platform == p %}active{% endif %}">{{ PLAT_LABEL[p] }}</a>
+  {% endfor %}
 </div>
 
 {# ── Orders table ── #}
@@ -92,10 +87,7 @@
         {% for o in orders %}
         <tr>
           <td class="text-nowrap small">{{ o.order_date or '-' }}</td>
-          <td>
-            {% if o.platform == 'shopee' %}<span class="badge" style="background:#ee4d2d">Shopee</span>
-            {% else %}<span class="badge" style="background:#003087">Lazada</span>{% endif %}
-          </td>
+          <td>{{ platform_badge(o.platform) }}</td>
           <td class="small"><code class="js-order-detail" role="button" data-order-id="{{ o.id }}" title="ดูรายละเอียดออเดอร์">{{ o.order_sn }}</code></td>
           <td class="small">{{ o.status or '-' }}</td>
           <td class="text-end">
@@ -107,9 +99,11 @@
           <td class="text-end text-muted">{{ o.marketplace_fee | fmt_price }}</td>
           {# ยอดรับ = ยอดโอนจริง (actual_payout, จากไฟล์ Income) ถ้ามี; ไม่งั้นประมาณ
              จากยอดสินค้า − ค่าธรรมเนียม. NB: o.payout (จำนวนเงินทั้งหมด) รวมค่าส่งที่ผู้ซื้อจ่าย
-             จึง over-state ยอดที่ผู้ขายได้ — ไม่ใช้ตรงนี้ #}
+             จึง over-state ยอดที่ผู้ขายได้ — ไม่ใช้ตรงนี้. ไม่มีค่าธรรมเนียมเลย (TikTok/Lazada
+             ก่อนไฟล์ Income) = ประมาณไม่ได้: ยอดสินค้า − 0 จะดูเหมือนได้เต็ม #}
           <td class="text-end">
             {% if o.actual_payout is not none %}{{ o.actual_payout | fmt_price }}
+            {% elif o.marketplace_fee is none %}<span class="text-muted small">รอไฟล์ Income</span>
             {% else %}<span title="ยังไม่ได้อัปไฟล์ Income (โอนเงินสำเร็จ) — ประมาณจากยอดสินค้า − ค่าธรรมเนียม">{{ ((o.item_total or 0) - (o.marketplace_fee or 0)) | fmt_price }} <span class="badge bg-secondary">~ประมาณ</span></span>{% endif %}
           </td>
           <td class="small">{{ o.buyer_name or '-' }}</td>
@@ -127,7 +121,7 @@
 <div class="text-muted small mt-2">
   แสดง {{ orders | length | fmt_qty }} ออเดอร์
   {% if orders | length >= row_limit %}
-    <span class="text-warning">(จำกัด {{ row_limit | fmt_qty }} ล่าสุด — มีมากกว่านี้ ใช้ตัวกรอง Shopee/Lazada ดูแยก)</span>
+    <span class="text-warning">(จำกัด {{ row_limit | fmt_qty }} ล่าสุด — มีมากกว่านี้ ใช้ตัวกรองช่องทางดูแยก)</span>
   {% endif %}
 </div>
 
