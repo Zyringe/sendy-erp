@@ -674,8 +674,8 @@ def update_leave_request(req_id: int, data: dict,
             # applies. Raised BEFORE the UPDATE, so a rejected edit leaves the
             # row exactly as it was.
             valid = validate_leave_payload(data)
-            # อนุโลม (pay_waived) was granted for THIS who/what/when. Changing
-            # any of them clears it, in the same statement: SET expressions
+            # อนุโลม (pay_waived) was granted for THIS who/what/when, while
+            # approved. Changing any of them, or the status, clears it, in the same statement: SET expressions
             # read the row as it was before this UPDATE. The audit trigger
             # (mig 196) records the flag's change alongside the edit.
             c.execute(
@@ -683,7 +683,7 @@ def update_leave_request(req_id: int, data: dict,
                      pay_waived = CASE
                        WHEN employee_id IS NOT ? OR leave_type_id IS NOT ?
                          OR start_date IS NOT ? OR end_date IS NOT ?
-                         OR days IS NOT ?
+                         OR days IS NOT ? OR status IS NOT ?
                        THEN 0 ELSE pay_waived END,
                      employee_id=?, leave_type_id=?, start_date=?, end_date=?,
                      days=?, reason=?, has_medical_cert=?, status=?
@@ -691,6 +691,7 @@ def update_leave_request(req_id: int, data: dict,
                 (
                     int(data["employee_id"]), int(data["leave_type_id"]),
                     valid["start_date"], valid["end_date"], valid["days"],
+                    data.get("status", "approved"),
                     data["employee_id"], data["leave_type_id"],
                     valid["start_date"], valid["end_date"], valid["days"],
                     data.get("reason"),
@@ -704,9 +705,16 @@ def update_leave_request(req_id: int, data: dict,
             sets = [(k, data[k]) for k in _allowed if k in data]
             if sets:
                 cols = ", ".join(f"{k}=?" for k, _ in sets)
+                params = [v for _, v in sets]
+                if "status" in data:
+                    # A status change ends any อนุโลม: it is approved-only and
+                    # must never come back with a later re-approval.
+                    cols = ("pay_waived = CASE WHEN status IS NOT ? THEN 0 "
+                            "ELSE pay_waived END, " + cols)
+                    params = [data["status"]] + params
                 c.execute(
                     f"UPDATE leave_requests SET {cols} WHERE id=?",
-                    [v for _, v in sets] + [req_id],
+                    params + [req_id],
                 )
         c.commit()
     finally:
