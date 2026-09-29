@@ -702,9 +702,10 @@ def test_dbf_upload_clears_flag_of_a_removed_line(client, tmp_path, monkeypatch)
     assert lines == ['IV7068301-1'], 'line 2 was not removed, so this test proves nothing'
     assert _doc_flags('IV7068301') == [], 'flag of the removed line survived the DBF re-import'
 
+
 # ── Card E: removed source lines reach the run record and the flash ──────────
 
-def _two_line_sale():
+def _zip_two_line_sale():
     t = _one_line_sale('ตัว')
     t['STCRD'] = t['STCRD'] + [_stcrd('IV7068101', 2, stkcod='bsn-681b', qty=1.0,
                                       unit='ตัว', unitpr=10.0, trnval=10.0, netval=10.0)]
@@ -728,7 +729,7 @@ def test_run_record_carries_removed_lines(client, tmp_path, monkeypatch):
     """A doc uploaded with 2 lines, then again with 1: the vanished line is
     reversed (as it always was) and NOW the run record and the flash say so."""
     _login(client)
-    first = _upload(client, tmp_path, monkeypatch, _two_line_sale())
+    first = _upload(client, tmp_path, monkeypatch, _zip_two_line_sale())
     assert first.status_code == 200, first.data[:500]
     assert _last_run_notes() == (0, 0)
     assert 'ลบบรรทัดที่หายจากต้นทาง'.encode() not in first.data     # control: quiet day
