@@ -47,6 +47,7 @@ import hashlib
 import os
 from collections import defaultdict
 
+import document_kind
 from dbfread import DBF, FieldParser
 
 
@@ -427,7 +428,7 @@ def build_credit_notes_ar_records(artrn_rows, armas_rows, cutoff=None):
         if r.get('RECTYP') != _CREDIT_NOTE_RECTYP:
             continue
         doc = r.get('DOCNUM') or ''
-        if not doc.startswith('SR'):
+        if not document_kind.is_return(doc, 'sales'):
             continue
         if not _in_window(r, cutoff):
             continue
@@ -476,7 +477,7 @@ def build_credit_notes_ap_records(aptrn_rows, stcrd_rows, apmas_rows, cutoff=Non
         if hdr.get('RECTYP') != _CREDIT_NOTE_RECTYP:
             continue
         doc = hdr.get('DOCNUM') or ''
-        if not doc.startswith('GR'):
+        if not document_kind.is_return(doc, 'purchase'):
             continue
         if not _in_window(hdr, cutoff):
             continue
