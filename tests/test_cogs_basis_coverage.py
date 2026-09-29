@@ -47,7 +47,10 @@ def _cogs_readers():
                 continue
             path = os.path.join(root, fn)
             rel = os.path.relpath(path, APP)
-            if rel == 'sales_filters.py':
+            # sales_filters owns cogs_unit_cost_sql; unit_conversion DEFINES
+            # base_qty_sql (and sales_filters re-exports it). Neither reads a
+            # cost, so neither is a COGS reader.
+            if rel in ('sales_filters.py', 'unit_conversion.py'):
                 continue
             with open(path, encoding='utf-8') as fh:
                 src = fh.read()

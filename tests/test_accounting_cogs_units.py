@@ -8,17 +8,18 @@ one piece. The stock ledger already converts: prod row IV6901440-1 sold
 `/accounting` costed the same line at 16 × ฿12. Measured understatement on
 prod, Jan–Aug 2026: ฿189,535 (Aug alone ฿13,678 on 66 lines).
 
-Conversion follows `price_lookup._bill_ratio`, the resolver's own bill-unit
-lookup:
-  * the row's own `unit_conversions` ratio;
+Conversion is `unit_conversion.base_qty_sql`, the exact-spelling SQL family
+(ADR 0019):
+  * the `unit_conversions` row for the bill's own spelling;
   * 1.0 when the bill unit IS the base unit — a short-circuit that wins over
     any `unit_conversions` row written for that unit.
 
-One deliberate divergence, and it is the reason `unknown_ratio_lines` exists:
-`_bill_ratio` returns None for an unratioed unit and the price resolver SKIPS
+It is NOT the price resolver's `word_ratio`, which also tries the unit's
+word, and which returns None for an unratioed unit so the resolver SKIPS
 that row. Dropping the line from COGS would understate it further, so COGS
 costs it at ratio 1 (what the page did for every line before this change) and
-counts it, the same way `no_cost_lines` is counted and still summed at 0.
+counts it in `unknown_ratio_lines`, the way `no_cost_lines` is counted and
+still summed at 0.
 
 Fixture: `empty_db_conn` (full live schema, zero rows) — never assert against
 the live DB, it drifts day to day.
@@ -105,8 +106,8 @@ def test_net_profit_carries_the_conversion(empty_db_conn):
 
 def test_base_unit_line_is_not_rescaled(empty_db_conn):
     """A line sold in the product's own unit keeps ratio 1 — including when a
-    unit_conversions row exists for that unit (price_lookup._bill_ratio
-    short-circuits before the lookup, so a rogue row must not reach COGS)."""
+    unit_conversions row exists for that unit (base_qty_sql short-circuits
+    before the lookup, so a rogue row must not reach COGS)."""
     conn = empty_db_conn
     pid = _mk_product(conn, cost_price=10.0, unit_type='ตัว')
     _mk_ratio(conn, pid, 'ตัว', 5.0)

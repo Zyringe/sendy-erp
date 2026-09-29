@@ -32,6 +32,7 @@ import pytest
 import price_lookup
 import review_rules
 import sales_filters
+import unit_conversion
 from models import bsn_sync, ecommerce_overview, vat_sub
 import call_card
 
@@ -63,7 +64,7 @@ def conn(empty_db_conn):
 # ── word: the price resolver's bill-unit lookup ─────────────────────────────
 
 def _word(conn, pid, unit):
-    return price_lookup._bill_ratio(conn, pid, 'ตัว', unit, {})
+    return unit_conversion.word_ratio(conn, pid, 'ตัว', unit, {})
 
 
 WORD = {None: 1.0, '': 1.0, 'ตัว': 1.0, ' ตัว': None, 'โหล': 12.0, 'หล': 12.0,
@@ -78,7 +79,7 @@ def test_word_family(conn):
 # ── conversion: the row lookup resolve/bundle build on (no short-circuit) ───
 
 def _conversion(conn, pid, unit):
-    return price_lookup._conversion_ratio(conn, pid, unit)
+    return unit_conversion.conversion_ratio(conn, pid, unit)
 
 
 CONVERSION = {None: None, '': None, 'ตัว': 5.0, ' ตัว': None, 'โหล': 12.0, 'หล': None,

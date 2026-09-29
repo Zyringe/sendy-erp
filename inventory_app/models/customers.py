@@ -6,6 +6,7 @@ rationale. No behavior changes.
 import json
 import customer_geo
 import sales_filters
+import unit_conversion
 import vat_math
 from database import get_connection
 
@@ -270,7 +271,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         from a call made at the customer's LAST quantity so a bundle's free
         units count — the caller made that call and passes `resolved`.
 
-    Unit conversions go through price_lookup._bill_ratio — the resolver's
+    Unit conversions go through unit_conversion.word_ratio — the resolver's
     own bill-unit → base-unit lookup, the one it converts every evidence
     row with — never a re-typed unit_conversions query. A ratio it cannot
     find degrades the figure to None ("—"), never to 1.
@@ -280,8 +281,6 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     badges (Put, 2026-09-11): 21 products on prod sit exactly there, and
     for them it is the only cost figure there is.
     """
-    import price_lookup
-
     prod = conn.execute(
         "SELECT cost_price, unit_type FROM products WHERE id = ?", (pid,)).fetchone()
     cost = prod['cost_price'] or 0
@@ -294,7 +293,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     }
 
     ratio_cache = {}
-    row_ratio = price_lookup._bill_ratio(conn, pid, prod['unit_type'], unit, ratio_cache)
+    row_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], unit, ratio_cache)
     lp = conn.execute("""
         SELECT unit_cost, event_date, reference_no FROM product_cost_ledger
         WHERE product_id = ? AND event_type = 'PURCHASE'
@@ -337,7 +336,8 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         kept_per_unit = round(kept / last_row['qty'], 2)
         if lp_pu is not None:
             out['last_below_last_purchase'] = kept_per_unit < lp_pu
-        free_ratios = [price_lookup._bill_ratio(conn, pid, prod['unit_type'], f['unit'], ratio_cache)
+        free_ratios = [unit_conversion.word_ratio(conn, pid, prod['unit_type'], f['unit'],
+                                                  ratio_cache)
                        for f in freebie_rows]
         if has_cost:
             out['last_below_wacc'] = kept_per_unit < wacc_pu
