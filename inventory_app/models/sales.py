@@ -138,6 +138,9 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     elif date_to and not date_from:
         date_from = '2000-01-01'
 
+    # A local, not an inline call: test_last_purchase_population_coverage's
+    # doc-count pattern cannot read past parentheses inside the CASE.
+    not_return = document_kind.not_return_sql()
     # ── Summary this month ────────────────────────────────────────────────────
     # Sales are NET of returns (#627): a credit note subtracts, so its rows are
     # in the population, and every sales query here drops the documents
@@ -146,7 +149,7 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     # Sales count doc_base (the invoice); doc_no is one LINE of it (#496).
     # Purchases below keep doc_no: on purchase_transactions it IS the document.
     s = conn.execute(f"""
-        SELECT COUNT(DISTINCT CASE WHEN {document_kind.not_return_sql()} THEN doc_base END)
+        SELECT COUNT(DISTINCT CASE WHEN {not_return} THEN doc_base END)
                                    AS doc_count,
                COALESCE(SUM({sales_filters.sales_net_sql()}), 0) AS total_net,
                COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS total_qty
@@ -215,7 +218,7 @@ def get_trade_dashboard(date_from=None, date_to=None, conn=None):
     # ── Top 10 ลูกค้า ─────────────────────────────────────────────────────────
     top_customers = conn.execute(f"""
         SELECT customer,
-               COUNT(DISTINCT CASE WHEN {document_kind.not_return_sql()} THEN doc_base END)
+               COUNT(DISTINCT CASE WHEN {not_return} THEN doc_base END)
                                       AS doc_count,
                SUM({sales_filters.sales_net_sql()}) AS total_net
         FROM sales_transactions
