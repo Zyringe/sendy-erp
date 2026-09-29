@@ -999,10 +999,10 @@ CREATE TABLE marketplace_order_items (
     UNIQUE(platform, order_sn, line_key)
 );
 
-CREATE TABLE marketplace_orders (
+CREATE TABLE "marketplace_orders" (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    platform         TEXT    NOT NULL CHECK(platform IN ('shopee','lazada')),
-    order_sn         TEXT    NOT NULL,        -- Shopee order_sn / Lazada order number
+    platform         TEXT    NOT NULL CHECK(platform IN ('shopee','lazada','tiktok')),
+    order_sn         TEXT    NOT NULL,        -- Shopee order_sn / Lazada order number / TikTok Order ID
     status           TEXT,                    -- marketplace order status
     buyer_name       TEXT,
     buyer_phone      TEXT,
@@ -1016,7 +1016,12 @@ CREATE TABLE marketplace_orders (
     source_file      TEXT,                    -- export filename this row was imported from
     raw_json         TEXT,                    -- full export row(s) for forensics
     first_synced_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
-    last_synced_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')), actual_payout REAL, settled_at TEXT, settlement_source TEXT, payout_batch_id INTEGER, payout_id INTEGER,
+    last_synced_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    actual_payout    REAL,
+    settled_at       TEXT,
+    settlement_source TEXT,
+    payout_batch_id  INTEGER,
+    payout_id        INTEGER,
     UNIQUE(platform, order_sn)
 );
 
