@@ -1540,6 +1540,12 @@ def express_dbf_upload():
                     per_type.get('sales'), 'BSN5657 (DBF)')
                 if _dbf_lossy:
                     flashes.append(('warning', _dbf_lossy))
+                _bid = (per_type.get('sales') or {}).get('batch_id')
+                if _bid:
+                    try:
+                        rr.scan_after_import(_bid)
+                    except Exception as _scan_exc:
+                        flashes.append(('warning', f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}'))
                 # Each register is isolated from the money import, so one that
                 # refused leaves the ledger above perfectly fine while that
                 # register silently keeps YESTERDAY's rows. The green summary
