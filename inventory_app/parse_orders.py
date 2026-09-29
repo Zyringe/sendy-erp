@@ -386,6 +386,8 @@ def parse_tiktok_orders(df):
                     'seller_discount': 0.0,
                     'qty_returned': 0.0,
                     'return_type': _s(r.get(_TT.RETURN_TYPE)) or None,
+                    'refund_amount': None,
+                    'creator_handle': _s(r.get(_TT.CREATOR)) or None,
                 }
             line['qty'] += _num(r.get(_TT.QTY)) or 0.0
             line['item_subtotal'] = round(line['item_subtotal'] + (_num(r.get(_TT.SUBTOTAL)) or 0.0), 2)
@@ -394,6 +396,9 @@ def parse_tiktok_orders(df):
             line['seller_discount'] = round(
                 line['seller_discount'] + (_num(r.get(_TT.SELLER_DISC)) or 0.0), 2)
             line['qty_returned'] += _num(r.get(_TT.QTY_RETURNED)) or 0.0
+            refund = _num(r.get(_TT.REFUND))            # per SKU line, blank = none
+            if refund is not None:
+                line['refund_amount'] = round((line['refund_amount'] or 0.0) + refund, 2)
 
         items = list(lines.values())
         # Every date cell is checked, not only the first non-empty one.
@@ -401,6 +406,7 @@ def parse_tiktok_orders(df):
         paid = [_tt_dt(r.get(_TT.PAID), _TT.PAID) for r in rows]
         cancelled = [_tt_dt(r.get(_TT.CANCELLED), _TT.CANCELLED) for r in rows]
         addr_parts = [_unmasked(_first_nonempty(rows, k)) for k in _TT.ADDR]
+        refunds = [li['refund_amount'] for li in items if li['refund_amount'] is not None]
 
         orders.append({
             'platform': 'tiktok',
@@ -417,7 +423,7 @@ def parse_tiktok_orders(df):
             'currency': 'THB',
             'items': items,
             'order_amount': _num(_first_nonempty(rows, _TT.ORDER_AMOUNT)),
-            'refund_amount': _num(_first_nonempty(rows, _TT.REFUND)),
+            'refund_amount': round(sum(refunds), 2) if refunds else None,
             'shipping_fee_after_discount': _num(_first_nonempty(rows, _TT.SHIPPING)),
             'payment_method': _first_nonempty(rows, _TT.PAYMENT) or None,
             'order_channel': _first_nonempty(rows, _TT.CHANNEL) or None,

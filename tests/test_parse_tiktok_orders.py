@@ -84,11 +84,16 @@ def test_carried_fields_for_later_prs(orders):
     assert c['items'][0]['qty_returned'] == 1.0
     assert c['items'][0]['return_type'] == 'Cancel'
     assert c['order_amount'] == pytest.approx(139.04)
-    assert c['refund_amount'] == pytest.approx(69.52)
+    # Order Refund Amount is per SKU line (69.52 on each of the 2 lines); the
+    # order's refund is their sum = the income file's full refund, 139.04.
+    assert [it['refund_amount'] for it in c['items']] == [69.52, 69.52]
+    assert c['refund_amount'] == pytest.approx(139.04)
+    assert orders[COMPLETED]['refund_amount'] is None
     assert c['cancelled_time'] == '2026-09-04 11:56:50'
     assert c['payment_method'] == 'PayLater + TikTok Shop Balance'
     assert c['order_channel'] == 'Product cards'
     assert c['creator_handle'] is None
+    assert [it['creator_handle'] for it in c['items']] == [None, None]
     assert orders[COMPLETED]['cancelled_time'] is None
 
 
@@ -104,6 +109,17 @@ def test_repeated_sku_in_one_order_aggregates_into_one_line():
     assert (it['qty'], it['item_subtotal']) == (2.0, 810.0)
     assert o['item_total'] == 810.0
     assert it['platform_discount'] == 60.0
+
+
+def test_creator_handle_is_carried_per_line():
+    """Affiliate attribution can differ per SKU line; the order-level value is
+    only the first one seen."""
+    df = _df()
+    df.loc[2, 'Creator Handle'] = 'creator_a'
+    df.loc[3, 'Creator Handle'] = 'creator_b'
+    c = {x['order_sn']: x for x in parse_tiktok_orders(df)}[CANCELLED]
+    assert [it['creator_handle'] for it in c['items']] == ['creator_a', 'creator_b']
+    assert c['creator_handle'] == 'creator_a'
 
 
 def test_missing_required_column_names_what_it_saw():
