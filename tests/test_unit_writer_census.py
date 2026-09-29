@@ -686,6 +686,19 @@ ALLOWED = {
             'test_upsert_unit_conversion_unknown_code_survives as the '
             'control.'),
     },
+    'models/bsn_sync.py::add_catalogue_unit_conversion': {
+        'unit_conversions.bsn_unit': ('through_map',
+            'The #656 writer behind /unit-conversions/add (a word printed in '
+            'the catalogue, never on a bill). It stores conversion_unit_key('
+            'conn, typed, bsn_units.normalize_unit(typed, conn=conn), '
+            'product_id=...), the same call upsert_unit_conversion makes, '
+            'before cross_unit_hazard judges it. ' + _KEY +
+            'Behaviour pinned by test_656_add_catalogue_unit.py::'
+            'test_a_catalogue_word_is_stored_as_the_word_and_the_resolver_'
+            'answers (กล. stored as กล่อง, and the resolver then answers the '
+            'ask), with test_a_word_the_map_does_not_know_is_stored_as_typed '
+            'as the control.'),
+    },
     'models/bsn_sync.py::save_unit_conversions': {
         'unit_conversions.bsn_unit': ('through_map',
             'Rebuilds each item with bsn_units.normalize_unit((item['

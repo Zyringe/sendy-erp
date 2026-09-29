@@ -76,7 +76,8 @@ MOVED_NAMES = {
         'get_pending_unit_conversions', 'learn_acronyms_normalize',
         'save_unit_conversions', 'dismiss_pending_unit_conversion',
         'update_unit_conversion_ratio', 'get_all_unit_conversions',
-        'upsert_unit_conversion',
+        'upsert_unit_conversion', 'add_catalogue_unit_conversion',
+        'known_unit_words',
     ],
     'mapping': [
         'upsert_mapping', 'get_pending_mappings', 'resolve_pending_mappings',

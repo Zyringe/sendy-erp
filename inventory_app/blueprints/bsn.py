@@ -102,7 +102,8 @@ def unit_conversions():
     pages = (total + per_page - 1) // per_page
     return render_template('unit_conversions.html',
                            pending=pending, existing=existing,
-                           search=search, page=page, pages=pages, total=total)
+                           search=search, page=page, pages=pages, total=total,
+                           unit_words=models.known_unit_words())
 
 
 @bp_bsn.route('/unit-conversions/save', methods=['POST'])
@@ -179,6 +180,61 @@ def unit_conversions_edit():
         else:
             flash(f'อัปเดต ratio สำหรับ {bsn_unit} เรียบร้อย (re-sync แล้ว)', 'success')
     return redirect(url_for('bsn.unit_conversions'))
+
+
+@bp_bsn.route('/unit-conversions/add', methods=['POST'])
+def unit_conversions_add():
+    # A unit printed in the catalogue but never billed (#656): the pending
+    # table cannot offer it, and the edit route needs a row to exist.
+    f = request.form
+    q = f['q'].strip() if 'q' in f else ''
+    raw_pid = f['product_id'].strip() if 'product_id' in f else ''
+    typed = f['unit'].strip() if 'unit' in f else ''
+    raw_ratio = f['ratio'].strip() if 'ratio' in f else ''
+    try:
+        product_id = int(raw_pid)
+    except ValueError:
+        product_id = None
+    try:
+        ratio = float(raw_ratio)
+    except ValueError:
+        ratio = None
+    missing = []
+    if not product_id:
+        missing.append('เลือกสินค้า')
+    if not typed:
+        missing.append('พิมพ์หน่วย')
+    # isfinite: `inf > 0` is True, and nan compares False both ways.
+    if ratio is None or not math.isfinite(ratio) or ratio <= 0:
+        missing.append('ใส่ ratio เป็นตัวเลขที่มากกว่า 0')
+    if missing:
+        flash('เพิ่มหน่วยไม่ได้: ต้อง' + ' / '.join(missing), 'danger')
+        return redirect(url_for('bsn.unit_conversions', q=q or None))
+
+    result = models.add_catalogue_unit_conversion(product_id, typed, ratio)
+    if 'ok' in result:
+        stored = result['stored_as']
+        what = (f'"{typed}" เป็นหน่วย "{stored}"' if stored != result['typed']
+                else f'หน่วย "{stored}"')
+        flash(f'บันทึก {what} แล้ว: 1 {stored} = {ratio:g} {result["unit_type"]} '
+              f'({result["product_name"]})', 'success')
+    elif 'no_product' in result:
+        flash(f'ไม่พบสินค้ารหัส {product_id} หรือสินค้านี้ปิดใช้งานแล้ว', 'danger')
+    elif 'is_base_unit' in result:
+        flash(f'"{typed}" คือหน่วยหลักของสินค้านี้ ({result["unit_type"]}) อยู่แล้ว '
+              f'เท่ากับ 1 ต่อ 1 เสมอ ไม่ต้องเพิ่ม', 'info')
+    elif 'exists' in result:
+        flash(f'สินค้ารหัส {product_id} มีหน่วย "{result["stored_as"]}" อยู่แล้ว '
+              f'(ratio ปัจจุบัน {result["ratio"]:g}) จึงไม่ได้เปลี่ยนอะไร — '
+              f'ถ้าจะเปลี่ยน ratio ให้ค้นหารหัส {product_id} แล้วกด "แก้ไข" '
+              f'ในตารางด้านล่าง (ระบบจะ re-sync สต็อกให้)', 'warning')
+    elif 'pending_bills' in result:
+        flash(f'หน่วย "{typed}" ของสินค้านี้มีบิล {result["pending_bills"]} แถวรอแปลงหน่วยอยู่ — '
+              f'ให้กำหนด ratio ในตารางรอกำหนดด้านบนแทน (บันทึกที่นั่นจะ sync สต็อกให้ด้วย)',
+              'warning')
+    else:
+        _flash_unit_hazard(result['blocked'])
+    return redirect(url_for('bsn.unit_conversions', q=q or None))
 
 
 @bp_bsn.route('/unit-conversions/dismiss', methods=['POST'])

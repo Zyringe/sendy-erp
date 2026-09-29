@@ -51,6 +51,10 @@ CALL_SITES = {
         "save_unit_conversions.",
     ('models/bsn_sync.py', 'upsert_unit_conversion'):
         "Write — same _UNCONDITIONAL_BLOCK_KINDS check.",
+    ('models/bsn_sync.py', 'add_catalogue_unit_conversion'):
+        "Write (#656, /unit-conversions/add) — same _UNCONDITIONAL_BLOCK_KINDS "
+        "check, and it returns the hazard as its 'blocked' outcome before the "
+        "INSERT, so a configuration_error never reaches the write.",
     ('models/suggestions.py', 'approve_pending_suggestion'):
         "Write — an ALLOWLIST shape, not a blocklist: "
         "`hz is None or (hz['kind']=='pack_piece' and ratio==1)` is the only "
@@ -97,6 +101,15 @@ ALERT_CONN = {
         False,
         "Same shape as update_unit_conversion_ratio — hazard check precedes "
         "every write."),
+    ('models/bsn_sync.py', 'add_catalogue_unit_conversion'): (
+        True,
+        "EXPOSED from its first statement: it opens with BEGIN IMMEDIATE so the "
+        "checks and the INSERT are one check-then-write, which takes the write "
+        "lock BEFORE the hazard check, so a fresh connection could not file the "
+        "alert. The blocked path COMMITs before returning, and the alert is the "
+        "only write it can hold by then (every earlier step is a read). Pinned "
+        "by test_656_add_catalogue_unit.py::"
+        "test_a_malformed_formula_blocks_and_its_alert_survives."),
     ('models/suggestions.py', 'approve_pending_suggestion'): (
         False,
         "Holds the lock (three writes precede the call) but hands "
@@ -220,7 +233,8 @@ def test_write_callers_actually_check_the_new_kind():
     'configuration_error' (directly, or via the shared
     _UNCONDITIONAL_BLOCK_KINDS constant both name)."""
     src = open(os.path.join(APP, 'models/bsn_sync.py'), encoding='utf-8').read()
-    for fn in ('save_unit_conversions', 'update_unit_conversion_ratio', 'upsert_unit_conversion'):
+    for fn in ('save_unit_conversions', 'update_unit_conversion_ratio', 'upsert_unit_conversion',
+               'add_catalogue_unit_conversion'):
         m = re.search(rf'\ndef {fn}\(.*?(?=\ndef |\Z)', src, re.S)
         assert m, f'{fn} not found in models/bsn_sync.py'
         body = m.group(0)

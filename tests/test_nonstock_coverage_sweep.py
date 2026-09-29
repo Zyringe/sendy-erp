@@ -139,6 +139,13 @@ EXPECTED = {
         'apply_reconcile_flag deletes '
         '(tests/test_source_doc_provenance.py::test_reconcile_delete_records_the_human_who_resolved_it)',
 
+    ('models/bsn_sync.py', 'add_catalogue_unit_conversion'):
+        'guarded: the pending-bills refusal (#656) counts only rows narrowed by '
+        'non_stock_clause(), the same population as the pending table it defers '
+        'to; a non-stock billable line is unsynced forever by design and is never '
+        'on that table, so it must not refuse the add '
+        '(tests/test_656_add_catalogue_unit.py::test_synced_and_non_stock_bills_do_not_count_as_pending)',
+
     ('models/bsn_sync.py', 'dismiss_pending_unit_conversion'):
         'guarded: function-level rejection (non_stock_clause-narrowed protected-row '
         'check) refuses the WHOLE group before any DELETE, and the DELETE itself is '
@@ -276,6 +283,9 @@ EXPECTED_SEQUENCE = {
         "UPDATE sales_transactions SET synced_to_stock=0, change_source='manual', change_",
     ],
 
+    ('models/bsn_sync.py', 'add_catalogue_unit_conversion'): [
+        'WHERE product_id = ? AND synced_to_stock = 0 AND unit IN (',
+    ],
     ('models/bsn_sync.py', 'dismiss_pending_unit_conversion'): [
         'Delete all synced_to_stock=0 rows for (product_id, bsn_unit) from both     ledge',
         'WHERE product_id=? AND unit=? AND synced_to_stock=0   AND NOT (',
@@ -342,6 +352,7 @@ _NOT_EXECUTABLE = 'NOT EXECUTABLE — no behaviour test applies.'
 # this red, not just the literal disappearing.
 GUARDED_KEYS = {
     ('models/bsn_sync.py', '_sync_bsn_to_stock'),
+    ('models/bsn_sync.py', 'add_catalogue_unit_conversion'),
     ('models/bsn_sync.py', 'dismiss_pending_unit_conversion'),
     ('models/bsn_sync.py', 'get_pending_unit_conversions'),
     ('models/ecommerce_overview.py', '_sold_since_by_pid'),

@@ -8,6 +8,7 @@ calls it directly after a ratio change) — acyclic, flagged in the Phase 12
 report.
 """
 from database import get_connection
+import math
 import uuid as _uuid
 
 import bsn_units
@@ -106,6 +107,9 @@ def cross_unit_hazard(conn, product_id, bsn_unit, *, alert_on_caller_conn=False)
         save_unit_conversions         True  — its first INSERT takes the lock
                                               and holds it to the one commit
                                               after the loop
+        add_catalogue_unit_conversion True  — BEGIN IMMEDIATE takes the lock
+                                              before the check; its blocked
+                                              path commits
         upsert_unit_conversion        False — the hazard check precedes its
         update_unit_conversion_ratio  False   writes, so no lock is held yet
         approve_pending_suggestion    False — holds the lock, but hands us a
@@ -852,3 +856,113 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float,
     conn.commit()
     conn.close()
     return True
+
+
+def add_catalogue_unit_conversion(product_id: int, typed_unit: str, ratio: float):
+    """Give an already-mapped product a unit word that exists only in the
+    printed catalogue (#656): one no bill ever carried, so the pending table
+    on /unit-conversions never offers it, and the edit button needs a row
+    that does not exist yet.
+
+    Returns exactly one outcome, keyed by its name:
+      {'ok': True, 'stored_as', 'typed', 'product_name', 'unit_type'}
+      {'no_product': True}                   missing or inactive product
+      {'is_base_unit': True, 'unit_type'}    the word IS the product's unit:
+                                             1:1 needs no row
+      {'exists': True, 'stored_as', 'ratio'} a row already answers this word,
+                                             under this spelling or a twin
+      {'pending_bills': n}                   unsynced bills in this unit wait
+                                             on the pending table, whose save
+                                             syncs them
+      {'blocked': <hazard>}                  the pack/loose guard, same rule
+                                             as every other writer
+
+    ⛔ Never overwrites a ratio. Changing one must go through
+    update_unit_conversion_ratio, which rebuilds the product's ledger;
+    upsert_unit_conversion's ON CONFLICT DO UPDATE does not, which is why this
+    is a separate function. A twin spelling counts as existing because the
+    resolver already answers the word through it (price_lookup.
+    _conversion_ratio's map fallback), and a second row with another ratio
+    would silently change that answer.
+
+    No ledger re-sync: 'pending_bills' refuses whenever an unsynced bill is in
+    this unit. The checks and the INSERT share one BEGIN IMMEDIATE on one
+    connection; the INSERT is DO NOTHING, so even a row that appears between
+    the checks and the write is kept, and reads as 'exists'."""
+    typed = (typed_unit or '').strip()
+    if not typed:
+        raise ValueError('typed_unit is empty')
+    ratio = float(ratio)
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError(f'ratio must be finite and > 0, got {ratio!r}')
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        product = conn.execute(
+            "SELECT product_name, unit_type FROM products WHERE id = ? AND is_active = 1",
+            (product_id,)).fetchone()
+        if product is None:
+            return {'no_product': True}
+        unit_type = (product['unit_type'] or '').strip()
+        word = bsn_units.normalize_unit(typed, conn=conn)
+        key = conversion_unit_key(conn, typed, word, product_id=product_id)
+        if key in (unit_type, bsn_units.normalize_unit(unit_type, conn=conn)):
+            return {'is_base_unit': True, 'unit_type': product['unit_type']}
+
+        for row in conn.execute(
+                "SELECT bsn_unit, ratio FROM unit_conversions WHERE product_id = ? ORDER BY id",
+                (product_id,)).fetchall():
+            if row['bsn_unit'] == key or bsn_units.normalize_unit(row['bsn_unit'], conn=conn) == word:
+                return {'exists': True, 'stored_as': row['bsn_unit'], 'ratio': row['ratio']}
+
+        spellings = sorted({typed, word})      # `key` is always one of the two
+        marks = ','.join('?' * len(spellings))
+        pending = sum(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE product_id = ? AND synced_to_stock = 0"
+                f" AND unit IN ({marks}) AND {non_stock_clause()}",
+                (product_id, *spellings)).fetchone()[0]
+            for table in ('sales_transactions', 'purchase_transactions'))
+        if pending:
+            return {'pending_bills': pending}
+
+        # alert_on_caller_conn: BEGIN IMMEDIATE already holds the write lock, so
+        # a fresh connection could not file the alert (#389). The blocked path
+        # commits, and that alert is the only thing it can have written.
+        hazard = cross_unit_hazard(conn, product_id, key, alert_on_caller_conn=True)
+        if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or ratio != 1):
+            conn.commit()
+            return {'blocked': dict(hazard, product_id=product_id, bsn_unit=key,
+                                    product_name=product['product_name'])}
+
+        cur = conn.execute("""
+            INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
+            VALUES (?, ?, ?)
+            ON CONFLICT(product_id, bsn_unit) DO NOTHING
+        """, (product_id, key, ratio))
+        if cur.rowcount == 0:
+            existing = conn.execute(
+                "SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
+                (product_id, key)).fetchone()
+            return {'exists': True, 'stored_as': key, 'ratio': existing['ratio']}
+        conn.commit()
+        return {'ok': True, 'stored_as': key, 'typed': typed,
+                'product_name': product['product_name'], 'unit_type': product['unit_type']}
+    finally:
+        conn.close()          # an uncommitted return rolls back
+
+
+def known_unit_words():
+    """The words offered while typing a unit on /unit-conversions' add form:
+    every word the unit map produces plus every active product's unit_type,
+    each through the map, so the list holds words and never codes."""
+    conn = get_connection()
+    try:
+        words = bsn_units.full_units(conn=conn)
+        for r in conn.execute(
+                "SELECT DISTINCT TRIM(unit_type) FROM products"
+                " WHERE is_active = 1 AND TRIM(COALESCE(unit_type, '')) <> ''"):
+            words.add(bsn_units.normalize_unit(r[0], conn=conn))
+        return sorted(words)
+    finally:
+        conn.close()
