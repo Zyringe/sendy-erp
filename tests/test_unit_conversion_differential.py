@@ -208,3 +208,54 @@ def test_call_card(world):
     for names in (['ร้านทดสอบ'], ['หน้าร้านS']):
         assert (old._assemble_products(conn, names, None, today='2026-09-29')
                 == call_card._assemble_products(conn, names, None, today='2026-09-29'))
+
+
+STOCK_UNIT_TYPES = UNIT_TYPES + ['ตัว ', ' ตัว', ' ตัว', '']
+QTYS = [1, 0, 6, 2.5, 0.12345, 1000]
+
+
+def test_stock_side_exact_family(world):
+    """PR2: the stock writer, review rules and the remap preflight."""
+    conn, products = world
+    old_bsn = _old('inventory_app/models/bsn_sync.py', 'models._old_bsn_sync', package='models')
+    old_rr = _old('inventory_app/review_rules.py', '_old_review_rules')
+    old_map = _old('inventory_app/models/mapping.py', 'models._old_mapping', package='models')
+    import review_rules
+    from models import bsn_sync, mapping
+    for ut in STOCK_UNIT_TYPES[4:]:
+        pid = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('ws', ?)",
+                           (ut,)).lastrowid
+        conn.executemany("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) "
+                         "VALUES (?, ?, ?)", [(pid, 'ตัว', 5.0), (pid, 'โหล', 12.0)])
+        products[pid] = ut
+    for pid in products:
+        for ut in STOCK_UNIT_TYPES + [None]:
+            for u in BILL_UNITS + [' ตัว']:
+                for q in QTYS:
+                    assert (_call(old_bsn._get_base_qty, conn, pid, ut, u, q)
+                            == _call(bsn_sync._get_base_qty, conn, pid, ut, u, q)), (pid, ut, u, q)
+                assert (_call(old_rr._get_ratio, conn, pid, u, ut)
+                        == _call(review_rules._get_ratio, conn, pid, u, ut)), (pid, ut, u)
+        for u in BILL_UNITS + [' ตัว']:
+            rows = [{'unit': u}]
+            assert (_call(old_map.missing_unit_ratios, conn, pid, rows)
+                    == _call(mapping.missing_unit_ratios, conn, pid, rows)), (pid, u)
+        rows = [{'unit': u} for u in SPELLINGS]
+        assert (_call(old_map.missing_unit_ratios, conn, pid, rows)
+                == _call(mapping.missing_unit_ratios, conn, pid, rows)), pid
+
+
+def test_stock_writer_on_every_ledger_line(world):
+    conn, _ = world
+    old_bsn = _old('inventory_app/models/bsn_sync.py', 'models._old_bsn_sync', package='models')
+    from models import bsn_sync
+    lines = conn.execute(
+        "SELECT st.product_id, p.unit_type, st.unit, st.qty FROM sales_transactions st "
+        "JOIN products p ON p.id = st.product_id").fetchall()
+    assert len(lines) == 300
+    held = 0
+    for r in lines:
+        got = _call(bsn_sync._get_base_qty, conn, r[0], r[1], r[2], r[3])
+        assert _call(old_bsn._get_base_qty, conn, r[0], r[1], r[2], r[3]) == got, tuple(r)
+        held += got == 'None'
+    assert 0 < held < len(lines), 'control: the seed must both hold and convert lines'
