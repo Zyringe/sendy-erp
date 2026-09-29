@@ -265,3 +265,20 @@ def test_no_residue_from_a_fractional_waived_straddler(tmp_db_conn_hr_clean):
     days, notes = _calc(conn, eid, '2026-03')
     assert days == 1
     assert not any('0.000' in n for n in notes), notes
+
+
+def test_no_residue_when_waived_and_deducted_excess_share_a_month(
+        tmp_db_conn_hr_clean):
+    """Both excesses fractional, in the same month: the waived straddler puts
+    1 * 1/10 = 0.1 past quota into March, the deducted one 3 * 23/32 =
+    2.15625. "Charge everything, then subtract the rounded waived part"
+    lands on 2.1563; charging only non-waived units gives round(69/32, 4)."""
+    conn = tmp_db_conn_hr_clean
+    eid = _mk_employee(conn, 'W_RES2', '2024-01-01')
+    _add_leave(conn, eid, 'PERSONAL', '2026-01-05', '2026-01-10', 6)
+    _add_leave(conn, eid, 'PERSONAL', '2026-02-20', '2026-03-01', 1, waived=1)
+    _add_leave(conn, eid, 'PERSONAL', '2026-02-20', '2026-03-23', 3)
+
+    days, notes = _calc(conn, eid, '2026-03')
+    assert days == round(3 * 23 / 32, 4) == 2.1562
+    assert _waiver_notes(notes) == ['อนุโลม PERSONAL 20/02 ไม่หัก 0.1 วัน']
