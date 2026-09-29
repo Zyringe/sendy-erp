@@ -49,12 +49,12 @@ def _entry(doc):
 def test_import_weekly_refuses_before_logging_the_batch(db):
     logs = _count(db, 'SELECT count(*) FROM import_log')
     with pytest.raises(actor.ActorMissing):
-        models.import_weekly([_entry('RR590-1')], 'purchase', 'unsigned.csv')
+        models.import_weekly([_entry('RR590-1')], 'purchase', 'unsigned.csv', apply_removals=True)
     assert _count(db, 'SELECT count(*) FROM import_log') == logs
     assert _count(db, "SELECT count(*) FROM purchase_transactions WHERE doc_no = 'RR590-1'") == 0
     assert len(_alerts(db, 'import:unsigned.csv')) == 1
     with actor.acting_as(**PUT):                                             # control
-        models.import_weekly([_entry('RR590-2')], 'purchase', 'signed.csv')
+        models.import_weekly([_entry('RR590-2')], 'purchase', 'signed.csv', apply_removals=True)
     assert _count(db, 'SELECT count(*) FROM import_log') == logs + 1
 
 

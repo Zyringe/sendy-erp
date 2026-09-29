@@ -106,7 +106,7 @@ def test_u4_an_import_names_the_uploader_the_file_and_the_engine(db):
     pid = _seed_product(db, code='Z590U4')
     mark = _mark(db)
     with in_request('/import-data/confirm'):
-        models.import_weekly([_purchase('RR590U4', 'Z590U4')], 'purchase', 'u4.csv')
+        models.import_weekly([_purchase('RR590U4', 'Z590U4')], 'purchase', 'u4.csv', apply_removals=True)
     rows = _rows(db, mark)
     reasons = {(r[0], r[5]) for r in rows if r[1] == pid}
     assert ('product_cost_ledger',
@@ -119,7 +119,7 @@ def test_u5_the_dbf_upload_import_is_attributed_the_same_way(db):
     pid = _seed_product(db, code='Z590U5')
     mark = _mark(db)
     with in_request('/import-express-dbf/upload'):
-        models.import_weekly([_purchase('RR590U5', 'Z590U5')], 'purchase', 'express_dbf:BSN5657')
+        models.import_weekly([_purchase('RR590U5', 'Z590U5')], 'purchase', 'express_dbf:BSN5657', apply_removals=True)
     reasons = {r[5] for r in _rows(db, mark, 'product_cost_ledger') if r[1] == pid}
     assert reasons == {'ui:bsn.express_dbf_upload > import:express_dbf:BSN5657 > wacc:import'}
 
@@ -128,7 +128,7 @@ def test_u8_a_repoint_names_the_person_and_the_engine(db):
     a = _seed_product(db, code='Z590U8')
     b = _seed_product(db)
     with actor.acting_as(**SETUP):
-        models.import_weekly([_purchase('RR590U8', 'Z590U8')], 'purchase', 'setup.csv')
+        models.import_weekly([_purchase('RR590U8', 'Z590U8')], 'purchase', 'setup.csv', apply_removals=True)
     mark = _mark(db)
     with in_request('/mapping/split-save'):
         models.repoint_bsn_code(None, 'Z590U8', b)
@@ -147,7 +147,7 @@ def test_u9_a_ratio_change_names_the_person_and_the_replay(db):
         c.commit()
         c.close()
         models.import_weekly([_purchase('RR590U9', 'Z590U9', qty=2, unit='โหล', price=120.0)],
-                             'purchase', 'setup.csv')
+                             'purchase', 'setup.csv', apply_removals=True)
     mark = _mark(db)
     resp = _client().post('/unit-conversions/edit',
                           data={'product_id': str(pid), 'bsn_unit': 'โหล', 'ratio': '10'})

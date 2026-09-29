@@ -405,16 +405,16 @@ def test_dbf_entries_import_twice_is_idempotent(empty_db):
     stcrd_purch = [_stcrd('RR6900077', 1, stkcod='035ป6107', qty=400.0, unitpr=4.80,
                            trnval=1920.0, netval=1920.0)]
 
-    s1 = models.import_weekly(build_sales_entries(artrn, stcrd_sale, []), 'sales', 'f1')
-    p1 = models.import_weekly(build_purchase_entries(aptrn, stcrd_purch, []), 'purchase', 'f1')
+    s1 = models.import_weekly(build_sales_entries(artrn, stcrd_sale, []), 'sales', 'f1', apply_removals=True)
+    p1 = models.import_weekly(build_purchase_entries(aptrn, stcrd_purch, []), 'purchase', 'f1', apply_removals=True)
     assert s1['imported'] == 1
     assert p1['imported'] == 1
     assert _stock(empty_db, pid_sale) == -2.0
     assert _stock(empty_db, pid_purch) == 400.0
 
     # Re-build + re-import the SAME DBF fixtures — must be a pure no-op.
-    s2 = models.import_weekly(build_sales_entries(artrn, stcrd_sale, []), 'sales', 'f2')
-    p2 = models.import_weekly(build_purchase_entries(aptrn, stcrd_purch, []), 'purchase', 'f2')
+    s2 = models.import_weekly(build_sales_entries(artrn, stcrd_sale, []), 'sales', 'f2', apply_removals=True)
+    p2 = models.import_weekly(build_purchase_entries(aptrn, stcrd_purch, []), 'purchase', 'f2', apply_removals=True)
     assert s2['unchanged'] == 1 and s2['imported'] == 0
     assert p2['unchanged'] == 1 and p2['imported'] == 0
     assert _stock(empty_db, pid_sale) == -2.0, "re-import must not double-count stock"

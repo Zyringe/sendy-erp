@@ -517,7 +517,7 @@ def _reimport(path, monkeypatch, file_type):
         for e in entries:
             key = (e['doc_no'], e['product_code_raw'])
             e['line_seq'] = seen[key] = seen.get(key, 0) + 1
-    return imports.import_weekly(entries, file_type, 'test-600-reimport')
+    return imports.import_weekly(entries, file_type, 'test-600-reimport', apply_removals=True)
 
 
 @pytest.mark.parametrize('file_type', ['sales', 'purchase'])

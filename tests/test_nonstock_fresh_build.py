@@ -64,7 +64,7 @@ def test_fresh_build_classifies_without_any_migration_touching_the_row(empty_db_
     assert row['is_ignored'] == 0
 
     stats = models.import_weekly(
-        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9500-1', 30.0)], 'sales', 'fresh.csv')
+        [_entry('888ค8888', 'ค่าขนส่ง', 'IV9500-1', 30.0)], 'sales', 'fresh.csv', apply_removals=True)
 
     assert stats['non_stock'] == 1, stats
     rev = conn.execute(
@@ -89,7 +89,7 @@ def test_ordinary_code_on_a_fresh_build_still_moves_stock(empty_db_conn):
     _seed_mapping_the_way_vat_book_builder_does(conn, '036ผ7110', 'แผ่นตัด 14 นิ้ว', pid)
 
     models.import_weekly(
-        [_entry('036ผ7110', 'แผ่นตัด 14 นิ้ว', 'IV9501-1', 80.0)], 'sales', 'fresh.csv')
+        [_entry('036ผ7110', 'แผ่นตัด 14 นิ้ว', 'IV9501-1', 80.0)], 'sales', 'fresh.csv', apply_removals=True)
 
     ledger = conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE product_id=?", (pid,)).fetchone()[0]

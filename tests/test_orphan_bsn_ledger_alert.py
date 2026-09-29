@@ -115,7 +115,7 @@ def _notes(db):
 def test_an_orphan_bsn_row_colliding_with_a_resynced_doc_alerts(seeded):
     _seed_ledger_row(seeded, ORPHAN_NOTE)
 
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     # CONTROL FIRST: the import must actually have posted its own row, or the
     # assertions below would pass on a code path that never ran.
@@ -131,7 +131,7 @@ def test_an_orphan_bsn_row_colliding_with_a_resynced_doc_alerts(seeded):
 
 
 def test_a_clean_product_raises_nothing(seeded):
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     assert _notes(seeded).count("BSN ขาย") == 1, "control: the import ran"
     assert _alerts(seeded) == [], "a normal import must stay silent"
@@ -146,7 +146,7 @@ def test_the_notes_a_sync_really_writes_are_never_flagged(seeded, note):
     and this list is not updated, the guard would alert on every import."""
     _seed_ledger_row(seeded, note, reference_no="IV9930099-1")
 
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     assert _notes(seeded).count("BSN ขาย") >= 1, "control: the import ran"
     assert _alerts(seeded) == [], f"{note!r} is written by the sync itself"
@@ -173,7 +173,7 @@ def test_an_orphan_on_a_product_this_import_never_touched_still_alerts(seeded):
                   (OTHER_PID, note))
     c.commit(); c.close()
 
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     assert _notes(seeded).count("BSN ขาย") == 1, "control: the import ran on PID"
     a = _alerts(seeded)
@@ -192,7 +192,7 @@ def test_two_orphans_on_one_document_raise_two_alerts(seeded):
     _seed_ledger_row(seeded, ORPHAN_NOTE)
     _seed_ledger_row(seeded, ORPHAN_NOTE)          # same product, same doc
 
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     assert _notes(seeded).count("BSN ขาย") == 1, "control: the import ran"
     a = _alerts(seeded)
@@ -223,7 +223,7 @@ def test_a_null_reference_orphan_is_reported_as_a_warning_not_a_false_error(seed
               (PID,))
     c.commit(); c.close()
 
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     a = _alerts(seeded)
     assert len(a) == 1, f"the NULL-reference orphan must still be reported: {a}"
@@ -237,7 +237,7 @@ def test_an_orphan_with_no_matching_doc_is_a_warning_not_an_error(seeded):
     re-imported. Worth surfacing, not worth crying about."""
     _seed_ledger_row(seeded, ORPHAN_NOTE, reference_no="IV9930077-1")
 
-    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv")
+    models.import_weekly([_entry(DOC, 2.0)], "sales", "wk.csv", apply_removals=True)
 
     assert _notes(seeded).count("BSN ขาย") == 1, "control: the import ran"
     a = _alerts(seeded)

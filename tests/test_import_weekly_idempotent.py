@@ -96,11 +96,11 @@ def test_reimport_identical_is_noop(empty_db):
     import models
     pid = _seed(empty_db, 90101, 'B101')
 
-    s1 = models.import_weekly([_entry('HP101', 'B101', 100)], 'purchase', 'f1')
+    s1 = models.import_weekly([_entry('HP101', 'B101', 100)], 'purchase', 'f1', apply_removals=True)
     assert s1['imported'] == 1
     assert _stock(empty_db, pid) == 100
 
-    s2 = models.import_weekly([_entry('HP101', 'B101', 100)], 'purchase', 'f2')
+    s2 = models.import_weekly([_entry('HP101', 'B101', 100)], 'purchase', 'f2', apply_removals=True)
     assert s2['unchanged'] == 1, s2
     assert s2['imported'] == 0
     assert s2['affected_products'] == 0
@@ -114,9 +114,9 @@ def test_overlapping_ranges_converge(empty_db):
             for i, code in enumerate(['C1', 'C2', 'C3', 'C4', 'C5'])}
 
     models.import_weekly([_entry('HP1', 'C1', 10), _entry('HP2', 'C2', 10),
-                          _entry('HP3', 'C3', 10)], 'purchase', 'a')
+                          _entry('HP3', 'C3', 10)], 'purchase', 'a', apply_removals=True)
     models.import_weekly([_entry('HP3', 'C3', 10), _entry('HP4', 'C4', 10),
-                          _entry('HP5', 'C5', 10)], 'purchase', 'b')
+                          _entry('HP5', 'C5', 10)], 'purchase', 'b', apply_removals=True)
 
     for code in ['C1', 'C2', 'C4', 'C5']:
         assert _stock(empty_db, pids[code]) == 10
@@ -133,7 +133,7 @@ def test_purchase_multiline_not_collapsed(empty_db):
     s = models.import_weekly([
         _entry('HP301', 'D1', 10, price=5.0, line_seq=1),
         _entry('HP301', 'D1', 5, price=5.0, line_seq=2),  # same doc+code+price
-    ], 'purchase', 'f1')
+    ], 'purchase', 'f1', apply_removals=True)
     assert s['imported'] == 2, s
     assert _stock(empty_db, pid) == 15, "two same-price lines must not collapse"
 
@@ -141,7 +141,7 @@ def test_purchase_multiline_not_collapsed(empty_db):
     s2 = models.import_weekly([
         _entry('HP301', 'D1', 10, price=5.0, line_seq=1),
         _entry('HP301', 'D1', 5, price=5.0, line_seq=2),
-    ], 'purchase', 'f2')
+    ], 'purchase', 'f2', apply_removals=True)
     assert s2['unchanged'] == 2 and s2['imported'] == 0
     assert _stock(empty_db, pid) == 15
 
@@ -188,7 +188,7 @@ def test_reimport_raw_stored_unit_is_noop(empty_db):
 
     s = models.import_weekly(
         [_entry('HP501', 'F1', 5, unit=raw, price=10.0, net=50.0, line_seq=1)],
-        'purchase', 'reimport')
+        'purchase', 'reimport', apply_removals=True)
     assert s['unchanged'] == 1, s
     assert s['overwritten'] == 0
     assert _stock(empty_db, pid) == 5, "raw-unit re-import must not churn stock"
@@ -225,7 +225,7 @@ def test_unmapped_code_preserves_existing_product_link(empty_db):
     prev = models.preview_import([dict(entry)], 'purchase')
     assert prev['unmapped'] == 0, "a linked row must not be shown as harmless 'unmapped'"
 
-    models.import_weekly([dict(entry)], 'purchase', 'reimport')
+    models.import_weekly([dict(entry)], 'purchase', 'reimport', apply_removals=True)
     c = _conn(empty_db)
     row = c.execute("SELECT product_id FROM purchase_transactions WHERE doc_no='HP701'").fetchone()
     c.close()
@@ -237,7 +237,7 @@ def test_preview_is_readonly_and_reconciles_with_apply(empty_db):
     """preview_import writes nothing and its counts match what import_weekly does."""
     import models
     pids = {c: _seed(empty_db, 90600 + i, c) for i, c in enumerate(['G1', 'G2'])}
-    models.import_weekly([_entry('HP1', 'G1', 10), _entry('HP2', 'G2', 10)], 'purchase', 'a')
+    models.import_weekly([_entry('HP1', 'G1', 10), _entry('HP2', 'G2', 10)], 'purchase', 'a', apply_removals=True)
 
     entries = [
         _entry('HP1', 'G1', 10),   # unchanged
@@ -256,7 +256,7 @@ def test_preview_is_readonly_and_reconciles_with_apply(empty_db):
     assert len(prev['changes']) == 1 and prev['changes'][0]['bsn_code'] == 'G2'
 
     # apply → stats reconcile with the preview
-    st = models.import_weekly(entries, 'purchase', 'b')
+    st = models.import_weekly(entries, 'purchase', 'b', apply_removals=True)
     assert st['unchanged'] == prev['unchanged']
     assert st['overwritten'] == prev['changed']
     assert st['new_unmapped'] == len(prev['new_codes'])
@@ -270,10 +270,10 @@ def test_corrected_price_overwrites_not_doubles(empty_db):
     import models
     pid = _seed(empty_db, 90401, 'E1')
 
-    models.import_weekly([_entry('HP401', 'E1', 10, price=5.0, net=50.0)], 'purchase', 'f1')
+    models.import_weekly([_entry('HP401', 'E1', 10, price=5.0, net=50.0)], 'purchase', 'f1', apply_removals=True)
     assert _stock(empty_db, pid) == 10
 
-    s2 = models.import_weekly([_entry('HP401', 'E1', 10, price=7.0, net=70.0)], 'purchase', 'f2')
+    s2 = models.import_weekly([_entry('HP401', 'E1', 10, price=7.0, net=70.0)], 'purchase', 'f2', apply_removals=True)
     assert s2['overwritten'] == 1, s2
     assert _stock(empty_db, pid) == 10, "corrected price must overwrite, not double-count"
 

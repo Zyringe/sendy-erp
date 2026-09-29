@@ -418,7 +418,7 @@ def _reimport(path, monkeypatch, qty=1.0):
                       'DISC': '', 'STKDES': 'x'})
     entries = eds.build_sales_entries(heads, stcrd, [{'CUSCOD': 'Zหน้าร้าน', 'CUSNAM': 'หน้าร้านS'}])
     assert [e['doc_no'] for e in entries] == list(LINES)
-    return imports.import_weekly(entries, 'sales', 'test-436-reimport')
+    return imports.import_weekly(entries, 'sales', 'test-436-reimport', apply_removals=True)
 
 
 def test_reimporting_the_express_lines_after_the_sync_is_a_no_op(db, monkeypatch):

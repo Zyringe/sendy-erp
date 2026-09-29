@@ -83,7 +83,7 @@ def test_overwrite_no_orphan_no_fkfail(tmp_db, monkeypatch, patch_models_conn):
     patch_models_conn(lambda: tconn)
 
     # must NOT raise sqlite3.IntegrityError (the bug)
-    stats = models.import_weekly([_entry()], "purchase", "test.csv")
+    stats = models.import_weekly([_entry()], "purchase", "test.csv", apply_removals=True)
     assert stats["overwritten"] >= 1
 
     c2 = sqlite3.connect(tmp_db)

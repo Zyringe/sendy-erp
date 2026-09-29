@@ -157,7 +157,7 @@ def test_weekly_purchase_over_dbf_rows_is_noop_with_removals_off(empty_db, tmp_p
         [_aptrn("HP637001")], rows, [{"SUPCOD": "SUP-637", "SUPNAM": "supplier"}]
     )
     assert len(dbf_entries) == 3
-    first = models.import_weekly(dbf_entries, "purchase", "express_dbf:fixture637")
+    first = models.import_weekly(dbf_entries, "purchase", "express_dbf:fixture637", apply_removals=True)
     assert first["imported"] == 3
     assert first["unchanged"] == 0
 

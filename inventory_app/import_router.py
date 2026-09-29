@@ -412,8 +412,12 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     credit_notes_ap_records = eds.build_credit_notes_ap_records(aptrn, stcrd, apmas, cutoff=cutoff)
 
     label = f"express_dbf:{os.path.basename(os.path.normpath(dataset_dir))}"
-    sales_stats = models.import_weekly(sales_entries, "sales", label, book=book)
-    purchase_stats = models.import_weekly(purchase_entries, "purchase", label, book=book)
+    # apply_removals=True: the daily zip is the complete ledger export, so a
+    # source line missing from it is a deleted line (this was the default).
+    sales_stats = models.import_weekly(sales_entries, "sales", label,
+                                       apply_removals=True, book=book)
+    purchase_stats = models.import_weekly(purchase_entries, "purchase", label,
+                                          apply_removals=True, book=book)
     refs_upserted = _upsert_invoice_refs(refs, db_path)
     # The daily DBF read IS the authoritative complete allocation set: `cutoff`
     # filters RECEIPTS, never lines within one, so every receipt it includes

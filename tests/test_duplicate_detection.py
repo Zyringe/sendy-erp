@@ -58,7 +58,7 @@ def test_same_doc_no_different_bsn_code_is_not_duplicate(empty_db, monkeypatch):
     e1 = _entry(doc_no='IV6900999-1', bsn_code='AAA001', name='Item A')
     e2 = _entry(doc_no='IV6900999-2', bsn_code='BBB002', name='Item B')
 
-    stats = models.import_weekly([e1, e2], 'sales', 'sample.csv')
+    stats = models.import_weekly([e1, e2], 'sales', 'sample.csv', apply_removals=True)
 
     import sqlite3
     conn = sqlite3.connect(empty_db)
@@ -83,12 +83,12 @@ def test_same_doc_no_and_bsn_code_is_duplicate(empty_db):
     _migrate124(empty_db)
     e = _entry(doc_no='IV6901000-1', bsn_code='CCC003', name='Item C',
                unit_price=10.0, net=10.0)
-    models.import_weekly([e], 'sales', 'first.csv')
+    models.import_weekly([e], 'sales', 'first.csv', apply_removals=True)
 
     # Re-import: same doc_no + same bsn_code → existing row should be replaced.
     e2 = _entry(doc_no='IV6901000-1', bsn_code='CCC003', name='Item C (updated)',
                 unit_price=10.0, net=12.0)
-    models.import_weekly([e2], 'sales', 'second.csv')
+    models.import_weekly([e2], 'sales', 'second.csv', apply_removals=True)
 
     import sqlite3
     conn = sqlite3.connect(empty_db)
@@ -115,7 +115,7 @@ def test_same_doc_base_same_bsn_different_unit_price_keeps_both(empty_db):
     _migrate124(empty_db)
     e1 = _entry(doc_no='IV6901001-1', bsn_code='DDD004', unit_price=10.0, net=10.0)
     e2 = _entry(doc_no='IV6901001-2', bsn_code='DDD004', unit_price=15.0, net=15.0)
-    models.import_weekly([e1, e2], 'sales', 'sample.csv')
+    models.import_weekly([e1, e2], 'sales', 'sample.csv', apply_removals=True)
 
     import sqlite3
     conn = sqlite3.connect(empty_db)

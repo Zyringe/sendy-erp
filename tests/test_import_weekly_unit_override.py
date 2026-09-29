@@ -51,7 +51,7 @@ def test_import_routes_all_units_to_single_product(tmp_db, monkeypatch, patch_mo
 
     models.import_weekly([_entry(CODE, "แผง", "RRO1"),
                           _entry(CODE, "ตัว", "RRO2")],
-                         "purchase", "ov.csv")
+                         "purchase", "ov.csv", apply_removals=True)
 
     c = sqlite3.connect(tmp_db)
     got = {r[0]: r[1] for r in c.execute(
@@ -76,7 +76,7 @@ def test_non_mapped_code_stays_null(tmp_db, monkeypatch, patch_models_conn):
 
     models.import_weekly([_entry(CODE, "แผง", "RRN1"),
                           _entry(CODE, "ตัว", "RRN2")],
-                         "purchase", "nrm.csv")
+                         "purchase", "nrm.csv", apply_removals=True)
 
     c = sqlite3.connect(tmp_db)
     pids = {r[0] for r in c.execute(

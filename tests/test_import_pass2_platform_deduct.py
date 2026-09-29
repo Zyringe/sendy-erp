@@ -203,15 +203,15 @@ def test_bsn_import_leaves_platform_stock_alone(empty_db):
     import models
     pid = _seed(empty_db, 'B900', listing_stock=100)
 
-    models.import_weekly([_entry('IV001', 'B900', 5)], 'sales', 'week1')
+    models.import_weekly([_entry('IV001', 'B900', 5)], 'sales', 'week1', apply_removals=True)
     assert _platform_stock(empty_db, pid) == 100, 'first sync must not deduct'
     assert _stock(empty_db, pid) == -5, 'CONTROL: warehouse OUT still posts'
 
-    models.import_weekly([_entry('IV002', 'B900', 1)], 'sales', 'week2')
+    models.import_weekly([_entry('IV002', 'B900', 1)], 'sales', 'week2', apply_removals=True)
     assert _stock(empty_db, pid) == -6, 'CONTROL: warehouse ledger counts both sales'
     assert _platform_stock(empty_db, pid) == 100, 'second import must not deduct either'
 
-    stats = models.import_weekly([_entry('IV002', 'B900', 1)], 'sales', 'week2-again')
+    stats = models.import_weekly([_entry('IV002', 'B900', 1)], 'sales', 'week2-again', apply_removals=True)
     assert stats['unchanged'] == 1, stats
     assert stats['affected_products'] == 0, stats
     assert _platform_stock(empty_db, pid) == 100
@@ -229,12 +229,12 @@ def test_a_pass_2_replay_does_not_error_and_leaves_platform_stock_alone(empty_db
     import models
     pid = _seed(empty_db, 'B971', listing_stock=100)
 
-    models.import_weekly([_entry('IV930', 'B971', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('IV930', 'B971', 5)], 'sales', 'w1', apply_removals=True)
     assert _platform_stock(empty_db, pid) == 100          # CONTROL
 
     # A second, unrelated sale of the SAME product forces pass 2 to reset and
     # replay IV930 alongside the new IV931 line.
-    models.import_weekly([_entry('IV931', 'B971', 2)], 'sales', 'w2')
+    models.import_weekly([_entry('IV931', 'B971', 2)], 'sales', 'w2', apply_removals=True)
 
     assert _stock(empty_db, pid) == -7, 'CONTROL: warehouse ledger counts both sales'
     assert _platform_stock(empty_db, pid) == 100, 'pass-2 replay must not deduct'
@@ -248,7 +248,7 @@ def test_bsn_import_leaves_platform_stock_alone_even_when_the_sale_exceeds_it(em
     import models
     pid = _seed(empty_db, 'B970', listing_stock=3)
 
-    models.import_weekly([_entry('IV920', 'B970', 10)], 'sales', 'w1')
+    models.import_weekly([_entry('IV920', 'B970', 10)], 'sales', 'w1', apply_removals=True)
 
     assert _stock(empty_db, pid) == -10, 'CONTROL: the warehouse ledger still moves'
     assert _platform_stock(empty_db, pid) == 3, 'the listing is untouched, not clamped to 0'
@@ -263,10 +263,10 @@ def test_bsn_import_of_a_customer_return_also_leaves_platform_stock_alone(empty_
     import models
     pid = _seed(empty_db, 'C100', listing_stock=100)
 
-    models.import_weekly([_entry('IV800', 'C100', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('IV800', 'C100', 5)], 'sales', 'w1', apply_removals=True)
     assert _platform_stock(empty_db, pid) == 100          # CONTROL
 
-    models.import_weekly([_entry('SR800', 'C100', 5)], 'sales', 'w2')
+    models.import_weekly([_entry('SR800', 'C100', 5)], 'sales', 'w2', apply_removals=True)
 
     assert _stock(empty_db, pid) == 0, 'the warehouse ledger still takes the goods back in'
     assert _platform_stock(empty_db, pid) == 100, 'the mirror is untouched by BSN import'
@@ -285,12 +285,12 @@ def test_bsn_import_leaves_a_null_stock_listing_alone(empty_db):
     c.commit()
     c.close()
 
-    models.import_weekly([_entry('IV970', 'B996', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('IV970', 'B996', 5)], 'sales', 'w1', apply_removals=True)
     assert _stock(empty_db, pid) == -5, 'CONTROL: the warehouse ledger still moves'
     assert _platform_stock(empty_db, pid) is None
     assert _provenance(empty_db, pid) == []
 
-    models.import_weekly([_entry('SR970', 'B996', 5)], 'sales', 'w2')
+    models.import_weekly([_entry('SR970', 'B996', 5)], 'sales', 'w2', apply_removals=True)
     assert _stock(empty_db, pid) == 0, 'CONTROL: the warehouse ledger still moves'
     assert _platform_stock(empty_db, pid) is None
     assert _provenance(empty_db, pid) == []
@@ -320,13 +320,13 @@ def test_a_corrected_line_reverses_the_historical_deduction_without_rededucting(
     pid = _seed(empty_db, 'B950', listing_stock=100)
     sku_id = _sku_id(empty_db, pid)
 
-    models.import_weekly([_entry('IV900', 'B950', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('IV900', 'B950', 5)], 'sales', 'w1', apply_removals=True)
     old_id = _source_row_id(empty_db, 'sales_transactions', 'IV900')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', old_id, 5)
     _set_platform_stock(empty_db, pid, 95)
     assert _platform_stock(empty_db, pid) == 95    # CONTROL: simulated pre-cutover state
 
-    stats = models.import_weekly([_entry('IV900', 'B950', 7)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('IV900', 'B950', 7)], 'sales', 'w2', apply_removals=True)
 
     # CONTROL — prove the correction really was processed as a change.
     assert stats['overwritten'] == 1, stats
@@ -351,14 +351,14 @@ def test_a_removed_line_reverses_its_historical_deduction(empty_db):
     # present in next week's file (removal detection is scoped to doc_base the
     # file mentions, so a doc that vanishes entirely is never reversed).
     models.import_weekly([_entry('IV910', 'B960', 5),
-                          _entry('IV910', 'B961', 1)], 'sales', 'w1')
+                          _entry('IV910', 'B961', 1)], 'sales', 'w1', apply_removals=True)
     old_id = _source_row_id(empty_db, 'sales_transactions', 'IV910', code='B960')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', old_id, 5)
     _set_platform_stock(empty_db, pid, 95)
     assert _platform_stock(empty_db, pid) == 95     # CONTROL: simulated pre-cutover
     assert _platform_stock(empty_db, other) == 100  # CONTROL: post-cutover row, untouched
 
-    stats = models.import_weekly([_entry('IV910', 'B961', 1)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('IV910', 'B961', 1)], 'sales', 'w2', apply_removals=True)
 
     # CONTROL — the line really was detected as removed.
     assert stats['removed'] == 1, stats
@@ -380,7 +380,7 @@ def test_a_platform_refresh_supersedes_the_historical_record(empty_db):
     sku_id = _sku_id(empty_db, pid)
 
     models.import_weekly([_entry('IV940', 'B980', 5),
-                          _entry('IV940', 'B981', 1)], 'sales', 'w1')
+                          _entry('IV940', 'B981', 1)], 'sales', 'w1', apply_removals=True)
     old_id = _source_row_id(empty_db, 'sales_transactions', 'IV940', code='B980')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', old_id, 5)
     _set_platform_stock(empty_db, pid, 95)
@@ -396,7 +396,7 @@ def test_a_platform_refresh_supersedes_the_historical_record(empty_db):
     assert _platform_stock(empty_db, pid) == 92, 'CONTROL: the file value landed'
     assert _provenance(empty_db, pid) == [], 'the refresh supersedes the record'
 
-    stats = models.import_weekly([_entry('IV940', 'B981', 1)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('IV940', 'B981', 1)], 'sales', 'w2', apply_removals=True)
 
     assert stats['removed'] == 1, stats
     assert _platform_stock(empty_db, pid) == 92, (
@@ -417,7 +417,7 @@ def test_a_partial_export_only_supersedes_the_listings_it_carried(empty_db):
     a_sku = _sku_id(empty_db, absent)
 
     models.import_weekly([_entry('IV950', 'B990', 5),
-                          _entry('IV950', 'B991', 4)], 'sales', 'w1')
+                          _entry('IV950', 'B991', 4)], 'sales', 'w1', apply_removals=True)
     m_id = _source_row_id(empty_db, 'sales_transactions', 'IV950', code='B990')
     a_id = _source_row_id(empty_db, 'sales_transactions', 'IV950', code='B991')
     _seed_provenance(empty_db, m_sku, 'sales_transactions', m_id, 5)
@@ -452,10 +452,10 @@ def test_a_deleted_return_line_reverses_the_historical_credit(empty_db):
     keeper = _seed(empty_db, 'C102', listing_stock=100)
     sku_id = _sku_id(empty_db, pid)
 
-    models.import_weekly([_entry('IV810', 'C101', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('IV810', 'C101', 5)], 'sales', 'w1', apply_removals=True)
     iv_id = _source_row_id(empty_db, 'sales_transactions', 'IV810')
     models.import_weekly([_entry('SR810', 'C101', 5),
-                          _entry('SR810', 'C102', 1)], 'sales', 'w2')
+                          _entry('SR810', 'C102', 1)], 'sales', 'w2', apply_removals=True)
     sr_id = _source_row_id(empty_db, 'sales_transactions', 'SR810', code='C101')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', iv_id, 5)
     _seed_provenance(empty_db, sku_id, 'sales_transactions', sr_id, -5)
@@ -463,7 +463,7 @@ def test_a_deleted_return_line_reverses_the_historical_credit(empty_db):
     assert _platform_stock(empty_db, pid) == 100      # CONTROL: simulated pre-cutover
     assert _platform_stock(empty_db, keeper) == 100   # CONTROL: post-cutover, untouched
 
-    stats = models.import_weekly([_entry('SR810', 'C102', 1)], 'sales', 'w3')
+    stats = models.import_weekly([_entry('SR810', 'C102', 1)], 'sales', 'w3', apply_removals=True)
 
     assert stats['removed'] == 1, stats
     assert _platform_stock(empty_db, pid) == 95, (
@@ -484,12 +484,12 @@ def test_undoing_a_historical_return_cannot_drive_a_listing_negative(empty_db):
     sku_id = _sku_id(empty_db, pid)
 
     models.import_weekly([_entry('SR830', 'C110', 5),
-                          _entry('SR830', 'C111', 1)], 'sales', 'w1')
+                          _entry('SR830', 'C111', 1)], 'sales', 'w1', apply_removals=True)
     old_id = _source_row_id(empty_db, 'sales_transactions', 'SR830', code='C110')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', old_id, -5)
     assert _platform_stock(empty_db, pid) == 2       # CONTROL: simulated post-consumption state
 
-    stats = models.import_weekly([_entry('SR830', 'C111', 1)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('SR830', 'C111', 1)], 'sales', 'w2', apply_removals=True)
 
     assert stats['removed'] == 1, stats
     assert _platform_stock(empty_db, pid) == 0, 'clamped, not -3'
@@ -507,7 +507,7 @@ def test_a_hand_typed_stock_figure_supersedes_the_historical_record(empty_db):
     sku_id = _sku_id(empty_db, pid)
 
     models.import_weekly([_entry('IV850', 'C130', 5),
-                          _entry('IV850', 'C131', 1)], 'sales', 'w1')
+                          _entry('IV850', 'C131', 1)], 'sales', 'w1', apply_removals=True)
     old_id = _source_row_id(empty_db, 'sales_transactions', 'IV850', code='C130')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', old_id, 5)
     _set_platform_stock(empty_db, pid, 95)
@@ -518,7 +518,7 @@ def test_a_hand_typed_stock_figure_supersedes_the_historical_record(empty_db):
 
     assert _provenance(empty_db, pid) == [], 'the typed figure supersedes it'
 
-    stats = models.import_weekly([_entry('IV850', 'C131', 1)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('IV850', 'C131', 1)], 'sales', 'w2', apply_removals=True)
     assert stats['removed'] == 1, stats
     assert _platform_stock(empty_db, pid) == 92, 'stays at what the operator typed, not 97'
 
@@ -533,7 +533,7 @@ def test_a_price_only_edit_keeps_the_historical_record(empty_db):
     sku_id = _sku_id(empty_db, pid)
 
     models.import_weekly([_entry('IV860', 'C140', 5),
-                          _entry('IV860', 'C141', 1)], 'sales', 'w1')
+                          _entry('IV860', 'C141', 1)], 'sales', 'w1', apply_removals=True)
     old_id = _source_row_id(empty_db, 'sales_transactions', 'IV860', code='C140')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', old_id, 5)
     _set_platform_stock(empty_db, pid, 95)
@@ -544,7 +544,7 @@ def test_a_price_only_edit_keeps_the_historical_record(empty_db):
 
     assert _provenance(empty_db, pid) == [5], 'nothing moved, so the record stands'
 
-    stats = models.import_weekly([_entry('IV860', 'C141', 1)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('IV860', 'C141', 1)], 'sales', 'w2', apply_removals=True)
     assert stats['removed'] == 1, stats
     assert _platform_stock(empty_db, pid) == 100, 'the historical sale is properly reversed'
 
@@ -564,16 +564,16 @@ def test_a_price_only_correction_carries_over_the_historical_record(empty_db):
     pid = _seed(empty_db, 'C150', listing_stock=2)
     sku_id = _sku_id(empty_db, pid)
 
-    models.import_weekly([_entry('SR850', 'C150', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('SR850', 'C150', 5)], 'sales', 'w1', apply_removals=True)
     sr_id = _source_row_id(empty_db, 'sales_transactions', 'SR850')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', sr_id, -5)
 
-    models.import_weekly([_entry('IV870', 'C150', 8)], 'sales', 'w2')
+    models.import_weekly([_entry('IV870', 'C150', 8)], 'sales', 'w2', apply_removals=True)
     iv_id = _source_row_id(empty_db, 'sales_transactions', 'IV870')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', iv_id, 8)
     assert _platform_stock(empty_db, pid) == 2         # CONTROL: simulated state
 
-    stats = models.import_weekly([_entry('SR850', 'C150', 5, price=99.0)], 'sales', 'w3')
+    stats = models.import_weekly([_entry('SR850', 'C150', 5, price=99.0)], 'sales', 'w3', apply_removals=True)
 
     assert stats['overwritten'] == 1, stats
     assert _platform_stock(empty_db, pid) == 2, 'a price fix is not a stock event'
@@ -598,12 +598,12 @@ def test_a_quantity_correction_reverses_the_historical_credit_and_clamps(empty_d
     pid = _seed(empty_db, 'C160', listing_stock=2)
     sku_id = _sku_id(empty_db, pid)
 
-    models.import_weekly([_entry('SR860', 'C160', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('SR860', 'C160', 5)], 'sales', 'w1', apply_removals=True)
     sr_id = _source_row_id(empty_db, 'sales_transactions', 'SR860')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', sr_id, -5)
     assert _platform_stock(empty_db, pid) == 2         # CONTROL
 
-    stats = models.import_weekly([_entry('SR860', 'C160', 4)], 'sales', 'w2')
+    stats = models.import_weekly([_entry('SR860', 'C160', 4)], 'sales', 'w2', apply_removals=True)
 
     assert stats['overwritten'] == 1, stats
     assert _platform_stock(empty_db, pid) == 0, 'clamped, and nothing re-credits it now'
@@ -620,16 +620,16 @@ def test_a_clamped_reversal_is_reported_not_swallowed(empty_db):
     keeper = _seed(empty_db, 'C171', listing_stock=100)
     sku_id = _sku_id(empty_db, pid)
 
-    models.import_weekly([_entry('SR870', 'C170', 5)], 'sales', 'w1')
+    models.import_weekly([_entry('SR870', 'C170', 5)], 'sales', 'w1', apply_removals=True)
     sr_id = _source_row_id(empty_db, 'sales_transactions', 'SR870')
     _seed_provenance(empty_db, sku_id, 'sales_transactions', sr_id, -5)
 
     # CONTROL — an ordinary import (nothing corrected/removed) reports zero,
     # so the counter is not just always-on noise.
-    clean = models.import_weekly([_entry('IV891', 'C171', 1)], 'sales', 'w2')
+    clean = models.import_weekly([_entry('IV891', 'C171', 1)], 'sales', 'w2', apply_removals=True)
     assert clean['lossy_platform_reversals'] == 0, clean
 
-    lossy = models.import_weekly([_entry('SR870', 'C170', 4)], 'sales', 'w3')
+    lossy = models.import_weekly([_entry('SR870', 'C170', 4)], 'sales', 'w3', apply_removals=True)
 
     assert lossy['overwritten'] == 1, lossy
     assert lossy['lossy_platform_reversals'] == 1, lossy
