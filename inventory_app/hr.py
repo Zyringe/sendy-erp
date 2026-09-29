@@ -474,7 +474,8 @@ _MATERNITY_EPISODE_GAP_DAYS = 30
 
 
 def _maternity_episodes(requests):
-    """Group maternity requests into distinct leaves — [[(start, end, days)…]…].
+    """Group maternity requests into distinct leaves —
+    [[(start, end, days, waived)…]…].
 
     `requests` may be in any order; episodes come back in date order, each
     holding the rows of one leave.
@@ -482,7 +483,7 @@ def _maternity_episodes(requests):
     episodes = []
     running_end = None
     for req in sorted(requests, key=lambda q: (q[0], q[1])):
-        start, end, _days = req
+        start, end = req[0], req[1]
         if (running_end is not None
                 and (start - running_end).days <= _MATERNITY_EPISODE_GAP_DAYS):
             episodes[-1].append(req)
@@ -524,10 +525,11 @@ def _split_by_month(req_start: date, req_end: date, total_days: float):
     return out
 
 
-def _allocate_excess_by_month(requests, allowance: float) -> dict:
-    """{year_month: days past `allowance`}, charged chronologically.
+def _allocate_excess_by_month(requests, allowance: float):
+    """({year_month: days past `allowance`}, {(year_month, start): forgiven}),
+    charged chronologically.
 
-    `requests` is a chronologically ordered [(start, end, days)]. Each is split
+    `requests` is a chronologically ordered [(start, end, days, waived)]. Each is split
     into its per-month portions, the portions are walked oldest-first, and the
     part of a month's portion that falls past the allowance is attributed to
     THAT month. So the allowance is consumed in date order and its excess is
@@ -540,18 +542,28 @@ def _allocate_excess_by_month(requests, allowance: float) -> dict:
     maternity cap against one month's days alone) were the two defects it
     replaced.
 
+    A WAIVED request (อนุโลม, `leave_requests.pay_waived`) still consumes the
+    allowance in date order, so a later non-waived request crosses the line
+    exactly where it would without the waiver. Its own past-allowance days go
+    to the second dict, keyed by (year_month, request start) for the payslip
+    note, instead of to the deduction. Each unit lands in exactly one of the
+    two, so the deduction is never "total minus waived" — that subtraction is
+    what re-creates the 1e-4 residue the epsilon below guards against.
+
     `allowance` may be float('inf') for an unlimited type → nothing is unpaid.
     """
     units = []
-    for req_start, req_end, days in requests:
-        units.extend(_split_by_month(req_start, req_end, days))
+    for req_start, req_end, days, waived in requests:
+        units.extend((ym, portion, waived, req_start)
+                     for ym, portion in _split_by_month(req_start, req_end, days))
     # Stable sort → strictly chronological across requests, while two requests
     # landing in the same month keep their own (start_date, id) order.
     units.sort(key=lambda u: u[0])
 
     used = 0.0
     out = {}
-    for ym, portion in units:
+    forgiven = {}
+    for ym, portion, waived, req_start in units:
         room = max(0.0, allowance - used)
         excess = portion - room
         # _split_by_month rounds each portion to 4dp, so the portions of a
@@ -560,9 +572,23 @@ def _allocate_excess_by_month(requests, allowance: float) -> dict:
         # quota (measured: 0.0001 days → ฿0.05 and a "เกินสิทธิ 0.0001 วัน" note
         # on the payslip).
         if excess > _DAY_EPS:
-            out[ym] = round(out.get(ym, 0.0) + excess, 4)
+            if waived:
+                key = (ym, req_start)
+                forgiven[key] = round(forgiven.get(key, 0.0) + excess, 4)
+            else:
+                out[ym] = round(out.get(ym, 0.0) + excess, 4)
         used += portion
-    return out
+    return out, forgiven
+
+
+# Prefix of the payslip note for forgiven (อนุโลม) days. finalize_run's
+# double-pay guard looks for it, so it is one constant, not two literals.
+_WAIVER_NOTE_PREFIX = "อนุโลม"
+
+
+def _waiver_note(code: str, start: date, days: float) -> str:
+    return (f"{_WAIVER_NOTE_PREFIX} {code} {start.day:02d}/{start.month:02d} "
+            f"ไม่หัก {days:g} วัน")
 
 
 def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
@@ -582,6 +608,10 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     The share comes from `_allocate_excess_by_month`, so an allowance is
     consumed in date order and its excess is deducted once, in the month that
     actually crossed it.
+
+    A request with `pay_waived = 1` (อนุโลม) contributes 0 unpaid days from
+    either source and gets an "อนุโลม <code> <DD/MM> ไม่หัก <n> วัน" note for
+    the days it forgave in THIS month. It still consumes its allowance share.
 
     Both allowances are judged over a COHORT — the whole set of requests the
     allowance applies to — never over one payroll month's slice, and the excess
@@ -621,7 +651,7 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
     type_by_code = {r["code"]: r for r in types.values()}
 
     reqs = c.execute(
-        """SELECT leave_type_id, start_date, end_date, days
+        """SELECT leave_type_id, start_date, end_date, days, pay_waived
              FROM leave_requests
              WHERE employee_id = ? AND status = 'approved'
              ORDER BY start_date, id""",
@@ -645,13 +675,20 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
         if rs is None or re_ is None or re_ < rs:
             continue
         days = float(r["days"] or 0)
+        waived = bool(r["pay_waived"])
         t = types[r["leave_type_id"]]
         code = t["code"]
         if not t["is_paid"]:
-            # UNPAID type → unconditionally unpaid, no allowance involved.
-            unpaid += _overlap_days(rs, re_, period_start, period_end, days)
+            # UNPAID type → unconditionally unpaid, no allowance involved —
+            # unless waived, when it contributes nothing and says so.
+            in_month = _overlap_days(rs, re_, period_start, period_end, days)
+            if waived:
+                if in_month > _DAY_EPS:
+                    notes.append(_waiver_note(code, rs, in_month))
+            else:
+                unpaid += in_month
             continue
-        by_code.setdefault(code, []).append((rs, re_, days))
+        by_code.setdefault(code, []).append((rs, re_, days, waived))
 
     for code in sorted(by_code):
         requests = by_code[code]
@@ -663,6 +700,16 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
             continue
 
         share = 0.0
+        forgiven = {}
+
+        def _take(alloc):
+            nonlocal share
+            excess, waived_excess = alloc
+            share += excess.get(year_month, 0.0)
+            for (ym, start), d in waived_excess.items():
+                if ym == year_month:
+                    forgiven[start] = forgiven.get(start, 0.0) + d
+
         if code == "MATERNITY":
             allowance = float(type_by_code[code]["max_paid_days"] or 0) or float("inf")
             if allowance != float("inf"):
@@ -673,16 +720,19 @@ def _compute_unpaid_days(c: sqlite3.Connection, employee_id: int,
                     if not any(q[0] <= period_end and q[1] >= period_start
                                for q in episode):
                         continue
-                    share += _allocate_excess_by_month(
-                        episode, allowance).get(year_month, 0.0)
+                    _take(_allocate_excess_by_month(episode, allowance))
         else:
             for cohort_year in sorted({q[0].year for q in touching}):
                 allowance = _entitlement(code, cohort_year)
                 if allowance == float("inf"):
                     continue
                 cohort = [q for q in requests if q[0].year == cohort_year]
-                share += _allocate_excess_by_month(cohort, allowance).get(
-                    year_month, 0.0)
+                _take(_allocate_excess_by_month(cohort, allowance))
+
+        # Independent of the deduction below: a month can forgive days while
+        # deducting none.
+        for start in sorted(forgiven):
+            notes.append(_waiver_note(code, start, round(forgiven[start], 4)))
 
         if share <= _DAY_EPS:
             continue
