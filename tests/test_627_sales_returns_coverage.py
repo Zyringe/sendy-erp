@@ -144,6 +144,11 @@ ALLOWED = {
     'scripts/verify_commission_reassign.py::_base_by_rep': (1,
         'a hand-run live-data check of the commission reassign rules (mig 143), '
         'not a screen; commission is receipt-driven.'),
+    'scripts/2026_09_29_rebase_gloves_650.py::assert_invariants': (1,
+        'the #650 gloves rebase (run 2026-09-29, #663): pairs_sold is the '
+        'COGS oracle checked against the rebuilt ledger, one product at a '
+        'time. An already-run one-off; changing it now would only change '
+        'what that run proved. No app surface.'),
 }
 
 # The only function that drops the documents invoiced in error (Put,
