@@ -187,7 +187,7 @@
             {% elif r.commission_payout_id %}
             {# Commission-linked row (issue #540) — auto-posted by
                commission.record_payout (plan.md decision C1/C4), never
-               editable/deletable here (guard: _reject_if_commission_row).
+               editable/deletable here (guard: cashbook_ledger.lock_reason).
                Tooltip echoes that guard's own flash wording, role-aware
                since #542: `can_cancel_commission_payout` (computed in the
                route via access_control.role_can_post against

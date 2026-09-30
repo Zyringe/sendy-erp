@@ -8,17 +8,17 @@ Access control
                                    POST set).
   staff   : blocked entirely — before_request redirects any cashbook.* endpoint.
 
-Manual rows (payroll_item_id IS NULL) can be edited/deleted here. Salary
-pay-event rows (payroll_item_id set, added by a later phase) are locked —
-see `_reject_if_salary_row`.
+Manual rows can be edited/deleted here. Rows linked to another module
+(salary, advance edit, commission, payout) are locked: see
+`cashbook_ledger.lock_reason`. Every write of `cashbook_transactions` goes
+through `cashbook_ledger`, inside one `database.immediate(conn)` opened before
+the first read the write depends on (card F).
 
 Python 3.9 — no `X | None` union syntax.
 """
 from __future__ import annotations
 
-import json
 import re
-import sqlite3
 from datetime import date
 from typing import Optional
 
@@ -66,7 +66,7 @@ ADVANCE_CATEGORY = cashbook_ledger.ADVANCE_CATEGORY
 #   - SALARY_CATEGORY: ALWAYS blocked — sourced in HR payroll (ADR 0006);
 #     "จ่ายแล้ว" already auto-posts a locked row via hr.post_salary_payment.
 #   - COMMISSION_CATEGORY: HYBRID blocked — only for an "in-engine" recipient
-#     (see `_in_engine_commission_rep`); an off-system rep (not in
+#     (see `cashbook_ledger.in_engine_commission_rep`); an off-system rep (not in
 #     `salespersons`) keeps the cashbook as its manual home (ADR 0008).
 SALARY_CATEGORY = cashbook_ledger.SALARY_CATEGORY
 COMMISSION_CATEGORY = cashbook_ledger.COMMISSION_CATEGORY
@@ -930,7 +930,7 @@ def _resolve_person_tags(conn, to_insert):
     flash, in first-seen order.
 
     ⚠ Caller must run this AFTER `_apply_policy_blocks` — the in-engine
-    commission double-book guard (`_in_engine_commission_rep`) must
+    commission double-book guard (`cashbook_ledger.in_engine_commission_rep`) must
     see the RAW typed tag, not an already-resolved employee nickname, or an
     employee whose name happens to collide with a salesperson's real-name
     alias would silently defeat the guard (issue #532 review)."""
@@ -1058,43 +1058,6 @@ def _resolve_advance_rows(conn, rows, to_insert):
     return kept
 
 
-def _salespersons_with_real_name(conn, where_sql):
-    """SELECT code, name, real_name FROM salespersons {where_sql}, tolerating
-    a DB that predates mig 129 (no real_name column yet — e.g. a `tmp_db`
-    clone of a live DB not yet migrated). Mirrors `_advance_link_id`'s
-    pre-mig fallback: absent column == every real_name is NULL, the correct
-    "no aliases known yet" default."""
-    try:
-        return conn.execute(
-            f"SELECT code, name, real_name FROM salespersons {where_sql}"
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return conn.execute(
-            f"SELECT code, name, NULL AS real_name FROM salespersons {where_sql}"
-        ).fetchall()
-
-
-def _in_engine_commission_rep(conn, recipient):
-    """The in-engine salesperson row (code, name, real_name) that `recipient`
-    (a ผู้ใช้ tag, trimmed) matches by code, name, or real_name alias, else
-    None (plan.md D3 gate — the hard-confirmed double-book risk:
-    เจียรนัย=ต๋อ/06(-L), ทวีเกียรติ=ท/03). Active salespersons are the practical
-    in-engine set. Off-system reps (อัคเรศ, แต, บ่าว, ...) match nothing here
-    and stay manual (hybrid). An alias shared by two codes resolves to the
-    lower code (เจียรนัย → 06)."""
-    recipient = (recipient or "").strip()
-    if not recipient:
-        return None
-    rows = _salespersons_with_real_name(conn, "WHERE is_active = 1 ORDER BY code")
-    for r in rows:
-        idents = {r["code"], r["name"]}
-        if r["real_name"]:
-            idents.add(r["real_name"])
-        if recipient in idents:
-            return r
-    return None
-
-
 def _commission_page_link(rep):
     """<a> to the rep's /commission/sp/<code> page, where the tick-to-pay form
     records the payout AND its locked cashbook row (#589: the block used to say
@@ -1104,21 +1067,14 @@ def _commission_page_link(rep):
         url_for("commission.commission_drilldown", sp_code=rep["code"]), label)
 
 
-def _policy_blocked_reason(conn, item):
-    """Thai block-reason for `item` (a `to_insert` row dict), or None if it's
-    allowed. ONE "linked & locked" concept covering both hard-blocked
-    families (finding #6) — salary is unconditional; commission is hybrid
-    (only an in-engine recipient blocks). The commission reason is Markup: it
-    carries a link to the rep's commission page, so every caller that
-    re-wraps it must keep it Markup (see the bulk summary flash)."""
-    if item["category"] == SALARY_CATEGORY:
-        return "เงินเดือนบันทึกที่หน้าเงินเดือน (HR) เท่านั้น"
-    if item["category"] == COMMISSION_CATEGORY:
-        rep = _in_engine_commission_rep(conn, item.get("user_category") or "")
-        if rep is not None:
-            return Markup("คอมมิชชั่นของเซลส์ในระบบบันทึกที่หน้าคอมมิชชั่นเท่านั้น — {}").format(
-                _commission_page_link(rep))
-    return None
+def _policy_flash(blocked):
+    """The flash / row-error text for a `cashbook_ledger.PolicyBlocked`. The
+    in-engine commission block carries a link to the rep's commission page, so
+    it is Markup; every caller that re-wraps it must keep it Markup (see the
+    bulk summary flash)."""
+    if blocked.kind == "commission_in_engine":
+        return Markup("{} — {}").format(str(blocked), _commission_page_link(blocked.rep))
+    return str(blocked)
 
 
 # Commission wording in a free-text description/note. Deliberately narrow:
@@ -1146,7 +1102,7 @@ def _commission_filed_elsewhere(conn, to_insert):
             continue
         if not _names_a_commission(f'{item.get("description") or ""} {item.get("note") or ""}'):
             continue
-        rep = _in_engine_commission_rep(conn, item.get("user_category") or "")
+        rep = cashbook_ledger.in_engine_commission_rep(conn, item.get("user_category") or "")
         if rep is not None:
             hits.append((item["index"], rep))
     return hits
@@ -1166,10 +1122,12 @@ def _apply_policy_blocks(conn, rows, to_insert):
     kept = []
     blocked = []
     for item in to_insert:
-        reason = _policy_blocked_reason(conn, item)
-        if reason is None:
+        blocked_by = cashbook_ledger.policy_block(
+            conn, item["category"], item.get("user_category") or "")
+        if blocked_by is None:
             kept.append(item)
             continue
+        reason = _policy_flash(blocked_by)
         rows_by_index[item["index"]]["errors"].append(reason)
         blocked.append({"index": item["index"], "category": item["category"], "reason": reason})
     return kept, blocked
@@ -1181,13 +1139,13 @@ def _commission_reps_for_picker(conn):
     Put recognizes an in-engine rep instead of typing them as free-text
     off-system — which would double-book against the /commission auto-post.
     `value` is what actually gets submitted as the ผู้ใช้ tag on selection, so
-    it MUST be one of the identifiers `_in_engine_commission_rep`
+    it MUST be one of the identifiers `cashbook_ledger.in_engine_commission_rep`
     matches against (the real_name alias if set, else the salesperson's own
     `name`); `label` is the human-readable alias shown in the dropdown.
     `code`/`name`/`real_name` are also returned (raw) so the template's JS can
     build the SAME in-engine identifier set the server checks, for a live
     redirect-button hint without a round-trip."""
-    rows = _salespersons_with_real_name(conn, "WHERE is_active=1 ORDER BY code")
+    rows = cashbook_ledger._salespersons_with_real_name(conn, "WHERE is_active=1 ORDER BY code")
     out = []
     for r in rows:
         value = r["real_name"] or r["name"]
@@ -1322,256 +1280,24 @@ def _new_form_ctx(conn, accounts, txn_date, account_id_raw, bulk_mode, rows, emp
 def new_transaction():
     conn = database.get_connection()
     try:
+        if request.method == "POST":
+            # ONE BEGIN IMMEDIATE around every read and write of the POST
+            # (card F, plan §3c): the account list, the employees, the
+            # category/tag/duplicate/cap reads and the inserts. A second
+            # gunicorn worker cannot fit between a decision read and its write,
+            # whichever confirm flags are set. Rendering and redirecting happen
+            # after the transaction ends.
+            with database.immediate(conn):
+                kind, value = _new_transaction_post(conn)
+            if kind == "render":
+                return render_template("cashbook/new.html", **value)
+            return redirect(value)
+
         accounts = hrq.get_active_cashbook_accounts(conn)
         account_ids = {a["id"] for a in accounts}
         # Active employees for the advance-row employee picker (category
         # ADVANCE_CATEGORY swaps the ผู้ใช้ cell to this dropdown, plan.md C5).
-        employees = hrq.get_employees(active_only=True)
-
-        if request.method == "POST":
-            txn_date = request.form.get("txn_date", "").strip() or date.today().isoformat()
-            account_id_raw = request.form.get("account_id", "").strip()
-            account_id = int(account_id_raw) if account_id_raw.isdigit() else None
-            bulk_mode = request.form.get("bulk_mode") == "1"
-            confirm_duplicates = request.form.get("confirm_duplicates") == "1"
-            confirm_advance_cap = request.form.get("confirm_advance_cap") == "1"
-            confirm_new_categories = request.form.get("confirm_new_categories") == "1"
-            confirm_commission_elsewhere = request.form.get("confirm_commission_elsewhere") == "1"
-
-            rows = _parse_batch_rows(request.form)
-            to_insert = _validate_batch(rows, txn_date)
-            # Advance rows (category == ADVANCE_CATEGORY) resolve + require an
-            # employee; invalid ones get a row error here and drop out of
-            # to_insert (plan.md C5). Must run BEFORE row_errors is computed.
-            to_insert = _resolve_advance_rows(conn, rows, to_insert)
-            # A category that EXISTS but is retired is refused outright — a
-            # row error, so it blocks the whole batch the same as any other
-            # basic-validation failure (issue #532 §1). Must also run BEFORE
-            # row_errors is computed. cat_lookup is fetched once and reused
-            # by the new-category-confirm gate further down.
-            cat_lookup = _category_lookup(conn)
-            _reject_inactive_categories(cat_lookup, rows, to_insert)
-
-            form_errors = []
-            if account_id not in account_ids:
-                form_errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
-            row_errors = any(r["errors"] for r in rows)
-            if not form_errors and not row_errors and not to_insert:
-                form_errors.append("กรุณากรอกอย่างน้อย 1 รายการ")
-
-            if form_errors or row_errors:
-                for msg in form_errors:
-                    flash(msg, "danger")
-                return render_template("cashbook/new.html", **_new_form_ctx(
-                    conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
-                    confirm_duplicates, confirm_advance_cap, confirm_new_categories,
-                    confirm_commission_elsewhere,
-                ))
-
-            # Policy blocks (plan.md C1-C3, D1, findings #1/#3/#6): manual
-            # เงินเดือน is ALWAYS blocked; manual จ่ายค่าคอมมิชชั่น is blocked only
-            # for an in-engine recipient (hybrid — off-system reps pass through).
-            # Blocked rows drop out of to_insert; genuine validation errors
-            # above already rejected the whole batch, so anything remaining
-            # here is otherwise-valid and safe to keep saving.
-            #
-            # ⚠ Must run BEFORE ผู้ใช้ tag resolution below — the in-engine
-            # check matches the RAW typed tag against salesperson aliases
-            # (plan.md D3, ADR 0008); resolving it to an employee nickname
-            # first could silently defeat the double-book guard if an
-            # employee's name ever collides with a salesperson alias (issue
-            # #532 review — confirmed empirically, this was a real ordering
-            # bug in an earlier version of this change).
-            to_insert, policy_blocked = _apply_policy_blocks(conn, rows, to_insert)
-            if policy_blocked and not to_insert:
-                # Nothing left to save (single-mode block, or a bulk batch
-                # that was ENTIRELY policy-blocked) — re-render like a
-                # validation error, no insert.
-                for b in policy_blocked:
-                    flash(b["reason"], "danger")
-                return render_template("cashbook/new.html", **_new_form_ctx(
-                    conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
-                    confirm_duplicates, confirm_advance_cap, confirm_new_categories,
-                    confirm_commission_elsewhere,
-                ))
-            if policy_blocked:
-                # Bulk mode with at least one valid row left (decision D1):
-                # skip the blocked rows + summarize, still save the rest.
-                # Markup.format, not an f-string: a commission reason carries
-                # a link, and an f-string would flatten it to escaped text.
-                from collections import Counter
-                for reason, n in Counter(b["reason"] for b in policy_blocked).items():
-                    flash(Markup("ข้าม {} แถว: {}").format(n, reason), "warning")
-
-            # Commission keyed under another category (#589, prod row 845).
-            # Measured HERE, on the raw ผู้ใช้ tag, before tag resolution below
-            # rewrites it; acted on with the other confirm gates further down.
-            commission_elsewhere = _commission_filed_elsewhere(conn, to_insert)
-
-            # ผู้ใช้ tag normalization (issue #532 §2): map a typed real name
-            # to the employee's system name BEFORE duplicate detection and
-            # insertion, so both see the canonical tag. Advance rows are
-            # skipped (already carry the employee's system name). Notices
-            # flash HERE — past every hard block above, so "we renamed your
-            # tag" is never shown on a page where nothing was actually saved
-            # (issue #532 review).
-            tag_notices = _resolve_person_tags(conn, to_insert)
-            for notice in tag_notices:
-                flash(notice, "info")
-
-            # Commission filed under another category (#589): warn-then-
-            # confirm, same shape as the gates below. A warning, not a block —
-            # a rep can be paid something that is not commission — but the
-            # keyer is shown where commission goes before anything saves.
-            if commission_elsewhere and not confirm_commission_elsewhere:
-                rows_by_index = {r["index"]: r for r in rows}
-                for idx, rep in commission_elsewhere:
-                    rows_by_index[idx]["errors"].append(Markup(
-                        "ดูเหมือนค่าคอมมิชชั่นของเซลส์ในระบบ — {}").format(_commission_page_link(rep)))
-                flash(f"มี {len(commission_elsewhere)} แถวที่ดูเหมือนค่าคอมมิชชั่นของเซลส์ในระบบแต่ลงหมวดอื่น"
-                      " — ค่าคอมของเซลส์ในระบบต้องจ่ายที่หน้าคอมมิชชั่น (ลิงก์อยู่ที่แถวที่ไฮไลต์)"
-                      " ถ้าไม่ใช่ค่าคอม ติ๊กยืนยันด้านล่างแล้วบันทึกอีกครั้ง", "warning")
-                return render_template("cashbook/new.html", **_new_form_ctx(
-                    conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
-                    confirm_duplicates, confirm_advance_cap, confirm_new_categories,
-                    confirm_commission_elsewhere,
-                    show_commission_elsewhere_confirm=True,
-                ))
-
-            # New-category confirmation (issue #532 §1): a category that does
-            # not exist yet needs explicit confirmation before it's created —
-            # warn-then-confirm, same shape as the duplicate-row guard below.
-            # Never silently creates one.
-            if not confirm_new_categories:
-                new_cats = _find_new_categories(cat_lookup, to_insert)
-                if new_cats:
-                    names = ", ".join(
-                        f"{c['name']} ({'รายรับ' if c['direction'] == 'income' else 'รายจ่าย'})"
-                        for c in new_cats
-                    )
-                    flash(f"หมวดหมู่ใหม่ที่ยังไม่มีในระบบ: {names} — ยืนยันเพื่อสร้างหมวดหมู่และบันทึกรายการ", "warning")
-                    return render_template("cashbook/new.html", **_new_form_ctx(
-                        conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
-                        confirm_duplicates, confirm_advance_cap, confirm_new_categories,
-                        confirm_commission_elsewhere,
-                        show_new_category_confirm=True, new_categories=new_cats,
-                    ))
-
-            # Duplicate-row guard (decision D2, plan.md): warn-then-confirm,
-            # never silently block or silently double-insert.
-            if not confirm_duplicates:
-                dup_indices = _find_duplicate_indices(conn, account_id, to_insert)
-                if dup_indices:
-                    for r in rows:
-                        if r["index"] in dup_indices:
-                            r["errors"].append("รายการนี้ซ้ำกับรายการที่มีอยู่แล้ว")
-                    flash(f"พบรายการซ้ำ {len(dup_indices)} รายการ กรุณาตรวจสอบและยืนยัน", "warning")
-                    return render_template("cashbook/new.html", **_new_form_ctx(
-                        conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
-                        confirm_duplicates, confirm_advance_cap, confirm_new_categories,
-                        confirm_commission_elsewhere,
-                        show_duplicate_confirm=True,
-                    ))
-
-            # Advance cap warning (plan.md P2): each advance row is checked
-            # against what ITS OWN month can actually pay (Blocker C — keyed
-            # off advance_date's month via r["effective_date"], never "today"
-            # or the form's top txn_date), summed per (employee, target
-            # month) across the whole submitted batch — plan.md step 5: two
-            # rows individually under the ceiling can together exceed it.
-            # Warn-then-confirm, same shape as the duplicate guard above;
-            # never a hard block (Put: he is the only person who keys
-            # advances, so there is no second approver to gate on).
-            #
-            # The lock is taken HERE, before _upsert_category below (the
-            # first DML in this function) — hr_mod._begin_immediate refuses a
-            # transaction already in flight, and the read (existing month
-            # total + the ceiling) + the decision + the insert must be ONE
-            # BEGIN IMMEDIATE transaction, or a concurrent worker can insert
-            # a competing advance between the read and the write (Blocker A
-            # — gunicorn -w 2 on Railway makes the second worker real).
-            advance_rows = [r for r in to_insert if r.get("is_advance")]
-            if advance_rows:
-                hr_mod._begin_immediate(conn)
-                groups = {}
-                for r in advance_rows:
-                    key = (r["employee_id"], r["effective_date"][:7])
-                    groups[key] = groups.get(key, 0.0) + r["amount"]
-                cap_warnings = []
-                for (emp_id, target_month), amount in groups.items():
-                    try:
-                        hr_mod.check_advance_cap(conn, emp_id, target_month, amount)
-                    except hr_mod.AdvanceCapWarning as w:
-                        cap_warnings.append(str(w))
-                if cap_warnings and not confirm_advance_cap:
-                    # Release the lock before re-rendering — nothing was
-                    # written, so there is nothing to keep it open for.
-                    conn.rollback()
-                    for w in cap_warnings:
-                        flash(w, "warning")
-                    return render_template("cashbook/new.html", **_new_form_ctx(
-                        conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
-                        confirm_duplicates, confirm_advance_cap, confirm_new_categories,
-                        confirm_commission_elsewhere,
-                        show_advance_cap_confirm=True,
-                    ))
-
-            # All rows valid (and no unconfirmed duplicates or advance-cap
-            # warnings) — insert within one transaction (single connection,
-            # single commit; if the advance-cap check above took the lock,
-            # this reuses that SAME open transaction): upsert any brand-new
-            # category first, then the rows, each at ITS OWN effective date
-            # (decision B2, plan.md — single mode: the shared top date; bulk
-            # mode: the row's own date, or the top date if the row was left
-            # blank).
-            created_by = session.get("display_name") or session.get("username")
-            for r in to_insert:
-                _upsert_category(conn, r["category"], r["direction"])
-            for r in to_insert:
-                if r.get("is_advance"):
-                    # Cashbook-sourced advance: write the HR salary_advances row
-                    # first (get its id), then the linked cashbook row — same
-                    # conn, same commit, so the pair is atomic (finding #2). The
-                    # cashbook row carries salary_advance_id; the ผู้ใช้ tag was
-                    # set to the employee display in _resolve_advance_rows.
-                    adv_id = conn.execute(
-                        """INSERT INTO salary_advances
-                           (employee_id, advance_date, amount, from_account_id, note)
-                           VALUES (?,?,?,?,?)""",
-                        (r["employee_id"], r["effective_date"], r["amount"],
-                         account_id, r["note"] or None),
-                    ).lastrowid
-                    conn.execute(
-                        """INSERT INTO cashbook_transactions
-                           (account_id, txn_date, direction, category, user_category,
-                            amount, description, note, created_by, salary_advance_id)
-                           VALUES (?,?,'expense',?,?,?,?,?,?,?)""",
-                        (account_id, r["effective_date"], r["category"],
-                         r["user_category"] or None, r["amount"],
-                         r["description"] or None, r["note"] or None, created_by,
-                         adv_id),
-                    )
-                else:
-                    conn.execute(
-                        """INSERT INTO cashbook_transactions
-                           (account_id, txn_date, direction, category, user_category,
-                            amount, description, note, created_by)
-                           VALUES (?,?,?,?,?,?,?,?,?)""",
-                        (account_id, r["effective_date"], r["direction"], r["category"],
-                         r["user_category"] or None, r["amount"],
-                         r["description"] or None, r["note"] or None, created_by),
-                    )
-            conn.commit()
-            flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
-            # Land on the month of the LATEST row just saved (ticket #524) —
-            # every row in a batch shares one account_id, but bulk mode lets
-            # each row carry its own date, so "latest" is a real max, not
-            # just the top-of-form date.
-            latest_month = max(r["effective_date"] for r in to_insert)[:7]
-            return redirect(url_for(
-                "cashbook.account_ledger", account_id=account_id, month=latest_month,
-            ))
-
+        employees = hrq.get_employees(active_only=True, conn=conn)
         # Preselect the account the caller asked for (ticket #524 — the
         # account-ledger page's own "เพิ่มรายการ" button carries
         # ?account_id=<this account>), if it's still active; otherwise fall
@@ -1595,114 +1321,236 @@ def new_transaction():
         conn.close()
 
 
-def _reject_if_salary_row(row):
-    """Salary pay-event rows (payroll_item_id set, posted by the HR pay-event)
-    are locked — never editable/deletable from the cashbook. Flashes + aborts
-    403 if locked."""
-    if row["payroll_item_id"] is not None:
-        flash("รายการนี้เป็นรายการเงินเดือนที่ผูกกับ Payroll — แก้ไข/ลบที่นี่ไม่ได้", "danger")
-        abort(403)
+def _new_transaction_post(conn):
+    """The POST body of `new_transaction`, run inside the caller's
+    `database.immediate(conn)`. Returns ("render", template context) or
+    ("redirect", url). A gate that returns early has written nothing, so the
+    commit on the way out is empty.
 
+    Every route validator stays in front of the ledger: `_validate_batch` and
+    the row checks collect ALL of a row's errors for the re-render, while the
+    ledger's own checks are a backstop that raises only the first refusal. A
+    ledger refusal reaching this far means the two disagree: it propagates,
+    `database.immediate` rolls the whole batch back."""
+    accounts = hrq.get_active_cashbook_accounts(conn)
+    account_ids = {a["id"] for a in accounts}
+    employees = hrq.get_employees(active_only=True, conn=conn)
 
-def _advance_link_id(row):
-    """salary_advance_id of a cashbook row, or None if that column is absent
-    (a DB predating mig 128) or NULL. A pre-mig DB has no advances, so absent ==
-    "not an advance row" — the correct fallback. sqlite3.Row raises
-    IndexError/KeyError on a missing key, hence the guard."""
-    try:
-        return row["salary_advance_id"]
-    except (IndexError, KeyError):
-        return None
+    txn_date = request.form.get("txn_date", "").strip() or date.today().isoformat()
+    account_id_raw = request.form.get("account_id", "").strip()
+    account_id = int(account_id_raw) if account_id_raw.isdigit() else None
+    bulk_mode = request.form.get("bulk_mode") == "1"
+    confirm_duplicates = request.form.get("confirm_duplicates") == "1"
+    confirm_advance_cap = request.form.get("confirm_advance_cap") == "1"
+    confirm_new_categories = request.form.get("confirm_new_categories") == "1"
+    confirm_commission_elsewhere = request.form.get("confirm_commission_elsewhere") == "1"
 
+    def rerender(**extra):
+        return "render", _new_form_ctx(
+            conn, accounts, txn_date, account_id_raw, bulk_mode, rows, employees,
+            confirm_duplicates, confirm_advance_cap, confirm_new_categories,
+            confirm_commission_elsewhere, **extra,
+        )
 
-def _edit_policy_blocked_reason(conn, category, user_category):
-    """Thai reason why `category` may not be set via txn_edit, or None.
+    rows = _parse_batch_rows(request.form)
+    to_insert = _validate_batch(rows, txn_date)
+    # Advance rows (category == ADVANCE_CATEGORY) resolve + require an
+    # employee; invalid ones get a row error here and drop out of
+    # to_insert (plan.md C5). Must run BEFORE row_errors is computed.
+    to_insert = _resolve_advance_rows(conn, rows, to_insert)
+    # A category that EXISTS but is retired is refused outright — a
+    # row error, so it blocks the whole batch the same as any other
+    # basic-validation failure (issue #532 §1). Must also run BEFORE
+    # row_errors is computed. cat_lookup is fetched once and reused
+    # by the new-category-confirm gate further down.
+    cat_lookup = _category_lookup(conn)
+    _reject_inactive_categories(cat_lookup, rows, to_insert)
 
-    `_reject_if_advance_edit` only guards rows that are ALREADY linked, so
-    without this an ORDINARY unlinked row could be edited INTO the advance
-    category and would sit there with `salary_advance_id` NULL — invisible to
-    payroll, never deducted. That is precisely how a ฿1,000 advance escaped
-    run 6 (2026-08-05 clean-up). Edit deliberately does NOT write back:
-    /cashbook/new stays the SOLE live writer of salary_advances (plan.md C5c /
-    finding #4), so the answer is to refuse and point at delete + re-add —
-    the same correction path an already-linked row gets.
+    form_errors = []
+    if account_id not in account_ids:
+        form_errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
+    row_errors = any(r["errors"] for r in rows)
+    if not form_errors and not row_errors and not to_insert:
+        form_errors.append("กรุณากรอกอย่างน้อย 1 รายการ")
 
-    The salary / commission families defer to the create path's own gate so the
-    two routes cannot drift.
-    """
-    if category == ADVANCE_CATEGORY:
-        return ("เปลี่ยนเป็นหมวดเบิกล่วงหน้าที่นี่ไม่ได้ — ให้ลบรายการนี้แล้ว"
-                "เพิ่มใหม่ที่หน้าบันทึกรายการ เพื่อให้ระบบผูกกับรายการเบิกของพนักงานให้")
-    return _policy_blocked_reason(
-        conn, {"category": category, "user_category": user_category}
+    if form_errors or row_errors:
+        for msg in form_errors:
+            flash(msg, "danger")
+        return rerender()
+
+    # Policy blocks (plan.md C1-C3, D1, findings #1/#3/#6): manual
+    # เงินเดือน is ALWAYS blocked; manual จ่ายค่าคอมมิชชั่น is blocked only
+    # for an in-engine recipient (hybrid — off-system reps pass through).
+    # Blocked rows drop out of to_insert; genuine validation errors
+    # above already rejected the whole batch, so anything remaining
+    # here is otherwise-valid and safe to keep saving.
+    #
+    # ⚠ Must run BEFORE ผู้ใช้ tag resolution below — the in-engine
+    # check matches the RAW typed tag against salesperson aliases
+    # (plan.md D3, ADR 0008); resolving it to an employee nickname
+    # first could silently defeat the double-book guard if an
+    # employee's name ever collides with a salesperson alias (issue
+    # #532 review — confirmed empirically, this was a real ordering
+    # bug in an earlier version of this change).
+    to_insert, policy_blocked = _apply_policy_blocks(conn, rows, to_insert)
+    if policy_blocked and not to_insert:
+        # Nothing left to save (single-mode block, or a bulk batch
+        # that was ENTIRELY policy-blocked) — re-render like a
+        # validation error, no insert.
+        for b in policy_blocked:
+            flash(b["reason"], "danger")
+        return rerender()
+    if policy_blocked:
+        # Bulk mode with at least one valid row left (decision D1):
+        # skip the blocked rows + summarize, still save the rest.
+        # Markup.format, not an f-string: a commission reason carries
+        # a link, and an f-string would flatten it to escaped text.
+        from collections import Counter
+        for reason, n in Counter(b["reason"] for b in policy_blocked).items():
+            flash(Markup("ข้าม {} แถว: {}").format(n, reason), "warning")
+
+    # Commission keyed under another category (#589, prod row 845).
+    # Measured HERE, on the raw ผู้ใช้ tag, before tag resolution below
+    # rewrites it; acted on with the other confirm gates further down.
+    commission_elsewhere = _commission_filed_elsewhere(conn, to_insert)
+
+    # The ledger's commission backstop reads the RAW typed tag too (the same
+    # one `_apply_policy_blocks` just read), so keep it before resolution.
+    for item in to_insert:
+        item["raw_user_category"] = item["user_category"]
+
+    # ผู้ใช้ tag normalization (issue #532 §2): map a typed real name
+    # to the employee's system name BEFORE duplicate detection and
+    # insertion, so both see the canonical tag. Advance rows are
+    # skipped (already carry the employee's system name). Notices
+    # flash HERE — past every hard block above, so "we renamed your
+    # tag" is never shown on a page where nothing was actually saved
+    # (issue #532 review).
+    tag_notices = _resolve_person_tags(conn, to_insert)
+    for notice in tag_notices:
+        flash(notice, "info")
+
+    # Commission filed under another category (#589): warn-then-
+    # confirm, same shape as the gates below. A warning, not a block —
+    # a rep can be paid something that is not commission — but the
+    # keyer is shown where commission goes before anything saves.
+    if commission_elsewhere and not confirm_commission_elsewhere:
+        rows_by_index = {r["index"]: r for r in rows}
+        for idx, rep in commission_elsewhere:
+            rows_by_index[idx]["errors"].append(Markup(
+                "ดูเหมือนค่าคอมมิชชั่นของเซลส์ในระบบ — {}").format(_commission_page_link(rep)))
+        flash(f"มี {len(commission_elsewhere)} แถวที่ดูเหมือนค่าคอมมิชชั่นของเซลส์ในระบบแต่ลงหมวดอื่น"
+              " — ค่าคอมของเซลส์ในระบบต้องจ่ายที่หน้าคอมมิชชั่น (ลิงก์อยู่ที่แถวที่ไฮไลต์)"
+              " ถ้าไม่ใช่ค่าคอม ติ๊กยืนยันด้านล่างแล้วบันทึกอีกครั้ง", "warning")
+        return rerender(show_commission_elsewhere_confirm=True)
+
+    # New-category confirmation (issue #532 §1): a category that does
+    # not exist yet needs explicit confirmation before it's created —
+    # warn-then-confirm, same shape as the duplicate-row guard below.
+    # Never silently creates one.
+    if not confirm_new_categories:
+        new_cats = _find_new_categories(cat_lookup, to_insert)
+        if new_cats:
+            names = ", ".join(
+                f"{c['name']} ({'รายรับ' if c['direction'] == 'income' else 'รายจ่าย'})"
+                for c in new_cats
+            )
+            flash(f"หมวดหมู่ใหม่ที่ยังไม่มีในระบบ: {names} — ยืนยันเพื่อสร้างหมวดหมู่และบันทึกรายการ", "warning")
+            return rerender(show_new_category_confirm=True, new_categories=new_cats)
+
+    # Duplicate-row guard (decision D2, plan.md): warn-then-confirm,
+    # never silently block or silently double-insert. Skipped once
+    # confirmed, by design (D-4 A); the lock is held either way.
+    if not confirm_duplicates:
+        dup_indices = _find_duplicate_indices(conn, account_id, to_insert)
+        if dup_indices:
+            for r in rows:
+                if r["index"] in dup_indices:
+                    r["errors"].append("รายการนี้ซ้ำกับรายการที่มีอยู่แล้ว")
+            flash(f"พบรายการซ้ำ {len(dup_indices)} รายการ กรุณาตรวจสอบและยืนยัน", "warning")
+            return rerender(show_duplicate_confirm=True)
+
+    # Advance cap warning (plan.md P2): each advance row is checked
+    # against what ITS OWN month can actually pay (Blocker C — keyed
+    # off advance_date's month via r["effective_date"], never "today"
+    # or the form's top txn_date), summed per (employee, target
+    # month) across the whole submitted batch — plan.md step 5: two
+    # rows individually under the ceiling can together exceed it.
+    # Warn-then-confirm, same shape as the duplicate guard above;
+    # never a hard block (Put: he is the only person who keys
+    # advances, so there is no second approver to gate on). The read,
+    # the decision and the insert share the caller's one BEGIN
+    # IMMEDIATE (Blocker A — gunicorn -w 2 on Railway makes the second
+    # worker real).
+    advance_rows = [r for r in to_insert if r.get("is_advance")]
+    if advance_rows:
+        groups = {}
+        for r in advance_rows:
+            key = (r["employee_id"], r["effective_date"][:7])
+            groups[key] = groups.get(key, 0.0) + r["amount"]
+        cap_warnings = []
+        for (emp_id, target_month), amount in groups.items():
+            try:
+                hr_mod.check_advance_cap(conn, emp_id, target_month, amount)
+            except hr_mod.AdvanceCapWarning as w:
+                cap_warnings.append(str(w))
+        if cap_warnings and not confirm_advance_cap:
+            for w in cap_warnings:
+                flash(w, "warning")
+            return rerender(show_advance_cap_confirm=True)
+
+    # All rows valid (and no unconfirmed duplicates or advance-cap
+    # warnings): upsert any brand-new category first, then the rows through
+    # the ledger, each at ITS OWN effective date (decision B2, plan.md —
+    # single mode: the shared top date; bulk mode: the row's own date, or
+    # the top date if the row was left blank). An advance row writes the HR
+    # salary_advances row and its linked cashbook row together (finding #2).
+    created_by = session.get("display_name") or session.get("username")
+    for r in to_insert:
+        _upsert_category(conn, r["category"], r["direction"])
+    for r in to_insert:
+        if r.get("is_advance"):
+            cashbook_ledger.post_advance(
+                conn, account_id=account_id, txn_date=r["effective_date"],
+                employee_id=r["employee_id"], amount=r["amount"],
+                description=r["description"], note=r["note"], actor=created_by,
+            )
+        else:
+            cashbook_ledger.post_manual(
+                conn, account_id=account_id, txn_date=r["effective_date"],
+                direction=r["direction"], category=r["category"],
+                user_category=r["user_category"],
+                raw_user_category=r["raw_user_category"], amount=r["amount"],
+                description=r["description"], note=r["note"], actor=created_by,
+            )
+    flash(f"บันทึก {len(to_insert)} รายการเรียบร้อย", "success")
+    # Land on the month of the LATEST row just saved (ticket #524) —
+    # every row in a batch shares one account_id, but bulk mode lets
+    # each row carry its own date, so "latest" is a real max, not
+    # just the top-of-form date.
+    latest_month = max(r["effective_date"] for r in to_insert)[:7]
+    return "redirect", url_for(
+        "cashbook.account_ledger", account_id=account_id, month=latest_month,
     )
 
 
-def _reject_if_advance_edit(row):
-    """Advance-linked rows (salary_advance_id set) are NOT editable in place —
-    the cashbook is their source of truth, and a correction is delete + re-add
-    while still un-deducted (plan.md decision A / C5d). Deletion is handled
-    separately (with a cascade to salary_advances). Flashes + aborts 403."""
-    if _advance_link_id(row) is not None:
-        flash("รายการเบิกล่วงหน้าแก้ไขที่นี่ไม่ได้ — ให้ลบแล้วเพิ่มใหม่ "
-              "(ทำได้ก่อนถูกหักในรอบเงินเดือน)", "danger")
-        abort(403)
+def _can_cancel_commission():
+    """Whether the current session's role may cancel a payout at /commission
+    (#542): derived from the rule that gates commission_delete_payout, never a
+    hand-typed role list, so the lock wording cannot go stale."""
+    return access_control.role_can_post(
+        session.get('role', ''), 'commission.commission_delete_payout')
 
 
-def _commission_link_id(row):
-    """commission_payout_id of a cashbook row, or None if that column is
-    absent (a DB predating mig 129) or NULL. Mirrors _advance_link_id."""
-    try:
-        return row["commission_payout_id"]
-    except (IndexError, KeyError):
-        return None
-
-
-def _reject_if_commission_row(row):
-    """Commission-linked rows (commission_payout_id set, posted by the
-    /commission auto-post — plan.md decision C1/C4, finding #6) are locked —
-    never editable/deletable from the cashbook, for EVERY role including
-    admin. They are removed only via /commission's "ยกเลิกการจ่าย"
-    (commission.delete_payout), which cascades the linked row itself —
-    mirror of _reject_if_salary_row for payroll_item_id. Flashes + aborts 403
-    if locked.
-
-    The flash wording is role-aware (#542): whether the CURRENT session's
-    role could actually go cancel it at /commission is derived from the same
-    rule that gates commission.commission_delete_payout
-    (access_control.role_can_post) — never a hand-typed role list here, so a
-    future change to who may cancel doesn't leave this flash stale."""
-    if _commission_link_id(row) is not None:
-        can_cancel = access_control.role_can_post(
-            session.get('role', ''), 'commission.commission_delete_payout')
-        cancel_clause = ('ยกเลิกได้ที่หน้าคอมมิชชั่นเท่านั้น' if can_cancel
-                         else 'ให้แอดมินยกเลิกที่หน้าคอมมิชชั่น')
-        flash("รายการนี้เป็นรายการคอมมิชชั่นที่ผูกกับหน้าคอมมิชชั่น — "
-              f"แก้ไข/ลบที่นี่ไม่ได้ ({cancel_clause})", "danger")
-        abort(403)
-
-
-def _is_payout_row(row):
-    """True for a marketplace-payout-sourced row (payout_platform set, added
-    by cashbook_payout_mirror.mirror_platform — issue #533). Absent column
-    (a DB predating mig 182) or NULL both mean "not a payout row"."""
-    try:
-        return row["payout_platform"] is not None
-    except (IndexError, KeyError):
-        return False
-
-
-def _reject_if_payout_row(row):
-    """Marketplace-payout-sourced rows (payout_platform set) are locked —
-    never editable/deletable from the cashbook. They are kept in sync by
-    cashbook_payout_mirror.mirror_platform on every marketplace import;
-    correcting one means fixing the source payout on the marketplace pages,
-    not hand-editing the mirror. Mirror of _reject_if_salary_row, keyed by
-    value (marketplace_payouts has no stable row id to link) instead of an
-    FK. Flashes + aborts 403 if locked."""
-    if _is_payout_row(row):
-        flash("รายการนี้เป็นยอดโอนจากมาร์เก็ตเพลสที่ระบบลงให้อัตโนมัติ — "
-              "แก้ไข/ลบที่นี่ไม่ได้ (แก้ที่หน้ามาร์เก็ตเพลสแทน)", "danger")
+def _refuse_if_locked(row, action):
+    """Flash + 403 when `row` belongs to another module for `action` ('edit' |
+    'delete'): salary, advance (edit only), commission, payout, in that order.
+    The texts live in `cashbook_ledger.lock_reason`. Inside the caller's
+    `database.immediate`, the abort rolls back (nothing was written yet)."""
+    reason = cashbook_ledger.lock_reason(
+        row, action, can_cancel_commission=_can_cancel_commission())
+    if reason:
+        flash(reason, "danger")
         abort(403)
 
 
@@ -1711,209 +1559,164 @@ def txn_edit(txn_id):
     """Edit a manual row. Submitted from the edit modal on account_ledger.html
     (templates/cashbook/txn_edit.html) — there is no separate GET page, so on
     a validation error we flash + redirect back to the ledger rather than
-    re-rendering a form. Salary and advance-linked rows are rejected (locked)."""
+    re-rendering a form. Linked rows are refused (locked).
+
+    One BEGIN IMMEDIATE around the row read, every check and the UPDATE
+    (card F, plan §3c); the redirect happens after it ends. The route's own
+    checks run first and collect every error; `cashbook_ledger.amend_manual`
+    re-checks as a backstop (it raises only the first refusal)."""
     conn = database.get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
-        ).fetchone()
-        if row is None:
-            abort(404)
-        _reject_if_salary_row(row)
-        _reject_if_advance_edit(row)
-        _reject_if_commission_row(row)
-        _reject_if_payout_row(row)
-
-        account_id_raw = request.form.get("account_id", "").strip()
-        txn_date = request.form.get("txn_date", "").strip()
-        direction = request.form.get("direction", "").strip()
-        category = request.form.get("category", "").strip()
-        user_category = request.form.get("user_category", "").strip()
-        amount_raw = request.form.get("amount", "").strip()
-        description = request.form.get("description", "").strip()
-        note = request.form.get("note", "").strip()
-
-        account = conn.execute(
-            "SELECT id FROM cashbook_accounts WHERE id=? AND is_active=1",
-            (account_id_raw,),
-        ).fetchone() if account_id_raw.isdigit() else None
-        try:
-            amount = float(amount_raw)
-        except ValueError:
-            amount = None
-
-        errors = []
-        if account is None:
-            errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
-        if not txn_date:
-            errors.append("กรุณาระบุวันที่")
-        else:
-            try:
-                date.fromisoformat(txn_date)
-            except ValueError:
-                errors.append("รูปแบบวันที่ไม่ถูกต้อง")
-        if amount is None or amount <= 0:
-            errors.append("จำนวนเงินต้องมากกว่า 0")
-        if direction not in ("income", "expense"):
-            errors.append("ประเภทไม่ถูกต้อง")
-        if not category:
-            errors.append("กรุณาระบุหมวดหมู่")
-
-        # Both refusal paths below land back on the row's ORIGINAL month
-        # (nothing was saved, so nothing moved) — never the default, which
-        # under #524's own scoping can silently jump the admin to a
-        # different month and hide both the flash and the row they were
-        # trying to fix.
-        if errors:
-            for msg in errors:
-                flash(msg, "danger")
-            return redirect(url_for(
-                "cashbook.account_ledger",
-                account_id=row["account_id"], month=row["txn_date"][:7],
-            ))
-
-        blocked = _edit_policy_blocked_reason(conn, category, user_category)
-        if blocked:
-            flash(blocked, "danger")
-            return redirect(url_for(
-                "cashbook.account_ledger",
-                account_id=row["account_id"], month=row["txn_date"][:7],
-            ))
-
-        # Category guard (issue #532 §1): edit may only set an ACTIVE existing
-        # category, or leave the row's current (category, direction) pair
-        # unchanged — rows 723/664/665 sit in retired categories on purpose,
-        # and their OTHER fields must stay editable. Edit never creates one
-        # (unlike /cashbook/new, which upserts after confirmation).
-        category_changed = category != row["category"] or direction != row["direction"]
-        if category_changed:
-            active_cat = conn.execute(
-                "SELECT 1 FROM cashbook_categories WHERE name=? AND direction=? AND is_active=1",
-                (category, direction),
-            ).fetchone()
-            if active_cat is None:
-                flash("หมวดหมู่นี้ไม่มีอยู่หรือถูกปิดใช้งานแล้ว กรุณาเลือกหมวดหมู่ที่ใช้งานอยู่", "danger")
-                return redirect(url_for(
-                    "cashbook.account_ledger",
-                    account_id=row["account_id"], month=row["txn_date"][:7],
-                ))
-
-        # ผู้ใช้ tag normalization (issue #532 §2) — ONLY when the tag field
-        # was actually changed: editing a row without touching its tag must
-        # never change it, even if the stored value happens to look like an
-        # employee's real name.
-        if user_category != (row["user_category"] or ""):
-            resolved, notice = _resolve_employee_tag(conn, user_category)
-            user_category = resolved
-            if notice:
-                flash(notice, "info")
-
-        new_vals = {
-            "account_id": int(account_id_raw), "txn_date": txn_date, "direction": direction,
-            "category": category, "user_category": user_category or None,
-            "amount": amount, "description": description or None, "note": note or None,
-        }
-        changed = {
-            field: [row[field], new_v]
-            for field, new_v in new_vals.items() if row[field] != new_v
-        }
-
-        conn.execute(
-            """UPDATE cashbook_transactions
-               SET account_id=?, txn_date=?, direction=?, category=?, user_category=?,
-                   amount=?, description=?, note=?
-               WHERE id=?""",
-            (*new_vals.values(), txn_id),
-        )
-        if changed:
-            # The mig 076 AFTER UPDATE trigger already writes a field-diff
-            # audit_log row for this UPDATE (user=NULL — triggers have no
-            # session). This explicit row attributes the change to the
-            # actor, same pattern as hr.py::reopen_run.
-            conn.execute(
-                "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
-                " VALUES(?,?,?,?,?)",
-                ("cashbook_transactions", txn_id, "UPDATE",
-                 json.dumps(changed, ensure_ascii=False),
-                 session.get("display_name") or session.get("username")),
-            )
-        conn.commit()
-        flash("แก้ไขรายการเรียบร้อย", "success")
-        # Land on the month of the row's NEW date, on its NEW account if it
-        # moved (ticket #524) — never the default, which could hide the very
-        # row just saved.
-        return redirect(url_for(
-            "cashbook.account_ledger",
-            account_id=new_vals["account_id"], month=new_vals["txn_date"][:7],
-        ))
+        with database.immediate(conn):
+            target = _txn_edit_locked(conn, txn_id)
+        return redirect(target)
     finally:
         conn.close()
+
+
+def _txn_edit_locked(conn, txn_id):
+    row = conn.execute(
+        "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
+    ).fetchone()
+    if row is None:
+        abort(404)
+    _refuse_if_locked(row, "edit")
+
+    account_id_raw = request.form.get("account_id", "").strip()
+    txn_date = request.form.get("txn_date", "").strip()
+    direction = request.form.get("direction", "").strip()
+    category = request.form.get("category", "").strip()
+    user_category = request.form.get("user_category", "").strip()
+    amount_raw = request.form.get("amount", "").strip()
+    description = request.form.get("description", "").strip()
+    note = request.form.get("note", "").strip()
+
+    account = conn.execute(
+        "SELECT id FROM cashbook_accounts WHERE id=? AND is_active=1",
+        (account_id_raw,),
+    ).fetchone() if account_id_raw.isdigit() else None
+    try:
+        amount = float(amount_raw)
+    except ValueError:
+        amount = None
+
+    errors = []
+    if account is None:
+        errors.append("กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่")
+    if not txn_date:
+        errors.append("กรุณาระบุวันที่")
+    else:
+        try:
+            date.fromisoformat(txn_date)
+        except ValueError:
+            errors.append("รูปแบบวันที่ไม่ถูกต้อง")
+    if amount is None or amount <= 0:
+        errors.append("จำนวนเงินต้องมากกว่า 0")
+    if direction not in ("income", "expense"):
+        errors.append("ประเภทไม่ถูกต้อง")
+    if not category:
+        errors.append("กรุณาระบุหมวดหมู่")
+
+    # Both refusal paths below land back on the row's ORIGINAL month
+    # (nothing was saved, so nothing moved) — never the default, which
+    # under #524's own scoping can silently jump the admin to a
+    # different month and hide both the flash and the row they were
+    # trying to fix.
+    back = url_for("cashbook.account_ledger",
+                   account_id=row["account_id"], month=row["txn_date"][:7])
+    if errors:
+        for msg in errors:
+            flash(msg, "danger")
+        return back
+
+    # Editing an unlinked row INTO the advance category would leave it
+    # invisible to payroll (how a ฿1,000 advance escaped run 6), so it is
+    # refused: the correction is delete + re-add. Salary / commission defer
+    # to the create path's rule. Reads the RAW typed tag.
+    blocked = cashbook_ledger.edit_policy_block(conn, category, user_category)
+    if blocked is not None:
+        flash(_policy_flash(blocked), "danger")
+        return back
+
+    # Category guard (issue #532 §1): edit may only set an ACTIVE existing
+    # category, or leave the row's current (category, direction) pair
+    # unchanged — rows 723/664/665 sit in retired categories on purpose,
+    # and their OTHER fields must stay editable. Edit never creates one
+    # (unlike /cashbook/new, which upserts after confirmation).
+    category_changed = category != row["category"] or direction != row["direction"]
+    if category_changed:
+        active_cat = conn.execute(
+            "SELECT 1 FROM cashbook_categories WHERE name=? AND direction=? AND is_active=1",
+            (category, direction),
+        ).fetchone()
+        if active_cat is None:
+            flash("หมวดหมู่นี้ไม่มีอยู่หรือถูกปิดใช้งานแล้ว กรุณาเลือกหมวดหมู่ที่ใช้งานอยู่", "danger")
+            return back
+
+    # ผู้ใช้ tag normalization (issue #532 §2) — ONLY when the tag field
+    # was actually changed: editing a row without touching its tag must
+    # never change it, even if the stored value happens to look like an
+    # employee's real name.
+    raw_user_category = user_category
+    if user_category != (row["user_category"] or ""):
+        resolved, notice = _resolve_employee_tag(conn, user_category)
+        user_category = resolved
+        if notice:
+            flash(notice, "info")
+
+    # The UPDATE, and the explicit actor-attributed field-diff audit row when
+    # something changed (the mig 076 trigger writes its own with user=NULL).
+    cashbook_ledger.amend_manual(
+        conn, txn_id, account_id=int(account_id_raw), txn_date=txn_date,
+        direction=direction, category=category, user_category=user_category,
+        raw_user_category=raw_user_category, amount=amount,
+        description=description, note=note,
+        actor=session.get("display_name") or session.get("username"),
+        can_cancel_commission=_can_cancel_commission(),
+    )
+    flash("แก้ไขรายการเรียบร้อย", "success")
+    # Land on the month of the row's NEW date, on its NEW account if it
+    # moved (ticket #524) — never the default, which could hide the very
+    # row just saved.
+    return url_for("cashbook.account_ledger",
+                   account_id=int(account_id_raw), month=txn_date[:7])
 
 
 @bp_cashbook.route("/txn/<int:txn_id>/delete", methods=["POST"])
 def txn_delete(txn_id):
+    """Delete a manual row, or an advance row with its un-deducted
+    salary_advances row. One BEGIN IMMEDIATE around the read, the locks and
+    the delete (card F, plan §3c)."""
     conn = database.get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
-        ).fetchone()
-        if row is None:
-            abort(404)
-        _reject_if_salary_row(row)
-        _reject_if_commission_row(row)
-        _reject_if_payout_row(row)
-
-        account_id = row["account_id"]
-        adv_id = _advance_link_id(row)
-        # Fast-path reject for an advance already deducted by a payroll run
-        # (the common locked case) — avoids deleting the cashbook row then
-        # rolling it back.
-        if adv_id is not None:
-            adv = conn.execute(
-                "SELECT deducted_in_run_id FROM salary_advances WHERE id=?", (adv_id,)
-            ).fetchone()
-            if adv is not None and adv["deducted_in_run_id"] is not None:
-                flash("รายการเบิกล่วงหน้านี้ถูกหักในรอบเงินเดือนแล้ว — ลบไม่ได้", "danger")
-                abort(403)
-
-        # Delete the cashbook row (child) FIRST — the salary_advances FK forbids
-        # dropping the parent while this row still references it.
-        conn.execute("DELETE FROM cashbook_transactions WHERE id=?", (txn_id,))
-        if adv_id is not None:
-            # Cascade-delete the advance, but ONLY if still un-deducted. The
-            # WHERE ... IS NULL makes this atomic against the gunicorn -w 2 race
-            # (a payroll run could set deducted_in_run_id between the read above
-            # and here): 0 rows matched -> a run just deducted it -> roll the
-            # whole txn back (undoing the cashbook delete too) and abort.
-            cur = conn.execute(
-                "DELETE FROM salary_advances WHERE id=? AND deducted_in_run_id IS NULL",
-                (adv_id,),
-            )
-            if cur.rowcount == 0:
-                conn.rollback()
-                flash("รายการเบิกล่วงหน้านี้ถูกหักในรอบเงินเดือนแล้ว — ลบไม่ได้", "danger")
-                abort(403)
-        # The mig 076 BEFORE DELETE trigger already writes an audit_log DELETE
-        # row (user=NULL). This explicit row attributes it to the actor, same
-        # pattern as hr.py::reopen_run / the mig 076 UPDATE trigger above.
-        conn.execute(
-            "INSERT INTO audit_log(table_name, row_id, action, changed_fields, user)"
-            " VALUES(?,?,?,?,?)",
-            ("cashbook_transactions", txn_id, "DELETE",
-             json.dumps({
-                 "account_id": account_id, "txn_date": row["txn_date"],
-                 "direction": row["direction"], "category": row["category"],
-                 "amount": row["amount"],
-             }, ensure_ascii=False),
-             session.get("display_name") or session.get("username")),
-        )
-        conn.commit()
-        flash("ลบรายการเรียบร้อย", "success")
-        # Land on the deleted row's own month (ticket #524), not the default —
-        # e.g. keying August rows into an account in mid-September and then
-        # correcting one must not silently jump to September.
-        return redirect(url_for(
-            "cashbook.account_ledger", account_id=account_id, month=row["txn_date"][:7],
-        ))
+        with database.immediate(conn):
+            target = _txn_delete_locked(conn, txn_id)
+        return redirect(target)
     finally:
         conn.close()
+
+
+def _txn_delete_locked(conn, txn_id):
+    row = conn.execute(
+        "SELECT * FROM cashbook_transactions WHERE id=?", (txn_id,)
+    ).fetchone()
+    if row is None:
+        abort(404)
+    _refuse_if_locked(row, "delete")
+    try:
+        # An advance already deducted by a payroll run is refused, both before
+        # the delete and atomically on the cascade (a run could deduct it in
+        # between on the other worker; the abort rolls the row delete back).
+        cashbook_ledger.cancel_manual(
+            conn, txn_id, actor=session.get("display_name") or session.get("username"),
+            can_cancel_commission=_can_cancel_commission(),
+        )
+    except cashbook_ledger.LockedRow as e:
+        flash(str(e), "danger")
+        abort(403)
+    flash("ลบรายการเรียบร้อย", "success")
+    # Land on the deleted row's own month (ticket #524), not the default —
+    # e.g. keying August rows into an account in mid-September and then
+    # correcting one must not silently jump to September.
+    return url_for("cashbook.account_ledger",
+                   account_id=row["account_id"], month=row["txn_date"][:7])
