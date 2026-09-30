@@ -739,3 +739,74 @@ def test_run_record_carries_removed_lines(client, tmp_path, monkeypatch):
     assert second.status_code == 200, second.data[:500]
     assert _last_run_notes() == (1, 0)
     assert 'ลบบรรทัดที่หายจากต้นทาง 1'.encode() in second.data
+
+
+# ── Card E PR-2: rows the heal pass first-synced reach the run record and flash ─
+
+def _last_run_heal():
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    try:
+        return conn.execute(
+            "SELECT json_extract(notes, '$.bsn.first_synced_pending.sales'), "
+            "       json_extract(notes, '$.bsn.first_synced_pending.purchase') "
+            "FROM import_log WHERE filename='express-dbf-upload' "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+    finally:
+        conn.close()
+
+
+def _seed_pending_sale(doc, code):
+    """A mapped sales row no zip ever touches, left pending (what a naming
+    action or a unit_type edit leaves behind)."""
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    pid = conn.execute("INSERT INTO products (product_name, unit_type) VALUES (?, 'ตัว')",
+                       (f'ค้างซิงก์ {doc}',)).lastrowid
+    conn.execute("INSERT OR IGNORE INTO stock_levels (product_id, quantity) VALUES (?, 100)", (pid,))
+    conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
+                 " VALUES (?, 'x', ?, '')", (code, pid))
+    batch = conn.execute("INSERT INTO import_log (filename, rows_imported, rows_skipped, notes)"
+                         " VALUES ('seed', 0, 0, 'seed')").lastrowid
+    conn.execute(
+        "INSERT INTO sales_transactions (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,"
+        " product_name_raw, customer, customer_code, qty, unit, unit_price, vat_type, discount, total, net,"
+        " synced_to_stock, change_source, change_actor, change_token)"
+        " VALUES (?, '2026-04-24', ?, ?, ?, ?, 'x', 'c', 'CE', 5, 'ตัว', 10, 1, '', 50, 50, 0,"
+        " 'import', 'seed', ?)", (batch, f'{doc}-1', doc, pid, code, f'seed-{doc}'))
+    conn.commit()
+    conn.close()
+    return pid
+
+
+def test_run_record_carries_first_synced_pending(client, tmp_path, monkeypatch):
+    """Quiet day: the key is in the run record as 0/0 and the flash is silent.
+    Then a pending mapped row is left behind: the next zip heals it (stock
+    behaviour as ever) and NOW the run record and the flash say so."""
+    import config
+    _login(client)
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    own = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('own #pr2', 'ตัว')").lastrowid
+    conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
+                 " VALUES ('bsn-681', 'own #pr2', ?, '')", (own,))
+    conn.commit()
+    conn.close()
+    first = _upload(client, tmp_path, monkeypatch, _one_line_sale('ตัว'))
+    assert first.status_code == 200, first.data[:500]
+    assert _last_run_heal() == (0, 0)
+    assert 'ซิงก์บรรทัดที่ค้างไว้'.encode() not in first.data       # control: quiet day
+
+    pid = _seed_pending_sale('IV9PEND01', 'bsn-pend')
+    corrected = _one_line_sale('ตัว')
+    corrected['STCRD'][0]['TRNQTY'] = 3.0            # a correction on a mapped product: pass 2 runs
+    second = _upload(client, tmp_path, monkeypatch, corrected)
+
+    assert second.status_code == 200, second.data[:500]
+    assert _last_run_heal() == (1, 0)
+    assert 'ซิงก์บรรทัดที่ค้างไว้ 1'.encode() in second.data
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    synced = conn.execute("SELECT synced_to_stock FROM sales_transactions WHERE doc_base='IV9PEND01'").fetchone()[0]
+    ledger = conn.execute("SELECT COALESCE(SUM(quantity_change),0) FROM transactions"
+                          " WHERE product_id=? AND note LIKE 'BSN%'", (pid,)).fetchone()[0]
+    conn.close()
+    assert (synced, ledger) == (1, -5), 'the heal itself still happens: no stock behaviour change'

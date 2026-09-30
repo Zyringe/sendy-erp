@@ -1255,6 +1255,13 @@ def _express_dbf_summary_message(per_type):
     removed_lines = _removed_lines(per_type)
     if sum(removed_lines.values()):
         msg += f' · ลบบรรทัดที่หายจากต้นทาง {sum(removed_lines.values())}'
+    # Rows pass 2's table-wide heal pass first-synced although no bill in this
+    # zip touched their product (Card E PR-2): something (a naming action, a
+    # unit_type edit, a migration, a script) left them pending since the last
+    # zip. They are synced exactly as before; this only makes it visible.
+    first_synced = _first_synced_pending(per_type)
+    if sum(first_synced.values()):
+        msg += f' · ซิงก์บรรทัดที่ค้างไว้ {sum(first_synced.values())}'
     return msg
 
 
@@ -1262,6 +1269,13 @@ def _removed_lines(per_type):
     """{'sales': n, 'purchase': m}: source lines the zip reversed. .get on
     purpose, like the snapshot keys above: older callers carry no `removed`."""
     return {k: (per_type.get(k) or {}).get('removed') or 0
+            for k in ('sales', 'purchase')}
+
+
+def _first_synced_pending(per_type):
+    """{'sales': n, 'purchase': m}: pending rows the heal pass posted. .get on
+    purpose, same as _removed_lines."""
+    return {k: (per_type.get(k) or {}).get('first_synced_pending') or 0
             for k in ('sales', 'purchase')}
 
 
@@ -1564,6 +1578,7 @@ def express_dbf_upload():
                 # In the run record beside the summary (Card E): the counts the
                 # flash clause above is built from, queryable after the fact.
                 results['bsn']['removed_lines'] = _removed_lines(per_type)
+                results['bsn']['first_synced_pending'] = _first_synced_pending(per_type)
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
                 _dbf_lossy = _lossy_reversal_warning(
                     per_type.get('sales'), 'BSN5657 (DBF)')
