@@ -204,13 +204,18 @@ def _iv_and_sr_products(conn, customer_code):
 def _settled_cancel_return_orders(conn, platform):
     """Settled orders (actual_payout + settled_at both present) whose status
     is in the cancel/return family — the only subset of that family this
-    module ever tries to link (see module-level rationale above)."""
+    module ever tries to link (see module-level rationale above).
+
+    Except a TikTok order settled at ฿0: TikTok settles every cancel that way
+    (a date, no money), so "settled" says nothing about a shipped-then-returned
+    parcel, and a same-product IV weeks later would be some other sale's."""
     placeholders = ",".join("?" * len(_STATUS_CANCEL_RETURN))
     rows = conn.execute(
         f"""SELECT id, order_sn, platform, status, order_date
             FROM marketplace_orders
             WHERE platform = ? AND status IN ({placeholders})
               AND settled_at IS NOT NULL AND actual_payout IS NOT NULL
+              AND NOT (platform = 'tiktok' AND actual_payout = 0)
             ORDER BY order_date""",
         (platform, *_STATUS_CANCEL_RETURN)
     ).fetchall()

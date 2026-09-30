@@ -100,8 +100,8 @@ def test_automatch_links_the_two_sales_and_leaves_the_cancel(conn):
         (O379, 'IV6901503', 'Tหน้าร้าน', 'auto', 'confident'),
     ]
     assert (r['confident'], r['review'], r['returns_matched']) == (2, 0, 0)
-    # O817 is cancelled and settled at 0: the returns pass looks and finds no doc.
-    assert [o['order_sn'] for o in marketplace_match._settled_cancel_return_orders(conn, 'tiktok')] == [O817]
+    # O817 is cancelled and settled at ฿0: not a returns-pass candidate at all.
+    assert marketplace_match._settled_cancel_return_orders(conn, 'tiktok') == []
 
 
 def test_automatch_rerun_is_idempotent(conn):
@@ -260,3 +260,29 @@ def test_worklist_bucket_a_unchanged_for_shopee(conn):
                      "VALUES ('shopee', ?, ?, '2026-09-01 10:00')", (sn, status))
     conn.commit()
     assert models.get_iv_match_worklist(conn, platform='shopee')['total_a'] == 1
+
+
+def _add_two_line_iv(c, doc_base, date_iso, pids, net_each=69.52):
+    for i, pid in enumerate(pids, 1):
+        c.execute(
+            """INSERT INTO sales_transactions
+               (date_iso, doc_no, doc_base, customer, customer_code, qty, unit_price,
+                vat_type, total, net, product_id, created_at, synced_to_stock)
+               VALUES (?,?,?,'หน้าร้านT','Tหน้าร้าน',1,?,1,?,?,?, '2026-09-20 00:00:00', 1)""",
+            (date_iso, f'{doc_base}-{i}', doc_base, net_each, net_each, net_each, pid))
+    c.commit()
+
+
+def _o817_link(c):
+    return c.execute("SELECT doc_base FROM marketplace_order_invoice WHERE platform='tiktok' "
+                     "AND order_sn=?", (O817,)).fetchone()
+
+
+def test_a_tiktok_cancel_settled_at_zero_never_takes_a_later_iv(conn):
+    """TikTok settles a cancel at ฿0 with a settled_at, so the returns pass saw it.
+    A same-product IV 16 days later belongs to some other sale."""
+    _add_two_line_iv(conn, 'IV6901520', '2026-09-20', [9403, 9404])
+    r = marketplace_match.run_automatch(conn, 'tiktok')
+    assert _o817_link(conn) is None and r['returns_matched'] == 0
+    # Control: the IV is a real candidate — the two sales still link as before.
+    assert len(_links(conn)) == 2
