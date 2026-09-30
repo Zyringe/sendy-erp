@@ -7,6 +7,8 @@ several (show the generic category).
 
 - LAZADA_BUCKET: Lazada raw statement label → bucket column. SOURCE OF TRUTH,
   imported by parse_lazada_statement (which owns the SUMMING into buckets).
+- TIKTOK_BUCKET: TikTok income-file fee column → bucket column. SOURCE OF TRUTH,
+  imported by parse_tiktok_income.
 - GRANULAR_LABEL: raw label → clean Thai display name, used only when a bucket is
   single-source (the "smart label", e.g. a LazCoins-only ค่าโฆษณา/โปรโมชั่น bucket
   reads "ส่วนลด LazCoins"). Labels absent here fall back to the generic bucket name.
@@ -47,6 +49,43 @@ LAZADA_BUCKET = {
     'รางวัลรีวิวสำหรับผู้ซื้อ': 'fee_ads_escrow',           # = Buyer Review Incentive
 }
 
+# TikTok income file (sheet รายละเอียดคำสั่งซื้อ): every LEAF fee column → bucket.
+# SOURCE OF TRUTH for parse_tiktok_income. Leaf only: ค่าธรรมเนียมทั้งหมด is the row
+# total, and the two subtotal columns below stand in for their sub-columns
+# (parse_tiktok_income.TIKTOK_SUBTOTAL_PARTS), which must never be added in again.
+# Every fee column is listed, including the fee_platform ones: a column missing
+# from here is refused by the parser, not guessed into a bucket.
+TIKTOK_BUCKET = {
+    'ค่าคอมมิชชั่น TikTok Shop': 'fee_commission',
+    'ค่าธรรมเนียมคำสั่งซื้อ': 'fee_transaction',
+    'ค่าธรรมเนียมสนับสนุนการเติบโตของร้านค้า': 'fee_service',
+    'ยอดรวมค่าจัดส่งที่ร้านค้าจ่ายจริง': 'shipping_net',      # subtotal of 9 parts
+    # The affiliate family. The รายงาน sheet's indentation (2026-09-30 file) puts
+    # only 2 parts under ค่าคอมมิชชั่นแอฟฟิลิเอต; the other 5 affiliate columns are
+    # its SIBLINGS, i.e. leaves, and one of them is itself a subtotal of 2 parts.
+    'ค่าคอมมิชชั่นแอฟฟิลิเอต': 'fee_ads_escrow',            # subtotal of 2 parts
+    'ค่าคอมมิชชั่นของพาร์ทเนอร์แอฟฟิลิเอต': 'fee_ads_escrow',
+    'ค่าคอมมิชชั่นแอฟฟิลิเอตสำหรับโฆษณาร้านค้า': 'fee_ads_escrow',   # subtotal of 2 parts
+    'เงินมัดจำค่าคอมมิชชั่นของแอฟฟิลิเอต': 'fee_ads_escrow',
+    'การคืนเงินค่าคอมมิชชั่นแอฟฟิลิเอต': 'fee_ads_escrow',
+    'ค่าคอมมิชชั่นโฆษณาร้านค้าพาร์ทเนอร์แอฟฟิลิเอต': 'fee_ads_escrow',
+    'การผ่อนชำระด้วยบัตรเครดิต - มีอัตราดอกเบี้ย': 'fee_platform',
+    'ค่าธรรมเนียมการบริการ SFP': 'fee_platform',
+    'ค่าธรรมเนียมบริการคืนเงินโบนัส': 'fee_platform',
+    'ค่าบริการของคูปองไลฟ์คุ้ม': 'fee_platform',
+    'ค่าบริการคูปอง Xtra': 'fee_platform',
+    'ค่าบริการโปรแกรม EAMS': 'fee_platform',
+    'ค่าบริการแบรนด์ดัง ลดแรง/แฟลชเซล': 'fee_platform',
+    'ค่าธรรมเนียมโปรแกรม TikTok PayLater': 'fee_platform',
+    'ค่าธรรมเนียมโครงสร้างพื้นฐาน': 'fee_platform',
+    'ค่าทรัพยากรแคมเปญ': 'fee_platform',
+    'ค่าธรรมเนียมพรีออเดอร์': 'fee_platform',
+    'คูปอง GMV Max': 'fee_platform',
+    'ภาษีการขายสำหรับคูปอง GMV Max': 'fee_platform',
+    'ค่าโฆษณา GMV Max': 'fee_platform',
+    'Guarantee program fee': 'fee_platform',
+}
+
 # Raw label → clean Thai name for the single-source "smart label". Only labels that
 # benefit from a specific name need an entry; anything else falls back to the bucket's
 # generic label (which is already its real meaning, e.g. Commission → ค่าคอมมิชชั่น).
@@ -62,4 +101,8 @@ GRANULAR_LABEL = {
     'Buyer Review Incentive': 'รางวัลรีวิวผู้ซื้อ',
     'รางวัลรีวิวสำหรับผู้ซื้อ': 'รางวัลรีวิวผู้ซื้อ',
     'Lost Claim': 'ค่าชดเชยพัสดุหาย',
+    # TikTok
+    'ค่าคอมมิชชั่นแอฟฟิลิเอต': 'ค่าคอมแอฟฟิลิเอต',
+    'ค่าธรรมเนียมสนับสนุนการเติบโตของร้านค้า': 'ค่าสนับสนุนการเติบโตร้านค้า',
+    'ค่าธรรมเนียมโครงสร้างพื้นฐาน': 'ค่าโครงสร้างพื้นฐาน',
 }

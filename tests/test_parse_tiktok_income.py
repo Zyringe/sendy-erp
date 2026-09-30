@@ -87,6 +87,7 @@ def test_buckets_for_379():
     raw = json.loads(r['fee_raw_json'])
     assert raw['ค่าคอมมิชชั่น TikTok Shop'] == -41.89
     assert raw['ธนาคารของลูกค้าสำหรับการชำระเงิน'] is None
+    assert raw['หมายเลขคำสั่งซื้อ/การปรับ'] == O379          # text, not a rounded float
 
 
 def test_adjustment_row_is_skipped_and_named():
@@ -192,3 +193,39 @@ def test_missing_sheet_is_refused():
         del wb[REPORT]
     with pytest.raises(TikTokIncomeError):
         _parse(_bytes(edit))
+
+
+def _shift(wb, row, col, delta, total_too=True):
+    """Add `delta` to one fee cell of `row`, and to the row's totals so (a) (b) (c) hold."""
+    ws = wb[DETAIL]
+    def bump(header, d):
+        c = ws.cell(row=row, column=_col(ws, header))
+        c.value = str(round(float(c.value) + d, 2))
+    bump(col, delta)
+    if total_too:
+        bump('ค่าธรรมเนียมทั้งหมด', delta)
+        bump('ยอดการชำระเงินทั้งหมด', delta)
+        for r in wb[REPORT].iter_rows():
+            if r[1].value == 'ยอดการชำระเงินทั้งหมด':
+                r[5].value = str(round(float(r[5].value) + delta, 2))
+
+
+def test_affiliate_siblings_are_leaves_in_the_affiliate_bucket():
+    """The รายงาน sheet puts ค่าคอมมิชชั่นของพาร์ทเนอร์แอฟฟิลิเอต BESIDE
+    ค่าคอมมิชชั่นแอฟฟิลิเอต, not under it: a leaf, counted once."""
+    def edit(wb):
+        _shift(wb, 3, 'ค่าคอมมิชชั่นของพาร์ทเนอร์แอฟฟิลิเอต', -2.0)
+    r = {x['order_sn']: x for x in _parse(_bytes(edit))['fee_rows']}[O543]
+    assert r['fee_ads_escrow'] == -7.36
+    assert r['fee_total'] == 32.62
+
+
+def test_a_subtotal_part_is_never_added_again():
+    """A part under ค่าคอมมิชชั่นแอฟฟิลิเอต moves its subtotal too; the bucket
+    takes the subtotal only, so the part is not counted twice."""
+    def edit(wb):
+        _shift(wb, 3, 'ภาษีเงินได้บุคคลธรรมดาที่หักไว้จากคอมมิชชั่นของแอฟฟิลิเอต', -1.0,
+               total_too=False)
+        _shift(wb, 3, 'ค่าคอมมิชชั่นแอฟฟิลิเอต', -1.0)
+    r = {x['order_sn']: x for x in _parse(_bytes(edit))['fee_rows']}[O543]
+    assert r['fee_ads_escrow'] == -6.36
