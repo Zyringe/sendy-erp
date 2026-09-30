@@ -263,6 +263,17 @@
   lines of that document), which the detail page regroups back into one invoice. _Avoid_:
   calling a single table row "an invoice" — it is one line of one.
 
+- **แก้หน่วยบรรทัด (line unit correction)** — an admin's correction of the หน่วย on one
+  บรรทัดเอกสาร of a sale, made in Sendy because Express is not edited. Only the unit changes:
+  quantity, price, net and product stay Express's. The line then deducts stock and is costed in
+  the corrected unit, and the daily Express import leaves it alone for as long as Express still
+  says what it said when the correction was made. When Express later changes or removes the
+  line, Express wins and the correction is **retired**. An admin can **cancel** it, which puts
+  the line back to Express's unit. Stock either stays where it is (**hold**) or moves by the
+  difference (**move**); the admin chooses. See `docs/adr/0021`.
+  _Avoid_: "แก้บิล" / "editing the invoice" (nothing else on the line can be corrected), and
+  "unit conversion" for this (that is the อัตราแปลง between two units of a product).
+
 - **VAT mode (`vat_type`)** — Express's per-document VAT mode, the same on every line of a
   document. `net` is ex-VAT in all three.
   - **ไม่บวก VAT (1)** — no VAT added on top. On a **sale** it almost always means no VAT

@@ -7,6 +7,7 @@ import math
 import bsn_units
 import config
 from database import get_connection
+import line_unit_correction
 import name_builder
 from sku_code_utils import PACKAGING_SHORT, regenerate_for_product
 
@@ -536,6 +537,16 @@ def update_product(product_id: int, data: dict, source=None):
         # happen HERE, at the column, not at one of the callers.
         fields['unit_type'] = normalize_unit_type(bsn_units.normalize_unit(
             (fields['unit_type'] or '').strip(), conn=conn))
+        # Every ratio of the product is relative to its base unit, so a new
+        # one re-scales a corrected line's ledger row away from its offset.
+        stored = conn.execute("SELECT unit_type FROM products WHERE id=?",
+                              (product_id,)).fetchone()
+        if stored is not None and stored[0] != fields['unit_type']:
+            blockers = line_unit_correction.blocking(conn, product_id=product_id)
+            if blockers:
+                conn.close()
+                raise line_unit_correction.Refused(
+                    'active_correction', line_unit_correction.refusal(blockers))
     # set source BEFORE the UPDATE so the price-history trigger can stamp it;
     # reset to NULL AFTER so a later write on this connection defaults to NULL.
     _set_price_change_source(conn, source)

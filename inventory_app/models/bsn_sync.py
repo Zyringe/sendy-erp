@@ -13,6 +13,7 @@ import uuid as _uuid
 
 import bsn_units
 import document_kind
+import line_unit_correction
 import unit_conversion
 
 from .stock_filters import is_non_stock_code, non_stock_clause
@@ -542,6 +543,7 @@ def save_unit_conversions(items: list):
     conn = get_connection()
     saved = 0
     blocked = []
+    refused = []
     for item in items:
         # ADR 0018: what gets STORED is the หน่วย word, not whatever
         # spelling the pending row happened to be posted under — the hazard
@@ -561,6 +563,13 @@ def save_unit_conversions(items: list):
                                  bsn_unit=item['bsn_unit'],
                                  product_name=_product_name(conn, item['product_id'])))
             continue
+        blockers = line_unit_correction.ratio_change_blockers(
+            conn, item['product_id'], item['bsn_unit'], item['ratio'])
+        if blockers:
+            message = line_unit_correction.refusal(blockers)
+            if message not in refused:
+                refused.append(message)
+            continue
         conn.execute("""
             INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
             VALUES (?, ?, ?)
@@ -573,7 +582,7 @@ def save_unit_conversions(items: list):
         _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
     conn.commit()
     conn.close()
-    return {'saved': saved, 'blocked': blocked}
+    return {'saved': saved, 'blocked': blocked, 'refused': refused}
 
 
 def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str,
@@ -603,6 +612,10 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str,
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        blockers = line_unit_correction.blocking(conn, product_id=product_id)
+        if blockers:
+            raise line_unit_correction.Refused(
+                'active_correction', line_unit_correction.refusal(blockers))
         for table in ('sales_transactions', 'purchase_transactions'):
             protected = conn.execute(
                 f"SELECT COUNT(*) FROM {table}"
@@ -725,6 +738,17 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
                        product_name=_product_name(conn, product_id))
         conn.close()
         return {'blocked': blocked}
+
+    # A new ratio re-posts the corrected line but not its offset, which was
+    # measured under the old one. The write lock is taken BEFORE the read, so
+    # no correction can be applied between this check and the commit below.
+    # After the hazard check on purpose: that one may file its alert on a
+    # fresh connection, which must not find this one holding the lock.
+    conn.execute("BEGIN IMMEDIATE")
+    blockers = line_unit_correction.blocking(conn, product_id=product_id)
+    if blockers:
+        conn.close()
+        return {'error': line_unit_correction.refusal(blockers)}
 
     # Update ratio
     conn.execute("""
@@ -858,6 +882,12 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float,
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(ratio) != 1):
         conn.close()
         return False
+    blockers = line_unit_correction.ratio_change_blockers(
+        conn, product_id, bsn_unit, ratio)
+    if blockers:
+        conn.close()
+        raise line_unit_correction.Refused(
+            'active_correction', line_unit_correction.refusal(blockers))
     conn.execute("""
         INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
         VALUES (?, ?, ?)

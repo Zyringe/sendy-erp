@@ -62,6 +62,7 @@ KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
 KIND_ACTOR_MISSING = 'actor_missing'
 KIND_EXPRESS_DOC_DRIFT = 'express_doc_drift'
 KIND_EXPRESS_DRIFT_SKIPPED = 'express_doc_drift_skipped'
+KIND_UNIT_CORRECTION_RETIRED = 'unit_correction_retired'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning
@@ -225,6 +226,11 @@ def record_express_doc_drift_alerts(findings, *, dataset_label=None, conn=None):
                        'fields': sorted({x for f in group
                                          for x in (f.get('fields') or [])}),
                        'docstat': docstat, 'fingerprint': fingerprint}
+            correction_ids = sorted({i for f in group
+                                     for i in (f.get('unit_correction_ids') or [])})
+            if correction_ids:
+                message += ' · เอกสารนี้มีการแก้หน่วยบรรทัดค้างอยู่'
+                context['unit_correction_ids'] = correction_ids
             aid = create_system_alert(
                 KIND_EXPRESS_DOC_DRIFT, message,
                 dedupe_key=_dedupe_key([doc]),

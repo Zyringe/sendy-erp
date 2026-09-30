@@ -9,6 +9,7 @@ for every affected product) — acyclic, flagged in the Phase 12 report.
 """
 from database import get_connection
 import bsn_units
+import line_unit_correction
 import unit_conversion
 
 from . import _shared
@@ -536,6 +537,17 @@ def repoint_bsn_code(conn, bsn_code: str, new_pid: int, bsn_unit=None,
 
         sales_rows = _unit_scoped_source_rows('sales_transactions')
         purchase_rows = _unit_scoped_source_rows('purchase_transactions')
+
+        # ── 1·0. An active unit correction pins its line, its ledger row and
+        # its offset to ONE product. Moving either side would strand them.
+        blockers = line_unit_correction.blocking(
+            conn, bsn_code=bsn_code,
+            product_id={new_pid} | {
+                r['product_id'] for r in mapping_rows + sales_rows + purchase_rows
+                if r['product_id'] is not None})
+        if blockers:
+            raise line_unit_correction.Refused(
+                'active_correction', line_unit_correction.refusal(blockers))
 
         # ── 1a. The destination must be able to CONVERT every unit it is about
         # to receive — refuse up front, while nothing has been written ───────

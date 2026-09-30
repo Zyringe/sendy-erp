@@ -169,6 +169,7 @@ TARGET_COLUMNS = {
     'supplier_catalogue_items': ['unit'],
     'supplier_catalogue_price_history': ['unit'],
     'supplier_product_mapping': ['supplier_unit', 'erp_unit'],
+    'sales_line_unit_corrections': ['express_unit_raw', 'express_unit', 'corrected_unit'],
 }
 
 # `\b` on BOTH sides of UPDATE/INSERT matters: without it "UPDATE" matches
@@ -849,9 +850,29 @@ ALLOWED = {
             'itself, models/mapping.py x2, scripts/2026_09_19_split_'
             'belco_582.py, scripts/merge_product.py) passes only '
             'product_id, synced_to_stock, or ref_invoice — never a unit '
-            'column. A future caller that DOES pass one would need its '
-            'own site declared here; nothing in this function translates '
+            'column — except line_unit_correction.py (#692), whose apply '
+            'and cancel pass `unit`: apply a spelling allowed_units '
+            'verified as a fixed point of the map, cancel the verbatim '
+            'value the row held before. A future caller that DOES pass '
+            'one would need the same; nothing in this function translates '
             'for it.'),
+    },
+    'line_unit_correction.py::apply': {
+        'sales_line_unit_corrections.corrected_unit': ('exempt',
+            'Not an Express code: the admin picks it from allowed_units(), '
+            'which offers only the product\'s base unit and its stored ratio '
+            'spellings that satisfy bsn_units.normalize_unit(u) == u. '
+            'preview() refuses anything else and apply re-runs preview '
+            'inside its transaction, so what is stored is already a word.'),
+        'sales_line_unit_corrections.express_unit_raw': ('exempt',
+            'A snapshot, deliberately untranslated: sales_transactions.unit '
+            'verbatim as it stood before the correction, which is exactly '
+            'what cancel writes back.'),
+        'sales_line_unit_corrections.express_unit': ('exempt',
+            'The same snapshot through bsn_units.normalize_unit (via the '
+            'module\'s _norm), kept for display. The importer does not '
+            'trust it either: active_by_line_key re-normalises it through '
+            'the current map on every run.'),
     },
     'models/bsn_sync.py::_sync_bsn_to_stock': {
         'DYNAMIC-TABLE': ('exempt',
@@ -1623,6 +1644,7 @@ _EXCLUDED_LOOKALIKE_COLUMNS = {
     ('products', 'units_per_carton'),             # pack-size count
     ('purchase_order_lines', 'unit_price'),       # money
     ('purchase_transactions', 'unit_price'),      # money
+    ('sales_line_unit_corrections', 'unit_price'),  # money
     ('sales_transactions', 'unit_price'),         # money
     ('transactions', 'unit_mode'),   # CHECK-enum unit/box/carton, not an Express code
 }

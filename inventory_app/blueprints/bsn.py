@@ -26,6 +26,7 @@ import config
 import db_backup
 import express_registers
 import form_options
+import line_unit_correction
 import models
 import parse_weekly
 import review_rules as rr
@@ -162,6 +163,8 @@ def unit_conversions_save():
             flash(msg, 'success')
         for b in result['blocked']:
             _flash_unit_hazard(b)
+        for message in result['refused']:
+            flash(message, 'danger')
     return redirect(url_for('bsn.unit_conversions'))
 
 
@@ -250,8 +253,12 @@ def unit_conversions_dismiss():
         spellings = {(str(g['product_id']), g['bsn_unit']): g['spellings']
                      for g in models.get_pending_unit_conversions()
                      }.get((str(product_id), bsn_unit), [bsn_unit])
-        deleted = sum(models.dismiss_pending_unit_conversion(
-            product_id, u, actor=session.get('username')) for u in spellings)
+        try:
+            deleted = sum(models.dismiss_pending_unit_conversion(
+                product_id, u, actor=session.get('username')) for u in spellings)
+        except line_unit_correction.Refused as refused:
+            flash(str(refused), 'danger')
+            return redirect(url_for('bsn.unit_conversions'))
         if deleted:
             flash(f'ยกเลิก {deleted} แถวที่ยังไม่ sync ออกแล้ว (หน่วย "{bsn_unit}")', 'success')
         else:
@@ -441,8 +448,11 @@ def mapping_save():
                 if r > 0:
                     # bsn_code too: on a first map the code's ledger rows are
                     # not linked to `pid` yet (review of #631, should-fix 2)
-                    models.upsert_unit_conversion(pid, bsn_unit, r,
-                                                  bsn_code=bsn_code)
+                    try:
+                        models.upsert_unit_conversion(pid, bsn_unit, r,
+                                                      bsn_code=bsn_code)
+                    except line_unit_correction.Refused as refused:
+                        return jsonify({'ok': False, 'error': str(refused)}), 409
         elif action == 'stage':
             # Smart-suggest flow: stage new SKU for manager/admin review
             payload = _build_suggestion_payload(bsn_code, item)
@@ -511,7 +521,11 @@ def mapping_split_save():
     if not bsn_code or not bsn_unit or not product:
         flash('ข้อมูลไม่ครบ — เลือกสินค้าปลายทางก่อนบันทึก', 'danger')
         return redirect(url_for('bsn.mapping') + '#split-section')
-    report = models.repoint_bsn_code(None, bsn_code, product_id, bsn_unit=bsn_unit)
+    try:
+        report = models.repoint_bsn_code(None, bsn_code, product_id, bsn_unit=bsn_unit)
+    except line_unit_correction.Refused as refused:
+        flash(str(refused), 'danger')
+        return redirect(url_for('bsn.mapping') + '#split-section')
     moved = report['rows_moved']['sales'] + report['rows_moved']['purchase']
     flash(f'ย้ายบิลหน่วย "{bsn_unit}" ของรหัส {bsn_code} ไปสินค้าใหม่แล้ว ({moved} แถว)', 'success')
     if report['orphan_rows_after'] != 0:
@@ -1588,6 +1602,10 @@ def express_dbf_upload():
                 if _bid:
                     try:
                         rr.scan_after_import(_bid)
+                        # A retired correction's line can be unchanged or gone,
+                        # so no row carries this batch id and the scan above
+                        # would not reach its document (#692).
+                        rr.scan_docs(per_type['sales'].get('unit_correction_docs'))
                     except Exception as _scan_exc:
                         flashes.append(('warning', f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}'))
                 # Each register is isolated from the money import, so one that
