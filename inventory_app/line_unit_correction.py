@@ -326,6 +326,8 @@ def apply(conn, doc_no, bsn_code, corrected_unit, stock_mode, reason, actor):
     one open. Returns the correction id."""
     from models import _shared
     from models.wacc import WaccIdentityError
+    if not stock_mode:
+        raise Refused('bad_mode', 'ต้องเลือกว่าจะคงหรือขยับยอดคงเหลือ')
     if stock_mode not in MODES:
         raise Refused('bad_mode', f'ไม่รู้จักวิธีปรับสต็อก "{stock_mode}"')
     _require_reason(reason)
