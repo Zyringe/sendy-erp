@@ -586,7 +586,7 @@ def get_payout_summaries(conn, platform='shopee', year=None, limit=1000):
 # so ONE clean Thai-category breakdown serves both platforms — not the raw rows.
 
 
-from marketplace_fee_buckets import LAZADA_BUCKET, GRANULAR_LABEL
+from marketplace_fee_buckets import LAZADA_BUCKET, GRANULAR_LABEL, TIKTOK_BUCKET
 
 
 _FEE_LABELS = [
@@ -601,15 +601,27 @@ _FEE_LABELS = [
 ]
 
 
-def _smart_label(col, generic, raw):
-    """Lazada smart label: when a bucket came from ONE underlying fee type, show
-    that fee's real name (e.g. a LazCoins-only ค่าโฆษณา/โปรโมชั่น bucket → 'ส่วนลด
+# Platforms whose fee_raw_json is a {raw fee label: amount} dict the smart label
+# can read: platform -> (raw label -> bucket map, bucket for a label not in it).
+# Lazada parks an unmapped label in fee_platform. TikTok's raw row also carries
+# non-fee columns (totals, subtotal parts, ids), so a label outside TIKTOK_BUCKET
+# belongs to no bucket at all. Shopee is absent: its buckets are its real fees.
+_SMART_LABEL_MAPS = {
+    'lazada': (LAZADA_BUCKET, 'fee_platform'),
+    'tiktok': (TIKTOK_BUCKET, None),
+}
+
+
+def _smart_label(col, generic, raw, platform='lazada'):
+    """Smart label: when a bucket came from ONE underlying fee type, show that
+    fee's real name (e.g. a LazCoins-only ค่าโฆษณา/โปรโมชั่น bucket → 'ส่วนลด
     LazCoins'); keep the generic category when 2+ fee types combined into the bucket.
     `raw` = the parsed fee_raw_json dict ({raw_label: amount})."""
+    bucket_of, default = _SMART_LABEL_MAPS[platform]
     names = set()
     for lbl, amt in raw.items():
         if isinstance(amt, (int, float)) and round(amt, 2) != 0.0 \
-                and LAZADA_BUCKET.get(lbl, 'fee_platform') == col:
+                and bucket_of.get(lbl, default) == col:
             names.add(GRANULAR_LABEL.get(lbl, generic))
     return names.pop() if len(names) == 1 else generic
 
@@ -619,14 +631,14 @@ def _bucket_fee_lines(d, fee_raw_json=None, platform=None):
     the typed fee bucket columns: positive มูลค่าสินค้า first, each non-zero fee next
     (biggest deduction first), then a reconciling residual so Σ == net_payout (the
     footer). Returns None when there is no settled breakdown (item/net missing).
-    For Lazada, a single-source bucket is relabelled to its real fee name (see
-    _smart_label); Shopee keeps the generic categories (its buckets are its real fees).
+    For Lazada and TikTok, a single-source bucket is relabelled to its real fee name
+    (see _smart_label); Shopee keeps the generic categories (its buckets are its real fees).
     `d` is a row dict carrying item_value, net_payout + the fee_* bucket columns."""
     item, net = d.get('item_value'), d.get('net_payout')
     if item is None or net is None:
         return None
     raw = None
-    if platform == 'lazada' and fee_raw_json:
+    if platform in _SMART_LABEL_MAPS and fee_raw_json:
         try:
             raw = json.loads(fee_raw_json)
         except (ValueError, TypeError):
@@ -636,7 +648,7 @@ def _bucket_fee_lines(d, fee_raw_json=None, platform=None):
     for col, label in _FEE_LABELS:
         v = d.get(col) or 0.0
         if round(v, 2) != 0.0:
-            disp = _smart_label(col, label, raw) if raw else label
+            disp = _smart_label(col, label, raw, platform) if raw else label
             lines.append({'label': disp, 'amount': round(v, 2)})
             fees += v
     residual = round(net - item - fees, 2)
@@ -942,6 +954,10 @@ def get_order_margin(conn, order_id):
     product has no cost_price — reporting a partial total as if complete would
     mislead. The caller can still show the resolved `cogs` plus the `unresolved`
     / `cost_gap` counts and badge it "ไม่ครบ".
+
+    They are None too for a cancelled/returned order (`cancelled` True, status in
+    _CANCEL_RETURN_STATUSES): nothing was sold, so a settled payout of 0 minus the
+    goods' cost is not a loss. A TikTok cancel settles with net_payout 0.
     """
     net = conn.execute(
         """SELECT COALESCE(
@@ -962,9 +978,10 @@ def get_order_margin(conn, order_id):
            LEFT JOIN products p ON p.id = it.internal_product_id
            WHERE it.order_id = ?""", (order_id,)).fetchall()
 
-    platform = conn.execute(
-        "SELECT platform FROM marketplace_orders WHERE id = ?", (order_id,)).fetchone()
-    platform = platform['platform'] if platform else 'shopee'
+    header = conn.execute(
+        "SELECT platform, status FROM marketplace_orders WHERE id = ?", (order_id,)).fetchone()
+    platform = header['platform'] if header else 'shopee'
+    cancelled = bool(header) and header['status'] in _CANCEL_RETURN_STATUSES
 
     cogs = 0.0
     unresolved = 0
@@ -991,12 +1008,13 @@ def get_order_margin(conn, order_id):
                           'ratio': ratio, 'ratio_source': source, 'line_cogs': line_cogs})
 
     cogs = round(cogs, 2)
-    complete = unresolved == 0 and cost_gap == 0 and net_val is not None
+    complete = unresolved == 0 and cost_gap == 0 and net_val is not None and not cancelled
     margin = round(net_val - cogs, 2) if complete else None
     margin_pct = (round(margin / net_val * 100, 1)
                   if complete and net_val else None)
     return {'net': net_val, 'cogs': cogs, 'margin': margin, 'margin_pct': margin_pct,
-            'unresolved': unresolved, 'cost_gap': cost_gap, 'lines': out_lines}
+            'unresolved': unresolved, 'cost_gap': cost_gap, 'cancelled': cancelled,
+            'lines': out_lines}
 
 
 # Customer NAME (not code) per platform, for the payments-received lookup.

@@ -2,7 +2,7 @@
 and read an order export into parsed orders (`load_order_export`).
 
 detect_file returns (kind, platform):
-  kind ∈ {'balance','income','order','laz_statement','laz_wallet', None};
+  kind ∈ {'balance','income','order','laz_statement','laz_wallet','tt_income', None};
   platform ∈ models._shared.PLATFORMS or None.
 Detection order: CSV header signatures (Lazada ';', TikTok ','), then sheet-name
 signatures (Balance/Income are unambiguous), then sheet-0 column signatures for
@@ -54,6 +54,8 @@ def detect_file(source):
         return ('balance', 'shopee')
     if 'Income' in sheets and 'Service Fee Details' in sheets:
         return ('income', 'shopee')
+    if {'รายละเอียดคำสั่งซื้อ', 'รายงาน', 'บันทึกการถอน'} <= sheets:
+        return ('tt_income', 'tiktok')
     # Order export: read sheet 0 header (no banner) and sniff columns.
     try:
         cols = set(pd.read_excel(xl, sheet_name=0, header=0, nrows=0, dtype=str).columns)
