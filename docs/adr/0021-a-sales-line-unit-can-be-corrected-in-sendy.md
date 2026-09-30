@@ -42,8 +42,13 @@ and each posted one ordinary `BSN ขาย` ledger row. Only the first is insid
    shows that row, and leaves the choice to the admin.
    - `hold`: stock must not move. The offset ADJUST is the MEASURED difference
      (`stock_before − stock_after`), so its sign is right for a sale and for an SR return alike, and it
-     is dated at the sale's own timestamp. The WACC walk orders `created_at, IN first, id`, so the
-     running stock at every purchase is what it was before the correction and cost history does not move.
+     is dated at the line's own timestamp. The WACC walk orders `created_at, IN first, id`. For a
+     **sale** (an OUT) the running stock at every purchase is then what it was before the correction and
+     cost history does not move. For an **SR return** that is not guaranteed: the return is an IN and its
+     offset an ADJUST, so a costed lot of the same timestamp with a higher transaction id is walked
+     between them and re-weighted. No placement of the offset avoids that (an earlier timestamp changes
+     what the same-day lots with a lower id see instead), so `preview` reports the number of such lots
+     (`Effect.hold_reweights_purchases`, 0 for a sale) and the admin decides.
    - `move`: no offset, stock moves by the difference, and purchases after the sale are re-weighted (R3,
      accepted). The preview measures the lowest running stock and the purchases costed at or below zero
      stock, before and after.
@@ -111,8 +116,7 @@ and each posted one ordinary `BSN ขาย` ledger row. Only the first is insid
 - Not guarded: the ratio upserts on `/unit-conversions` (`save_unit_conversions`,
   `upsert_unit_conversion`) and the dated rebase scripts. A future rebase or merge script must call
   `line_unit_correction.blocking` before it writes.
-- An SR return corrected in `hold` whose document date also carries a purchase with a higher
-  transaction id can still shift that one purchase's weight: IN rows of one timestamp sort by id, and the
-  offset sorts after them.
+- `hold` on an SR return re-weights any purchase or conversion lot dated the same day and posted after
+  it (decision 5). Pinned by `test_hold_on_a_return_reweights_a_same_day_purchase_posted_after_it`.
 - No page yet. The routes, the confirm panel and the invoice badge are PR-2; `badges_for_doc` and
   `preview` are the engine halves they will call.

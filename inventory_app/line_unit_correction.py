@@ -79,6 +79,9 @@ class Effect:
     adjust_seen: Optional[dict]
     exposure_before: dict
     exposure_after: dict
+    # Costed lots the WACC walk places between a RETURN's ledger row and its
+    # hold offset. 0 for a sale, where hold leaves cost history untouched.
+    hold_reweights_purchases: int
 
 
 def _dicts(cur):
@@ -179,6 +182,20 @@ def _purchase_exposure(conn, product_id, replace=None):
             'purchases_at_zero': at_zero}
 
 
+def _lots_between_a_return_and_its_offset(conn, product_id, ledger_txn_id, created_at):
+    """A return posts as IN and its hold offset as ADJUST. The WACC walk
+    orders `created_at, IN first, id`, so every costed IN of the same
+    timestamp with a higher id than the return's row is walked BETWEEN the two
+    and is weighted by the corrected quantity alone. No placement of the
+    offset avoids it: an earlier timestamp would instead change what the
+    same-timestamp lots with a LOWER id see."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE product_id=? AND txn_type='IN'"
+        " AND created_at=? AND id>? AND quantity_change>0"
+        " AND (note='BSN ซื้อ' OR note LIKE 'แปลง:%')",
+        (product_id, created_at, ledger_txn_id)).fetchone()[0]
+
+
 def preview(conn, doc_no, bsn_code, corrected_unit):
     """Read-only. Every refusal, then the measured effect of both stock modes."""
     label = _line_label(doc_no, bsn_code)
@@ -260,6 +277,10 @@ def preview(conn, doc_no, bsn_code, corrected_unit):
         exposure_before=_purchase_exposure(conn, product_id),
         exposure_after=_purchase_exposure(
             conn, product_id, replace=(ledger['id'], new_effect)),
+        hold_reweights_purchases=(
+            _lots_between_a_return_and_its_offset(
+                conn, product_id, ledger['id'], row['date_iso'] + ' 00:00:00')
+            if document_kind.is_return(doc_no, 'sales') else 0),
     )
 
 
@@ -319,9 +340,11 @@ def apply(conn, doc_no, bsn_code, corrected_unit, stock_mode, reason, actor):
                 # an SR return, and the trigger has already moved the stock.
                 offset = round(stock_before - _stock(conn, pid), 4)
                 if offset:
-                    # The sale's own timestamp: the WACC walk orders by
-                    # created_at, IN first, id (models/wacc.py), so the
-                    # running stock at every purchase stays what it is today.
+                    # The line's own timestamp. For a SALE the WACC walk
+                    # (created_at, IN first, id) then meets every purchase
+                    # with the running stock it has today. For a RETURN a
+                    # same-timestamp lot posted after it is re-weighted:
+                    # preview counts those in hold_reweights_purchases.
                     offset_txn_id = conn.execute(
                         "INSERT INTO transactions (product_id, txn_type,"
                         " quantity_change, unit_mode, reference_no, note, created_at)"
