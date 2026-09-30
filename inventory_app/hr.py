@@ -37,6 +37,7 @@ import sqlite3
 from datetime import date, timedelta
 from typing import Optional
 
+import cashbook_ledger
 import database
 from config import DATABASE_PATH
 
@@ -2461,87 +2462,10 @@ def post_salary_payment(item_id: int, account_id: int,
     with _ConnCtx(conn, db_path, lock=True) as c:
         # The other half of the reopen pairing: this decides from the run's
         # status, so it must hold the lock across that read and the insert.
-        item = c.execute(
-            "SELECT * FROM payroll_items WHERE id = ?", (item_id,)
-        ).fetchone()
-        if item is None:
-            raise ValueError(f"ไม่พบรายการ payroll_items id {item_id}")
-
-        if item["net_pay"] <= 0:
-            raise ValueError("เงินสุทธิ <= 0 — ไม่มียอดโอน ไม่สามารถบันทึกการจ่ายได้")
-
-        existing = c.execute(
-            "SELECT id FROM cashbook_transactions WHERE payroll_item_id = ?",
-            (item_id,),
-        ).fetchone()
-        if existing is not None:
-            raise ValueError(
-                f"รายการนี้ถูกบันทึกจ่ายไปแล้ว (cashbook id {existing['id']}) — "
-                f"ต้องยกเลิกการจ่ายก่อนจึงจะบันทึกใหม่ได้"
-            )
-
-        account = c.execute(
-            "SELECT * FROM cashbook_accounts WHERE id = ?", (account_id,)
-        ).fetchone()
-        if account is None or account["is_active"] != 1:
-            raise ValueError("บัญชีที่เลือกไม่ถูกต้องหรือถูกปิดใช้งานแล้ว")
-        if account["is_transfer"] == 1:
-            raise ValueError("ไม่สามารถจ่ายเงินเดือนเข้าบัญชีประเภทเงินโอนได้")
-
-        run = c.execute(
-            "SELECT year_month, status FROM payroll_runs WHERE id = ?",
-            (item["run_id"],),
-        ).fetchone()
-        if run is None:
-            raise ValueError("ไม่พบรอบเงินเดือนของรายการนี้")
-        # Defense-in-depth: the route already gates finalized, but the invariant
-        # "paid rows only on finalized runs" (which keeps generate_run's item
-        # DELETE off referenced rows) must hold for any caller.
-        if run["status"] != "finalized":
-            raise ValueError("บันทึกการจ่ายได้เฉพาะรอบเงินเดือนที่ finalized แล้วเท่านั้น")
-        year_month = run["year_month"]
-
-        emp = c.execute(
-            "SELECT nickname, full_name FROM employees WHERE id = ?",
-            (item["employee_id"],),
-        ).fetchone()
-        display_name = (emp["nickname"] or emp["full_name"]) if emp else ""
-
-        txn_date = pay_date or date.today().isoformat()
-        description = f"เงินเดือน {year_month} — {display_name}"
-
-        try:
-            cur = c.execute(
-                """INSERT INTO cashbook_transactions
-                     (account_id, txn_date, direction, category, amount,
-                      user_category, description, created_by,
-                      payroll_run_id, payroll_item_id)
-                   VALUES (?, ?, 'expense', 'เงินเดือน', ?, ?, ?, ?, ?, ?)""",
-                (account_id, txn_date, item["net_pay"], display_name, description,
-                 actor, item["run_id"], item_id),
-            )
-        except sqlite3.IntegrityError:
-            # UNIQUE(payroll_item_id) tripped — a concurrent request already
-            # posted this item (check-then-insert race under gunicorn -w 2 or a
-            # double-submit). Surface as ValueError so the route flashes instead
-            # of 500ing. The DB constraint, not this Python check, is the real
-            # idempotency guarantee.
-            raise ValueError(
-                "รายการนี้ถูกบันทึกจ่ายไปแล้ว — ต้องยกเลิกการจ่ายก่อนจึงจะบันทึกใหม่ได้"
-            )
-        txn_id = cur.lastrowid
-        # Attribute the cash-out to the actor: the mig-076 AFTER INSERT trigger
-        # stamps user=NULL, so mirror void_salary_payment's explicit audit row.
-        c.execute(
-            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
-                 VALUES ('cashbook_transactions', ?, 'INSERT', ?, ?)""",
-            (txn_id,
-             json.dumps({"payroll_item_id": item_id, "amount": item["net_pay"],
-                         "account_id": account_id}, ensure_ascii=False),
-             actor),
-        )
-        c.commit()
-        return txn_id
+        # The checks, their order and texts, the row and its audit row live in
+        # the cashbook seam (card F); _ConnCtx commits on a clean exit.
+        return cashbook_ledger.post_salary(c, item_id=item_id, account_id=account_id,
+                                           pay_date=pay_date, actor=actor)
 
 
 def void_salary_payment(item_id: int, actor: str,
@@ -2550,20 +2474,5 @@ def void_salary_payment(item_id: int, actor: str,
     """Void a salary pay-event ("ยกเลิกการจ่าย") — deletes the linked
     `cashbook_transactions` row for this payroll item (the paid-state source
     of truth). No-op if no row is linked."""
-    with _ConnCtx(conn, db_path) as c:
-        row = c.execute(
-            "SELECT id FROM cashbook_transactions WHERE payroll_item_id = ?",
-            (item_id,),
-        ).fetchone()
-        if row is None:
-            return
-        txn_id = row["id"]
-        c.execute("DELETE FROM cashbook_transactions WHERE id = ?", (txn_id,))
-        c.execute(
-            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
-                 VALUES ('cashbook_transactions', ?, 'DELETE', ?, ?)""",
-            (txn_id,
-             json.dumps({"payroll_item_id": item_id}, ensure_ascii=False),
-             actor),
-        )
-        c.commit()
+    with _ConnCtx(conn, db_path, lock=True) as c:
+        cashbook_ledger.cancel_salary(c, item_id=item_id, actor=actor)
