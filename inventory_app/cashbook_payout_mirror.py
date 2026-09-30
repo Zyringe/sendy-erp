@@ -24,6 +24,8 @@ Call after marketplace_reconcile.reconcile_payouts(conn, platform) has
 committed. Idempotent — calling it again with no payout change is a no-op.
 """
 
+import cashbook_ledger
+import database
 # The constants and the exception live in cashbook_ledger (card F); re-exported
 # here so `cashbook_payout_mirror.<name>` stays the same object for its callers.
 from cashbook_ledger import (  # noqa: F401
@@ -42,29 +44,10 @@ from cashbook_ledger import (  # noqa: F401
 CONFLICT_WINDOW_DAYS = 2
 
 
-def _target_payouts(conn, platform):
-    """{(deposit_date, amount, occurrence): n_orders} for every
-    marketplace_payouts row of `platform` on/after MIN_DEPOSIT_DATE.
-
-    occurrence numbers duplicates sharing (deposit_date, amount) in the
-    payouts table's own row order (deposit_date, id ASC) — stable across a
-    rebuild that reproduces the same rows in the same order, which is what
-    makes this idempotent.
-    """
-    seen = {}
-    target = {}
-    for r in conn.execute(
-        """SELECT deposit_date, amount, n_orders FROM marketplace_payouts
-            WHERE platform = ? AND deposit_date >= ?
-            ORDER BY deposit_date, id""",
-        (platform, MIN_DEPOSIT_DATE),
-    ):
-        amt = round(r['amount'], 2)
-        key2 = (r['deposit_date'], amt)
-        occurrence = seen.get(key2, 0) + 1
-        seen[key2] = occurrence
-        target[(r['deposit_date'], amt, occurrence)] = r['n_orders']
-    return target
+# The target set and the account lookup moved to cashbook_ledger (card F PR-3):
+# post_payout recomputes the same set under the lock. Kept under their old names
+# for scripts/convert_legacy_cashbook_payout_rows.py.
+_target_payouts = cashbook_ledger.payout_target
 
 
 def _existing_mirrored_rows(conn, account_id, platform):
@@ -107,30 +90,14 @@ def _conflicting_manual_row_exists(conn, account_id, deposit_date, amount):
     return row is not None
 
 
-def _resolve_account_id(conn, platform):
-    account_code = PLATFORM_ACCOUNT_CODE.get(platform)
-    if account_code is None:
-        raise CashbookPayoutMirrorError(
-            f"ไม่รู้จักแพลตฟอร์ม '{platform}' — ไม่มีบัญชีปลายทางที่กำหนดไว้สำหรับยอดโอน"
-        )
-    account = conn.execute(
-        "SELECT id FROM cashbook_accounts WHERE code = ? AND is_active = 1",
-        (account_code,),
-    ).fetchone()
-    if account is None:
-        label = PLATFORM_LABEL_TH.get(platform, platform)
-        raise CashbookPayoutMirrorError(
-            f"ไม่พบบัญชี {account_code} (หรือถูกปิดใช้งาน) — ยอดโอนของ {label} "
-            "ยังไม่ถูกบันทึกลงบัญชีรับ-จ่าย"
-        )
-    return account['id']
+_resolve_account_id = cashbook_ledger._platform_account_id
 
 
 def mirror_platform(conn, platform):
-    """Insert/delete/update cashbook_transactions on `platform`'s account so
-    its payout-sourced rows equal marketplace_payouts (platform, on/after
-    2026-01-01) exactly — description included. Manual rows are never
-    inspected for a match and never touched.
+    """Make the payout-sourced rows on `platform`'s account equal
+    marketplace_payouts (platform, on/after 2026-01-01) exactly, description
+    included: add what is missing, drop what is gone, re-describe what
+    drifted. Manual rows are never inspected for a match and never touched.
 
     A key present in both target and existing is normally left alone, BUT
     its description is re-derived and UPDATEd in place when n_orders
@@ -153,70 +120,54 @@ def mirror_platform(conn, platform):
     mirror run once that manual row is converted or cleared.
 
     Returns {'inserted': int, 'deleted': int, 'updated': int,
-    'skipped_conflicts': int, 'unchanged': int}. Every write here happens
-    inside one failure boundary: any
+    'skipped_conflicts': int, 'unchanged': int}. Everything, the reads the
+    diff rests on included, runs inside ONE `database.immediate(conn)`: any
     exception rolls back everything THIS call wrote (not anything a prior
     commit — e.g. reconcile_payouts' own — already made durable) before
-    re-raising, so a mid-loop failure can never be silently flushed by a
-    later, unrelated commit sharing this connection (get_connection() sets
-    no isolation_level, so writes stay pending until an explicit commit or
-    rollback). Raises CashbookPayoutMirrorError (nothing written, nothing
-    committed — raised before any write) if the destination account is
-    missing/inactive or the platform is unrecognized.
+    re-raising, and a failed commit rolls back too. A connection that already
+    has a transaction open is refused (database.CallerTransactionInFlight):
+    reconcile_payouts commits before both call sites. Raises
+    CashbookPayoutMirrorError (nothing written) if the destination account is
+    missing/inactive or the platform is unrecognized. The rows themselves are
+    written by cashbook_ledger (post_payout / cancel_payout /
+    set_payout_description), which re-derive every field under the lock.
     """
-    account_id = _resolve_account_id(conn, platform)
+    with database.immediate(conn):
+        account_id = _resolve_account_id(conn, platform)
+        target = _target_payouts(conn, platform)
+        existing = _existing_mirrored_rows(conn, account_id, platform)
+        label = PLATFORM_LABEL_TH.get(platform, platform)
 
-    target = _target_payouts(conn, platform)
-    existing = _existing_mirrored_rows(conn, account_id, platform)
-    label = PLATFORM_LABEL_TH.get(platform, platform)
+        # The conflict check is by (deposit_date, amount) only, not occurrence —
+        # if two payouts share a key and only one has a matching manual row, both
+        # candidates get skipped rather than guessing which one the manual row
+        # is for. Over-cautious in that rare duplicate-group case, but it can
+        # only ever DEFER a real insert, never risk a double-book, which is the
+        # direction that matters here.
+        candidate_insert = [key for key in target if key not in existing]
+        to_insert, skipped_conflicts = [], []
+        for (deposit_date, amount, occurrence) in candidate_insert:
+            if _conflicting_manual_row_exists(conn, account_id, deposit_date, amount):
+                skipped_conflicts.append((deposit_date, amount, occurrence))
+            else:
+                to_insert.append((deposit_date, amount, occurrence))
+        to_delete = [existing[key]['id'] for key in existing if key not in target]
+        to_update = []
+        for key in target:
+            if key not in existing:
+                continue
+            expected_desc = f"{label} โอนเงิน ({target[key]} ออเดอร์)"
+            if existing[key]['description'] != expected_desc:
+                to_update.append(existing[key]['id'])
 
-    # The conflict check is by (deposit_date, amount) only, not occurrence —
-    # if two payouts share a key and only one has a matching manual row, both
-    # candidates get skipped rather than guessing which one the manual row
-    # is for. Over-cautious in that rare duplicate-group case, but it can
-    # only ever DEFER a real insert, never risk a double-book, which is the
-    # direction that matters here.
-    candidate_insert = [key for key in target if key not in existing]
-    to_insert, skipped_conflicts = [], []
-    for (deposit_date, amount, occurrence) in candidate_insert:
-        if _conflicting_manual_row_exists(conn, account_id, deposit_date, amount):
-            skipped_conflicts.append((deposit_date, amount, occurrence))
-        else:
-            to_insert.append((deposit_date, amount, occurrence))
-    to_delete = [existing[key]['id'] for key in existing if key not in target]
-    to_update = []
-    for key in target:
-        if key not in existing:
-            continue
-        expected_desc = f"{label} โอนเงิน ({target[key]} ออเดอร์)"
-        if existing[key]['description'] != expected_desc:
-            to_update.append((existing[key]['id'], expected_desc))
-
-    try:
         for (deposit_date, amount, occurrence) in to_insert:
-            n_orders = target[(deposit_date, amount, occurrence)]
-            conn.execute(
-                """INSERT INTO cashbook_transactions
-                     (account_id, txn_date, direction, category, amount,
-                      description, created_by,
-                      payout_platform, payout_deposit_date, payout_amount, payout_occurrence)
-                   VALUES (?, ?, 'income', ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (account_id, deposit_date, PAYOUT_CATEGORY, amount,
-                 f"{label} โอนเงิน ({n_orders} ออเดอร์)", PAYOUT_CREATED_BY,
-                 platform, deposit_date, amount, occurrence),
-            )
+            cashbook_ledger.post_payout(conn, platform=platform, deposit_date=deposit_date,
+                                        amount=amount, occurrence=occurrence)
         for txn_id in to_delete:
-            conn.execute("DELETE FROM cashbook_transactions WHERE id = ?", (txn_id,))
-        for txn_id, new_desc in to_update:
-            conn.execute(
-                "UPDATE cashbook_transactions SET description = ? WHERE id = ?",
-                (new_desc, txn_id),
-            )
-    except Exception:
-        conn.rollback()
-        raise
+            cashbook_ledger.cancel_payout(conn, txn_id=txn_id)
+        for txn_id in to_update:
+            cashbook_ledger.set_payout_description(conn, txn_id=txn_id)
 
-    conn.commit()
     return {
         'inserted': len(to_insert),
         'deleted': len(to_delete),

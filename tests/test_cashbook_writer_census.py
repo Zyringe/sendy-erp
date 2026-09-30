@@ -30,9 +30,6 @@ WRITE_RE = re.compile(
 
 # {repo-relative path: (exact hit count, reason)}
 ALLOWED = {
-    'cashbook_payout_mirror.py': (
-        4, "mirror INSERT, DELETE, UPDATE description + the module docstring's "
-           "'Insert/delete/update cashbook_transactions' prose; PR-3 rewords it"),
     'cashbook_ledger.py': (
         11, "the seam: post_manual, post_advance, post_salary, post_commission, post_payout "
             "INSERT; amend_manual, set_payout_description UPDATE; cancel_manual, "

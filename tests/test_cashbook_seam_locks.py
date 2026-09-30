@@ -338,3 +338,99 @@ def test_commission_refusal_releases_the_lock(db, owned):
             conn.close()
     assert _competing(path, ids, 'commission_payouts') == 'went through'
     assert _payouts(path) == 1          # only the competing row
+
+
+# ── payout mirror: mirror_platform ───────────────────────────────────────────
+
+def _mirror(path, conn=None):
+    import cashbook_payout_mirror as mirror
+    c = conn or database.get_connection()
+    try:
+        return mirror.mirror_platform(c, 'shopee')
+    finally:
+        if conn is None:
+            c.close()
+
+
+def _payout_rows(path):
+    return _q(path, "SELECT COUNT(*) FROM cashbook_transactions WHERE payout_platform IS NOT NULL")[0][0]
+
+
+def test_probe_a_mirror_holds_the_write_lock(db, monkeypatch):
+    path, ids = db
+    seen = _probe_a(monkeypatch, path, ids, 'cashbook_transactions')
+    assert _mirror(path)['inserted'] == 2
+    assert _payout_rows(path) == 2, "control: the mirror wrote and committed"
+    assert seen == ['blocked'], seen
+
+
+def test_probe_t_mirror_begins_before_reading(db):
+    path, ids = db
+    conn = database.get_connection()
+    stmts = []
+    conn.set_trace_callback(stmts.append)
+    try:
+        assert _mirror(path, conn)['inserted'] == 2
+        assert not conn.in_transaction, "the mirror ended its own transaction"
+    finally:
+        conn.close()
+    stmts = _writer_trace([stmts], 'cashbook_transactions')
+    _assert_begin_first(stmts, 'mirror')
+    assert stmts[-1].upper() == 'COMMIT', stmts[-1]
+
+
+def test_mirror_account_refusal_writes_nothing_and_releases(db):
+    path, ids = db
+    import cashbook_payout_mirror as mirror
+    c = sqlite3.connect(path)
+    c.execute("UPDATE cashbook_accounts SET is_active = 0 WHERE code = 'SPX'")
+    c.commit()
+    c.close()
+    conn = database.get_connection()
+    try:
+        with pytest.raises(mirror.CashbookPayoutMirrorError):
+            mirror.mirror_platform(conn, 'shopee')
+        assert not conn.in_transaction
+    finally:
+        conn.close()
+    assert _payout_rows(path) == 0
+    assert _competing(path, ids, 'cashbook_transactions') == 'went through'
+
+
+def test_mirror_failure_mid_write_rolls_back_everything(db, monkeypatch):
+    """The second insert fails: the first must not survive (one failure
+    boundary, as today), and the lock is released."""
+    path, ids = db
+    import cashbook_ledger
+    real = cashbook_ledger.post_payout
+    calls = []
+
+    def flaky(conn, **kw):
+        calls.append(kw)
+        if len(calls) == 2:
+            raise sqlite3.OperationalError('disk I/O error (simulated)')
+        return real(conn, **kw)
+
+    monkeypatch.setattr(cashbook_ledger, 'post_payout', flaky)
+    with pytest.raises(sqlite3.OperationalError, match='simulated'):
+        _mirror(path)
+    assert len(calls) == 2, "control: the first insert ran"
+    assert _payout_rows(path) == 0
+    assert _competing(path, ids, 'cashbook_transactions') == 'went through'
+
+
+def test_mirror_refuses_a_caller_transaction(db):
+    """Routes and the mirror never borrow an open transaction: it would be
+    committed (or rolled back) along with the mirror's writes."""
+    path, ids = db
+    conn = database.get_connection()
+    try:
+        conn.execute("UPDATE marketplace_payouts SET n_orders = n_orders WHERE id = 1")
+        assert conn.in_transaction
+        with pytest.raises(database.CallerTransactionInFlight):
+            _mirror(path, conn)
+        assert conn.in_transaction, "the caller's transaction is untouched"
+        conn.rollback()
+    finally:
+        conn.close()
+    assert _payout_rows(path) == 0
