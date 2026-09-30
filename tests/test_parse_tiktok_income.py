@@ -246,3 +246,14 @@ def test_check_b_skips_adjustment_rows():
     p = _parse(_bytes(edit))
     assert p['adjustments'] == [{'id': O817, 'type': 'การปรับยอด', 'amount': 5.0}]
     assert p['total'] == 402.43
+
+
+def test_duplicate_order_row_is_refused_by_id():
+    """Two คำสั่งซื้อ rows for one order would stamp one payout over the other
+    and double the fee row's source; refuse, naming it. (c) is kept true so
+    only the duplicate check can refuse."""
+    def edit(wb):
+        ws = wb[DETAIL]
+        _set(ws, 4, 'หมายเลขคำสั่งซื้อ/การปรับ', O543)
+    with pytest.raises(TikTokIncomeError, match=f'ซ้ำ.*{O543}'):
+        _parse(_bytes(edit))

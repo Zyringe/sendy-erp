@@ -21,7 +21,7 @@ Three checks refuse the whole file (TikTokIncomeError), so nothing is written:
       money, and the sample has none, so their shape is unknown;
   (c) Σ ยอดการชำระเงินทั้งหมด over ALL rows == the รายงาน sheet's total.
 A column this module does not know, holding any non-zero value, is refused by
-name rather than guessed into a bucket.
+name rather than guessed into a bucket. So is an order id on two คำสั่งซื้อ rows.
 
 Read with pandas, never openpyxl read_only=True: that stops after 1 data row on
 this file.
@@ -186,6 +186,8 @@ def parse_tiktok_income(detail, report):
         if kind != _ORDER_TYPE:
             adjustments.append({'id': rid, 'type': kind, 'amount': round(payout, 2)})
             continue
+        if any(x['order_sn'] == rid for x in settlements):
+            raise TikTokIncomeError(f'หมายเลขคำสั่งซื้อซ้ำในไฟล์: {rid}')
         settlements.append({'order_sn': rid, 'actual_payout': round(payout, 2),
                             'settled_at': _date(row[_SETTLED], rid)})
         # Fee columns as numbers (the smart label reads them); the rest as text,
