@@ -46,12 +46,12 @@ def test_payments_in_routes_to_models_import_payments(monkeypatch):
                         lambda p, apply_removals=False:
                             seen.update(path=p, apply_removals=apply_removals)
                             or {"imported": 5})
-    out = import_router.commit_file(PATH, "payments_in")
+    out = import_router.commit_file(PATH, "payments_in", apply_removals=False)
     assert seen["path"] == PATH
     assert out["ok"] is True and out["type"] == "payments_in"
 
 
-def test_payments_in_removals_default_off_and_opt_in_is_threaded(monkeypatch):
+def test_payments_in_removals_are_explicit_and_the_opt_in_is_threaded(monkeypatch):
     """Stale-link removal is destructive, so it rides the SAME per-file opt-in
     the weekly importer uses — a filtered export must never remove links just
     because it was uploaded."""
@@ -61,8 +61,8 @@ def test_payments_in_removals_default_off_and_opt_in_is_threaded(monkeypatch):
                         lambda p, apply_removals=False:
                             seen.update(apply_removals=apply_removals) or {"imported": 0})
 
-    import_router.commit_file(PATH, "payments_in")
-    assert seen["apply_removals"] is False, 'removals must be OFF by default'
+    import_router.commit_file(PATH, "payments_in", apply_removals=False)
+    assert seen["apply_removals"] is False, 'the route says OFF explicitly'
 
     import_router.commit_file(PATH, "payments_in", apply_removals=True)
     assert seen["apply_removals"] is True, "the operator's opt-in never reached the importer"
@@ -74,11 +74,12 @@ def test_credit_notes_ar_routes_to_import_credit_notes(monkeypatch):
     seen = {}
     monkeypatch.setattr(icn, "import_credit_notes",
                         lambda p, db_path=None: seen.update(path=p) or {"parsed": 3})
-    out = import_router.commit_file(PATH, "credit_notes_ar")
+    out = import_router.commit_file(PATH, "credit_notes_ar", apply_removals=False)
     assert seen["path"] == PATH and out["type"] == "credit_notes_ar"
 
 
-def test_sales_routes_to_import_weekly_canonical(monkeypatch, weekly_path):
+def test_sales_routes_to_import_weekly_canonical(monkeypatch, weekly_path,
+                                                 unretired_text_door):
     """sales must go through parse_weekly → models.import_weekly (sales_transactions),
     NEVER parse_express_sales (express_sales twin)."""
     import import_router, models
@@ -86,10 +87,11 @@ def test_sales_routes_to_import_weekly_canonical(monkeypatch, weekly_path):
     seen = {}
     monkeypatch.setattr(parse_weekly, "parse_sales", lambda p: ["e1", "e2"])
     monkeypatch.setattr(models, "import_weekly",
-                        lambda entries, kind, fn, apply_removals:
+                        lambda entries, kind, fn, *, apply_removals:
                         seen.update(kind=kind, n=len(entries), rm=apply_removals)
                         or {"inserted": 2})
-    out = import_router.commit_file(weekly_path, "sales", filename="ขาย_x.csv")
+    out = import_router.commit_file(weekly_path, "sales", filename="ขาย_x.csv",
+                                    apply_removals=False)
     assert seen["kind"] == "sales" and seen["n"] == 2 and out["ok"] is True
     # …and never with the destructive removal default (Codex review finding 2).
     assert seen["rm"] is False
@@ -107,7 +109,7 @@ def test_express_family_routes_to_express_importer(monkeypatch, rtype, express_k
     monkeypatch.setattr(import_express, "run_import",
                         lambda ft, p, **kw: seen.update(ft=ft, path=p, dry=kw.get("dry_run"),
                                                         db_path=kw.get("db_path")))
-    out = import_router.commit_file(PATH, rtype)
+    out = import_router.commit_file(PATH, rtype, apply_removals=False)
     assert seen["ft"] == express_kind and seen["path"] == PATH
     assert seen["dry"] is False           # commit, not preview
     # Regression (prod "unable to open database file"): the Express family must
@@ -122,7 +124,7 @@ def test_express_family_routes_to_express_importer(monkeypatch, rtype, express_k
 def test_unknown_type_raises(monkeypatch):
     import import_router
     with pytest.raises(ValueError):
-        import_router.commit_file(PATH, "unknown")
+        import_router.commit_file(PATH, "unknown", apply_removals=False)
 
 
 # ── preview_file (read-only) ──────────────────────────────────────────────
@@ -138,14 +140,16 @@ def test_preview_payments_in_counts_new_vs_existing_and_is_readonly(tmp_db, monk
     assert out["count"] == 2
     # `removed` joined the contract so the preview page can show what the
     # removals checkbox would delete before the operator ticks it.
-    assert out["detail"] == {"new": 1, "existing": 1, "removed": 0}
+    # These fake records carry no iv_list, so the merge step passes them through
+    # untouched (`merged` 0) — the S4 fix must not disturb malformed records.
+    assert out["detail"] == {"new": 1, "existing": 1, "removed": 0, "merged": 0}
     conn = sqlite3.connect(tmp_db)
     after = conn.execute("SELECT COUNT(*) FROM received_payments").fetchone()[0]
     conn.close()
     assert after == before, "preview must not write"
 
 
-def test_preview_sales_uses_preview_import(monkeypatch, weekly_path):
+def test_preview_sales_uses_preview_import(monkeypatch, weekly_path, unretired_text_door):
     import import_router, models
     import parse_weekly
     seen = {}
@@ -267,9 +271,32 @@ def test_payments_in_offers_the_removals_checkbox_on_the_preview_page():
     import blueprints.bsn as bsn_mod
     import report_types
 
-    assert report_types.removal_capable_keys() == {'sales', 'purchase', 'payments_in'}, \
+    assert report_types.removal_capable_keys() == {'payments_in'}, \
         'the removal-capable set changed — was that deliberate?'
 
     src = inspect.getsource(bsn_mod.unified_import)
     assert 'removal_capable_keys()' in src, \
         'unified_import no longer reads the registry, so the set cannot reach the row'
+
+
+def test_payments_in_preview_counts_merged_receipts(tmp_db, monkeypatch):
+    """S4 (Card E): the preview counted RAW records, the commit merges receipts
+    that repeat a re_no first. Same file, three records, two receipts: the
+    preview must say new 2 / merged 1 — what the commit then reports as
+    imported 2 / merged 1 — with `count` staying the raw record count."""
+    import import_router, models
+    rec = lambda re_no, iv: {  # noqa: E731
+        're_no': re_no, 'date_iso': '2026-08-01', 'customer': 'ลูกค้าทดสอบ',
+        'salesperson': '00', 'cancelled': False, 'total': 100.0,
+        'iv_list': [{'iv_no': iv, 'kind': 'IV', 'amount': 100.0}]}
+    recs = [rec('RE-S4-A', 'IV-1'), rec('RE-S4-A', 'IV-2'), rec('RE-S4-B', 'IV-3')]
+    monkeypatch.setattr(models, 'parse_payment_csv', lambda p: [dict(r) for r in recs])
+
+    out = import_router.preview_file('x.csv', 'payments_in', db_path=tmp_db)
+
+    assert out['count'] == 3
+    assert out['detail'] == {'new': 2, 'existing': 0, 'removed': 0, 'merged': 1}
+
+    # …and the commit of the same file agrees with what the preview promised.
+    done = models.import_payment_records([dict(r) for r in recs], apply_removals=False)
+    assert (done['imported'], done['merged']) == (out['detail']['new'], out['detail']['merged'])

@@ -147,7 +147,8 @@ def _state(db_path, pids):
         conn.close()
 
 
-def test_weekly_purchase_over_dbf_rows_is_noop_with_removals_off(empty_db, tmp_path):
+def test_weekly_purchase_over_dbf_rows_is_noop_with_removals_off(empty_db, tmp_path,
+                                                                unretired_text_door):
     import import_router
     import models
 

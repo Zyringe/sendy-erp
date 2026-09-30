@@ -10,7 +10,6 @@ Usage:
     python scripts/import_express.py payments_in   /path/to/การรับชำระหนี้.csv
     python scripts/import_express.py ar_snapshot   /path/to/ลูกหนี้คงค้าง.csv
     python scripts/import_express.py payments_out  /path/to/จ่ายชำระหนี้.csv
-    python scripts/import_express.py sales         /path/to/ขาย.csv
 
 Add --dry-run to parse-only without writing to DB. Add --company SD
 to attribute the batch to Sendai Trading instead of BSN (default).
@@ -744,7 +743,10 @@ def run_import_records(file_type, records, company_code='BSN', db_path=None,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('file_type', choices=sorted(_IMPORTERS))
+    # 'sales' is off the CLI (Card E, ADR 0020): the ขาย text report is retired
+    # everywhere else, and this door writes express_sales, read by
+    # models/brands.py. `_import_sales` and run_import('sales') stay for that table.
+    ap.add_argument('file_type', choices=sorted(k for k in _IMPORTERS if k != 'sales'))
     ap.add_argument('path', type=Path)
     ap.add_argument('--company', default='BSN', help='company code (BSN or SD)')
     ap.add_argument('--dry-run', action='store_true')

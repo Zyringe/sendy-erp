@@ -70,18 +70,19 @@ def test_the_retired_set_and_its_reason_live_in_one_place():
     """
     import report_types
 
-    assert import_router.RETIRED_REPORT_TYPES == {'ar_snapshot', 'ap_snapshot'}
+    assert import_router.RETIRED_REPORT_TYPES == {'ar_snapshot', 'ap_snapshot',
+                                                  'sales', 'purchase'}
     assert import_router.RETIRED_REPORT_TYPES == report_types.retired_keys(), \
         'the alias drifted from the registry it is supposed to derive from'
 
-    for key in ('ar_snapshot', 'ap_snapshot'):
+    for key in ('ar_snapshot', 'ap_snapshot', 'sales', 'purchase'):
         reason = report_types.retired_reason_for(key)
         assert reason and 'zip' in reason, \
             f'{key} has no reason pointing the operator at the daily zip'
 
     # A live type must NOT carry one — otherwise "is it retired?" stops meaning
     # anything and every row could be blocked with an explanation.
-    assert report_types.retired_reason_for('sales') is None
+    assert report_types.retired_reason_for('payments_in') is None
     assert report_types.retired_reason_for('nonsense-key') is None
 
 
@@ -89,16 +90,20 @@ def test_the_types_are_still_offered_in_the_dropdown():
     """Not cosmetic: an <option> that does not exist cannot be `selected`, and
     the browser then submits the first one instead."""
     from blueprints import bsn
-    assert {'ar_snapshot', 'ap_snapshot'} <= set(bsn._REPORT_LABELS)
+    assert {'ar_snapshot', 'ap_snapshot', 'sales', 'purchase'} <= set(bsn._REPORT_LABELS)
 
 
-@pytest.mark.parametrize('rtype', ['ar_snapshot', 'ap_snapshot'])
-def test_neither_can_be_previewed_or_committed_directly(tmp_path, rtype):
+@pytest.mark.parametrize('rtype', ['ar_snapshot', 'ap_snapshot', 'sales', 'purchase'])
+def test_none_can_be_previewed_or_committed_directly(tmp_path, rtype):
     p = tmp_path / 'x.txt'
     p.write_bytes(AR_HEADER.encode('cp874'))
-    for fn in (import_router.preview_file, import_router.commit_file):
-        with pytest.raises(ValueError):
-            fn(str(p), rtype)
+    with pytest.raises(import_router.RetiredReportType):
+        import_router.preview_file(str(p), rtype)
+    with pytest.raises(import_router.RetiredReportType):
+        import_router.commit_file(str(p), rtype, apply_removals=False)
+    # RetiredReportType IS a ValueError: callers that caught the old error
+    # for AR/AP keep working.
+    assert issubclass(import_router.RetiredReportType, ValueError)
 
 
 # ── the upload flow ─────────────────────────────────────────────────────────
@@ -150,3 +155,147 @@ def test_the_spy_does_fire_for_a_type_that_is_still_allowed(tmp_db, tmp_path, mo
     c.post('/import-data/confirm', data={'token': token, 'type_0': 'payments_in'})
 
     assert len(calls) == 1
+
+
+# ── ขาย / ซื้อ (Card E, ADR 0020): one field, three layers ──────────────────
+
+SALES_HEADER = ("บริษัท บุญสวัสดิ์ นำชัย จำกัด\nรายงานการขาย\n"
+                "ณ วันที่ 31/07/2569\n\n")
+
+
+def test_retired_reason_is_the_single_switch():
+    """The suffix and the removal capability are DERIVED from `retired_reason`,
+    not declared beside it. Break it once: with the field cleared the type is
+    plain 'ขาย' and offered removals again (test_bsn_line etc. run in that
+    state under `unretired_text_door`)."""
+    import report_types
+
+    labels = report_types.labels()
+    assert labels['sales'] == 'ขาย — ปิดแล้ว ใช้ zip รายวัน'
+    assert labels['purchase'] == 'ซื้อ — ปิดแล้ว ใช้ zip รายวัน'
+    assert labels['ar_snapshot'] == 'ลูกหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน'
+    assert labels['payments_in'] == 'การรับชำระหนี้ (ลูกหนี้)'      # control: live, no suffix
+    assert report_types.removal_capable_keys() == {'payments_in'}
+
+
+def test_the_unretire_fixture_reopens_every_layer(unretired_text_door):
+    import report_types
+
+    assert report_types.retired_keys() == {'ar_snapshot', 'ap_snapshot'}
+    assert report_types.labels()['sales'] == 'ขาย'
+    assert report_types.removal_capable_keys() == {'sales', 'purchase', 'payments_in'}
+
+
+def test_the_dispatcher_refuses_a_retired_type_before_parsing(tmp_path):
+    """A file that would fail to PARSE is refused with the retirement reason,
+    not the parse error: the guard sits above every read of the file."""
+    p = tmp_path / 'garbage.txt'
+    p.write_bytes(b'\xff\xfe not a report at all')
+    for fn, kw in ((import_router.preview_file, {}),
+                   (import_router.commit_file, {'apply_removals': False})):
+        with pytest.raises(import_router.RetiredReportType) as exc:
+            fn(str(p), 'sales', **kw)
+        assert 'zip' in str(exc.value)
+
+
+def test_the_dispatcher_guard_reads_the_registry_at_call_time(tmp_path, unretired_text_door):
+    """CONTROL: with the door reopened the same call reaches the parser (and
+    fails THERE), so the refusal above is the guard and not a bad file."""
+    p = tmp_path / 'garbage.txt'
+    p.write_bytes(b'\xff\xfe not a report at all')
+    with pytest.raises(Exception) as exc:
+        import_router.preview_file(str(p), 'sales')
+    assert not isinstance(exc.value, import_router.RetiredReportType)
+
+
+def test_a_sales_file_is_blocked_as_retired_at_preview(tmp_db, tmp_path):
+    c = _client(tmp_path)
+    _token, rows = _stage(c, SALES_HEADER, 'sales.txt')
+
+    assert rows[0]['detected'] == 'sales'
+    assert rows[0]['blocked'] == 'retired'
+
+
+@pytest.mark.parametrize('submitted', ['sales', 'purchase', 'payments_in',
+                                       'credit_notes_ar', 'unknown', 'ar_snapshot'])
+def test_no_dropdown_value_reaches_an_importer_for_a_retired_row(
+        tmp_db, tmp_path, monkeypatch, submitted):
+    """Spy over EVERY dropdown value for a row the preview blocked as retired:
+    neither the dispatcher nor the model importers fire."""
+    import models
+    c = _client(tmp_path)
+    token, _ = _stage(c, SALES_HEADER, 'sales.txt')
+    calls = []
+    for name in ('import_weekly', 'import_payments'):
+        monkeypatch.setattr(models, name,
+                            lambda *a, _n=name, **kw: calls.append(_n) or {})
+    monkeypatch.setattr(import_router, 'commit_file',
+                        lambda *a, **kw: calls.append('commit_file') or {'ok': True})
+
+    r = c.post('/import-data/confirm', data={'token': token, 'type_0': submitted})
+
+    assert r.status_code == 200
+    assert calls == []
+    assert 'zip' in r.get_data(as_text=True)
+
+
+@pytest.mark.parametrize('retired', ['sales', 'purchase'])
+def test_an_unknown_file_overridden_to_a_retired_type_is_refused_at_confirm(
+        tmp_db, tmp_path, monkeypatch, retired):
+    """The bypass the preview block cannot see: an `unknown` file (no block was
+    set) that the operator overrides to ขาย in the dropdown."""
+    import models
+    c = _client(tmp_path)
+    token, rows = _stage(c, "ไฟล์อะไรก็ไม่รู้\nไม่มีหัวรายงาน\n", 'mystery.txt')
+    assert rows[0]['detected'] == 'unknown' and not rows[0].get('blocked')
+    calls = []
+    monkeypatch.setattr(models, 'import_weekly',
+                        lambda *a, **kw: calls.append('import_weekly') or {})
+    monkeypatch.setattr(import_router, 'commit_file',
+                        lambda *a, **kw: calls.append('commit_file') or {'ok': True})
+
+    r = c.post('/import-data/confirm', data={'token': token, 'type_0': retired})
+
+    assert calls == []
+    assert 'zip' in r.get_data(as_text=True)
+
+
+def test_an_unknown_file_overridden_to_a_live_type_still_reaches_the_importer(
+        tmp_db, tmp_path, monkeypatch):
+    """CONTROL for the test above: same unknown file, live type -> the spy fires."""
+    c = _client(tmp_path)
+    token, _ = _stage(c, "ไฟล์อะไรก็ไม่รู้\nไม่มีหัวรายงาน\n", 'mystery.txt')
+    calls = []
+    monkeypatch.setattr(import_router, 'commit_file',
+                        lambda *a, **kw: calls.append(a) or {'ok': True, 'summary': {}})
+
+    c.post('/import-data/confirm', data={'token': token, 'type_0': 'payments_in'})
+
+    assert len(calls) == 1
+
+
+def test_a_retired_row_shows_the_panel_and_no_ticks(tmp_db, tmp_path):
+    from lxml import html as lh
+    c = _client(tmp_path)
+    r = c.post('/import-data',
+               data={'files': (io.BytesIO(SALES_HEADER.encode('cp874')), 'sales.txt')},
+               content_type='multipart/form-data')
+    doc = lh.fromstring(r.get_data(as_text=True))
+
+    panels = doc.xpath('//*[@data-block="retired"]')
+    assert len(panels) == 1
+    assert 'zip' in panels[0].text_content()
+    assert panels[0].xpath('.//a[contains(@href, "import-express-dbf")]')
+    assert doc.xpath('//input[starts-with(@name, "removals_")]') == []
+    assert 'อ่านไม่ได้' not in doc.xpath('//table')[0].text_content()
+
+
+def test_a_live_row_gets_no_retired_panel(tmp_db, tmp_path):
+    """CONTROL for the panel test: payments_in previews normally."""
+    from lxml import html as lh
+    c = _client(tmp_path)
+    r = c.post('/import-data',
+               data={'files': (io.BytesIO(RCV_HEADER.encode('cp874')), 'rcv.txt')},
+               content_type='multipart/form-data')
+    doc = lh.fromstring(r.get_data(as_text=True))
+    assert doc.xpath('//*[@data-block="retired"]') == []

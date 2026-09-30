@@ -213,7 +213,7 @@ def _stage_and_token(client):
         return sess['import_stage']['token']
 
 
-def test_sales_import_triggers_scan_and_links(admin_client, monkeypatch):
+def test_sales_import_triggers_scan_and_links(admin_client, monkeypatch, unretired_text_door):
     """A committed sales import calls scan_after_import with its batch_id and
     renders the 'ไปตรวจบิล' link with the flagged count."""
     import import_router
@@ -236,7 +236,7 @@ def test_sales_import_triggers_scan_and_links(admin_client, monkeypatch):
     assert '2 ใบ' in body
 
 
-def test_scan_failure_does_not_fail_the_import(admin_client, monkeypatch):
+def test_scan_failure_does_not_fail_the_import(admin_client, monkeypatch, unretired_text_door):
     """If scan_after_import raises, the sales import still succeeds — the error
     is caught as an inner warning, NOT a per-file failure."""
     import import_router

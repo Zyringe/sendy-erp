@@ -16,7 +16,10 @@ speculative; adding a field is fine, adding one "for later" is not:
     title_requires      detect: and ALL of these too (credit_notes_ap only)
     title_excludes      detect: and NONE of these (credit_notes_ar only)
     retired_reason      None = live. A string = detected and REFUSED, with this
-                        shown to the operator.
+                        shown to the operator. THE single switch: `labels()`
+                        derives the " — ปิดแล้ว" suffix from it and
+                        `removal_capable_keys()` drops a retired type, so
+                        deleting the field reopens the type whole.
     supports_removals   may the operator opt into source-line removal
     express_kind        None, or the file_type the express_importer path wants
     dbf_count_field     which sub-key vat_book_builder reads out of per_type
@@ -81,6 +84,14 @@ _RETIRED_TO_DBF = (
     "ยอดคงค้างมาจาก zip รายวันของ Express ที่หน้า นำเข้า Express (DBF) แทน"
 )
 
+# ขาย / ซื้อ text reports (Card E, Put 2026-09-30, ADR 0020): the ledger reaches
+# Sendy through the daily zip only. Refused at preview, at confirm and inside the
+# import_router dispatcher; the text-door code stays for a one-line re-enable.
+_RETIRED_LEDGER_TO_DBF = (
+    "ทางนำเข้าแบบไฟล์รายงานสำหรับ ขาย/ซื้อ ปิดแล้ว — "
+    "ยอดขาย/ซื้อมาจาก zip รายวันของ Express ที่หน้า นำเข้า Express (DBF) แทน"
+)
+
 # Ordered: the detector walks this list and takes the first match.
 REPORT_TYPES: Tuple[ReportType, ...] = (
     # Credit notes first — both kinds carry 'ใบลดหนี้'.
@@ -123,7 +134,7 @@ REPORT_TYPES: Tuple[ReportType, ...] = (
     ),
     ReportType(
         key='ar_snapshot',
-        label='ลูกหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน',
+        label='ลูกหนี้คงค้าง',
         title_markers=('ลูกหนี้คงค้าง',),
         retired_reason=_RETIRED_TO_DBF,
         dbf_count_field='imported',
@@ -131,7 +142,7 @@ REPORT_TYPES: Tuple[ReportType, ...] = (
     ),
     ReportType(
         key='ap_snapshot',
-        label='เจ้าหนี้คงค้าง — ปิดแล้ว ใช้ zip รายวัน',
+        label='เจ้าหนี้คงค้าง',
         title_markers=('เจ้าหนี้คงค้าง',),
         retired_reason=_RETIRED_TO_DBF,
         dbf_count_field='imported',
@@ -143,6 +154,7 @@ REPORT_TYPES: Tuple[ReportType, ...] = (
         key='sales',
         label='ขาย',
         title_markers=('ประวัติการขาย', 'รายงานการขาย'),
+        retired_reason=_RETIRED_LEDGER_TO_DBF,
         supports_removals=True,
         dbf_count_field='imported',
         book_meta_key='sales_imported',
@@ -151,6 +163,7 @@ REPORT_TYPES: Tuple[ReportType, ...] = (
         key='purchase',
         label='ซื้อ',
         title_markers=('ประวัติการซื้อ', 'รายงานการซื้อ'),
+        retired_reason=_RETIRED_LEDGER_TO_DBF,
         supports_removals=True,
         dbf_count_field='imported',
         book_meta_key='purchase_imported',
@@ -175,8 +188,11 @@ BY_KEY = {rt.key: rt for rt in REPORT_TYPES}
 
 def labels():
     """key -> Thai label, in declaration order. Feeds the /import-data
-    <select>; every key stays selectable, retired ones included."""
-    return {rt.key: rt.label for rt in REPORT_TYPES}
+    <select>; every key stays selectable, retired ones included, and a retired
+    one says so (the suffix is derived from `retired_reason`, never typed)."""
+    return {rt.key: (f'{rt.label} — ปิดแล้ว ใช้ zip รายวัน' if rt.is_retired
+                     else rt.label)
+            for rt in REPORT_TYPES}
 
 
 def retired_keys():
@@ -201,7 +217,11 @@ def express_kinds():
 
 
 def removal_capable_keys():
-    return frozenset(rt.key for rt in REPORT_TYPES if rt.supports_removals)
+    """Types whose preview may offer source-line removal. A retired type is
+    never offered it: `supports_removals` stays a declared fact of the type,
+    `retired_reason` decides whether it is usable."""
+    return frozenset(rt.key for rt in REPORT_TYPES
+                     if rt.supports_removals and not rt.is_retired)
 
 
 def dbf_count_fields():

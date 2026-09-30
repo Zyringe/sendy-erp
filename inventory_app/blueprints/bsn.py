@@ -697,7 +697,7 @@ def unified_import():
                    # the operator sees it before confirming; /confirm re-checks it
                    # live and this flag only authorizes the override checkbox.
                    'stale_over': None}
-            if rtype in import_router.RETIRED_REPORT_TYPES:
+            if rtype in report_types.retired_keys():
                 # Recognised, and refused with the reason. Marked `blocked` so the
                 # verdict rides the session into /confirm — the type dropdown is
                 # operator-supplied, so a decision keyed on the submitted type
@@ -803,6 +803,15 @@ def unified_import_confirm():
                         or 'ไฟล์นี้ถูกปฏิเสธตั้งแต่ตอนตรวจสอบ — นำเข้าไม่ได้'),
                 'blocked': row['blocked']})
             continue
+        # The SUBMITTED type is checked too (Card E, ADR 0020): an `unknown` file
+        # has no `blocked` verdict, so overriding it to ขาย in the dropdown would
+        # otherwise reach commit_file. Before the file-exists check and before the
+        # watermark claim below, so a refused row never moves a mark.
+        if rtype in report_types.retired_keys():
+            results.append({'filename': row['filename'], 'ok': False,
+                            'msg': report_types.retired_reason_for(rtype),
+                            'blocked': 'retired'})
+            continue
         if rtype == 'unknown' or not os.path.isfile(path):
             results.append({'filename': row['filename'], 'ok': False,
                             'msg': 'ข้าม — ไม่ได้เลือกประเภท'})
@@ -878,6 +887,10 @@ def unified_import_confirm():
         except import_router.HistoryExportBlocked as exc:
             results.append({'filename': row['filename'], 'ok': False,
                             'msg': str(exc), 'blocked': 'history'})
+        except import_router.RetiredReportType as exc:
+            # The dispatcher's own refusal: same row as the two checks above.
+            results.append({'filename': row['filename'], 'ok': False,
+                            'msg': str(exc), 'blocked': 'retired'})
         except Exception as exc:   # per-file isolation — one bad file doesn't sink the batch
             results.append({'filename': row['filename'], 'ok': False, 'msg': str(exc)})
     session.pop('import_stage', None)
@@ -1236,7 +1249,20 @@ def _express_dbf_summary_message(per_type):
     skipped = per_type['payments_in'].get('skipped_rectyp') or []
     if skipped:
         msg += f' · ข้ามบรรทัดที่อ่านไม่ได้ {len(skipped)} บรรทัด'
+    # Sales/purchase lines the source no longer lists are reversed on every zip
+    # (Card E, ADR 0020: declared apply_removals=True, no preview in front of
+    # it). Same stance as the link count above: silent on the ordinary day.
+    removed_lines = _removed_lines(per_type)
+    if sum(removed_lines.values()):
+        msg += f' · ลบบรรทัดที่หายจากต้นทาง {sum(removed_lines.values())}'
     return msg
+
+
+def _removed_lines(per_type):
+    """{'sales': n, 'purchase': m}: source lines the zip reversed. .get on
+    purpose, like the snapshot keys above: older callers carry no `removed`."""
+    return {k: (per_type.get(k) or {}).get('removed') or 0
+            for k in ('sales', 'purchase')}
 
 
 def _heal_future_watermark(incoming_date, incoming_at, overrode, upload_meta,
@@ -1535,6 +1561,9 @@ def express_dbf_upload():
                                   'summary': _express_dbf_summary_message(per_type),
                                   'reconcile': per_type.get('reconcile', {}),
                                   'doc_drift': per_type.get('doc_drift') or {}}
+                # In the run record beside the summary (Card E): the counts the
+                # flash clause above is built from, queryable after the fact.
+                results['bsn']['removed_lines'] = _removed_lines(per_type)
                 flashes.append(('success', f"BSN5657: {results['bsn']['summary']}"))
                 _dbf_lossy = _lossy_reversal_warning(
                     per_type.get('sales'), 'BSN5657 (DBF)')

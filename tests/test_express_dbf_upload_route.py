@@ -506,6 +506,38 @@ def test_summary_reports_removed_links():
     assert '6' in msg
 
 
+def test_summary_reports_removed_source_lines():
+    """Card E: the zip has always reversed sales/purchase lines that vanished
+    from the source (by omission of the kwarg until PR-0). The count is now
+    said out loud: 3 sales + 2 purchase lines = 5."""
+    from blueprints.bsn import _express_dbf_summary_message
+    per_type = {
+        'sales': {'imported': 1, 'removed': 3}, 'purchase': {'imported': 2, 'removed': 2},
+        'payments_in': {'imported': 3}, 'payments_out': {'imported': 4},
+        'credit_notes_ar': {'upserted': 5}, 'credit_notes_ap': {'imported': 6},
+    }
+    msg = _express_dbf_summary_message(per_type)
+    assert 'ลบบรรทัดที่หายจากต้นทาง 5' in msg, msg
+
+
+def test_summary_tolerates_a_per_type_without_removed():
+    """CONTROL: scripts/import_express and older callers carry no `removed`;
+    the clause is absent (not a KeyError, not '0')."""
+    msg = _summary()
+    assert 'ลบบรรทัดที่หายจากต้นทาง' not in msg
+    assert msg.startswith('นำเข้าสำเร็จ')
+
+
+def test_summary_stays_quiet_when_removed_is_zero():
+    from blueprints.bsn import _express_dbf_summary_message
+    msg = _express_dbf_summary_message({
+        'sales': {'imported': 1, 'removed': 0}, 'purchase': {'imported': 2, 'removed': 0},
+        'payments_in': {'imported': 3}, 'payments_out': {'imported': 4},
+        'credit_notes_ar': {'upserted': 5}, 'credit_notes_ap': {'imported': 6},
+    })
+    assert 'ลบบรรทัดที่หายจากต้นทาง' not in msg
+
+
 def test_summary_reports_skipped_lines():
     msg = _summary(skipped_rectyp=[{'re_no': 'RE0041138', 'doc': 'DR0000003',
                                     'rectyp': '4', 'amount': 600.0}])
@@ -669,3 +701,41 @@ def test_dbf_upload_clears_flag_of_a_removed_line(client, tmp_path, monkeypatch)
     conn.close()
     assert lines == ['IV7068301-1'], 'line 2 was not removed, so this test proves nothing'
     assert _doc_flags('IV7068301') == [], 'flag of the removed line survived the DBF re-import'
+
+
+# ── Card E: removed source lines reach the run record and the flash ──────────
+
+def _zip_two_line_sale():
+    t = _one_line_sale('ตัว')
+    t['STCRD'] = t['STCRD'] + [_stcrd('IV7068101', 2, stkcod='bsn-681b', qty=1.0,
+                                      unit='ตัว', unitpr=10.0, trnval=10.0, netval=10.0)]
+    return t
+
+
+def _last_run_notes():
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    try:
+        return conn.execute(
+            "SELECT json_extract(notes, '$.bsn.removed_lines.sales'), "
+            "       json_extract(notes, '$.bsn.removed_lines.purchase') "
+            "FROM import_log WHERE filename='express-dbf-upload' "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+    finally:
+        conn.close()
+
+
+def test_run_record_carries_removed_lines(client, tmp_path, monkeypatch):
+    """A doc uploaded with 2 lines, then again with 1: the vanished line is
+    reversed (as it always was) and NOW the run record and the flash say so."""
+    _login(client)
+    first = _upload(client, tmp_path, monkeypatch, _zip_two_line_sale())
+    assert first.status_code == 200, first.data[:500]
+    assert _last_run_notes() == (0, 0)
+    assert 'ลบบรรทัดที่หายจากต้นทาง'.encode() not in first.data     # control: quiet day
+
+    second = _upload(client, tmp_path, monkeypatch, _one_line_sale('ตัว'))
+
+    assert second.status_code == 200, second.data[:500]
+    assert _last_run_notes() == (1, 0)
+    assert 'ลบบรรทัดที่หายจากต้นทาง 1'.encode() in second.data

@@ -339,3 +339,26 @@ def patch_models_conn(monkeypatch):
             if isinstance(_sub, types.ModuleType) and hasattr(_sub, "get_connection"):
                 monkeypatch.setattr(_sub, "get_connection", _installed)
     return _patch
+
+
+@pytest.fixture
+def unretired_text_door(monkeypatch):
+    """Reopen the ขาย/ซื้อ text door for a test (Card E, ADR 0020).
+
+    ขาย / ซื้อ are retired through ONE field, `ReportType.retired_reason`. This
+    fixture rebuilds the real registry entries with that one field cleared, so
+    the registry, the route and the dispatcher (which all read
+    `report_types.REPORT_TYPES` / `BY_KEY` at CALL time) reopen together. It is
+    what keeps the dormant text-door code tested: `test_retired_report_types.py`
+    runs WITHOUT it and pins the retirement itself.
+    """
+    import dataclasses
+
+    import report_types
+
+    reopened = tuple(
+        dataclasses.replace(rt, retired_reason=None)
+        if rt.key in ('sales', 'purchase') else rt
+        for rt in report_types.REPORT_TYPES)
+    monkeypatch.setattr(report_types, 'REPORT_TYPES', reopened)
+    monkeypatch.setattr(report_types, 'BY_KEY', {rt.key: rt for rt in reopened})
