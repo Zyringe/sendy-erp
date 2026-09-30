@@ -163,21 +163,21 @@ def unit_correction_preview():
         conn.close()
 
 
-def _refusal_of(write):
-    """Run `write()`. None when it was written, else the message to flash."""
+def _attempt(write):
+    """Run `write()`: (its result, None) when it was written, else
+    (None, the message to flash)."""
     if import_running():
-        return _IMPORT_BUSY
+        return None, _IMPORT_BUSY
     try:
-        write()
+        return write(), None
     except luc.Refused as exc:
-        return str(exc)
+        return None, str(exc)
     except models.WaccIdentityError:
-        return _WACC_FAILED
+        return None, _WACC_FAILED
     except sqlite3.OperationalError as exc:
         if 'locked' not in str(exc):
             raise
-        return _IMPORT_BUSY
-    return None
+        return None, _IMPORT_BUSY
 
 
 @bp_sales.route('/sales/unit-correction/apply', methods=['POST'])
@@ -186,27 +186,31 @@ def unit_correction_apply():
     unit = _field(request.form, 'corrected_unit')
     conn = database.get_connection()
     try:
-        line = luc.line_view(conn, doc_no, bsn_code)
-        error = _refusal_of(lambda: luc.apply(
+        new_id, error = _attempt(lambda: luc.apply(
             conn, doc_no, bsn_code, unit, _field(request.form, 'stock_mode'),
             _field(request.form, 'reason'), _acting_admin()))
+        written = luc.correction(conn, new_id) if error is None else None
     finally:
         conn.close()
     if error:
         flash(error, 'danger')
+        if not doc_no or not bsn_code:
+            return redirect(url_for('sales.sales_view'))
         return redirect(url_for('sales.unit_correction', doc_no=doc_no, bsn_code=bsn_code))
     flash(f'แก้หน่วยบรรทัด {doc_no} เป็น "{unit}" แล้ว', 'success')
-    return redirect(url_for('sales.sales_doc', doc_base=line['doc_base']))
+    return redirect(url_for('sales.sales_doc', doc_base=written['doc_base']))
 
 
 @bp_sales.route('/sales/unit-correction/cancel', methods=['POST'])
 def unit_correction_cancel():
     raw_id = _field(request.form, 'correction_id') or ''
-    correction_id = int(raw_id) if raw_id.isdigit() else None
+    # isdecimal, not isdigit ('²' is a digit int() refuses); 18 digits is
+    # the most a SQLite integer bind always takes.
+    correction_id = int(raw_id) if raw_id.isdecimal() and len(raw_id) <= 18 else None
     conn = database.get_connection()
     try:
         c = luc.correction(conn, correction_id)
-        error = _refusal_of(lambda: luc.cancel(
+        _none, error = _attempt(lambda: luc.cancel(
             conn, correction_id, _field(request.form, 'reason'), _acting_admin()))
     finally:
         conn.close()

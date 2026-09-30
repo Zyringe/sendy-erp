@@ -82,11 +82,49 @@ class Effect:
     # Costed lots the WACC walk places between a RETURN's ledger row and its
     # hold offset. 0 for a sale, where hold leaves cost history untouched.
     hold_reweights_purchases: int
+    # Costed lots the WACC walk meets AFTER this line's ledger row: what
+    # `move` re-weights. 0 means `move` cannot change cost history.
+    move_reweights_purchases: int = 0
+
+    # What the confirm screen prints. Whole quantities come back as ints so
+    # the page shows 24, not 24.0.
 
     @property
     def hold_offset(self):
         """The ADJUST a `hold` correction posts to keep stock where it is."""
-        return round(self.old_effect - self.new_effect, 4)
+        return _tidy(self.old_effect - self.new_effect)
+
+    @property
+    def _is_return(self):
+        return document_kind.is_return(self.doc_no, 'sales')
+
+    @property
+    def ledger_heading(self):
+        return ('รายการรับคืนของบรรทัดนี้' if self._is_return
+                else 'รายการตัดสต็อกของบรรทัดนี้')
+
+    @property
+    def ledger_verb(self):
+        return 'รับคืน' if self._is_return else 'ตัดสต็อก'
+
+    @property
+    def old_qty(self):
+        return _tidy(abs(self.old_effect))
+
+    @property
+    def new_qty(self):
+        return _tidy(abs(self.new_effect))
+
+    @property
+    def stock_shown(self):
+        return {'now': _tidy(self.stock_now),
+                'after_hold': _tidy(self.stock_after_hold),
+                'after_move': _tidy(self.stock_after_move)}
+
+
+def _tidy(number):
+    number = round(number or 0, 4)
+    return int(number) if number == int(number) else number
 
 
 def _dicts(cur):
@@ -105,7 +143,7 @@ def _stock(conn, product_id):
 
 
 def _line_label(doc_no, bsn_code):
-    return f'{doc_no} ({bsn_code})'
+    return f'{doc_no or "-"} ({bsn_code or "-"})'
 
 
 def allowed_units(conn, product_id):
@@ -201,6 +239,21 @@ def _lots_between_a_return_and_its_offset(conn, product_id, ledger_txn_id, creat
         (product_id, created_at, ledger_txn_id)).fetchone()[0]
 
 
+def _costed_lots_after(conn, product_id, ledger_txn_id):
+    """Costed IN rows the WACC walk (created_at, IN first, id) meets after
+    the line's own ledger row."""
+    rows = conn.execute(
+        "SELECT id, txn_type, quantity_change, note FROM transactions"
+        " WHERE product_id=?"
+        " ORDER BY created_at, CASE WHEN txn_type='IN' THEN 0 ELSE 1 END, id",
+        (product_id,)).fetchall()
+    ids = [r['id'] for r in rows]
+    after = rows[ids.index(ledger_txn_id) + 1:]
+    return sum(1 for r in after
+               if r['txn_type'] == 'IN' and r['quantity_change'] > 0
+               and ((r['note'] or '') == 'BSN ซื้อ' or (r['note'] or '').startswith('แปลง:')))
+
+
 def preview(conn, doc_no, bsn_code, corrected_unit):
     """Read-only. Every refusal, then the measured effect of both stock modes."""
     label = _line_label(doc_no, bsn_code)
@@ -241,6 +294,8 @@ def preview(conn, doc_no, bsn_code, corrected_unit):
             (doc_no, bsn_code)).fetchone():
         raise Refused('already_active',
                       f'บรรทัด {label} มีการแก้หน่วยค้างอยู่แล้ว ยกเลิกก่อนจึงแก้ใหม่ได้')
+    if not corrected_unit:
+        raise Refused('no_unit', 'ต้องเลือกหน่วยที่ถูกต้อง')
     if corrected_unit not in allowed_units(conn, product_id):
         raise Refused('unit_not_allowed',
                       f'หน่วย "{corrected_unit}" ไม่ใช่หน่วยหลักและไม่มีอัตราแปลงของสินค้านี้')
@@ -286,6 +341,7 @@ def preview(conn, doc_no, bsn_code, corrected_unit):
             _lots_between_a_return_and_its_offset(
                 conn, product_id, ledger['id'], row['date_iso'] + ' 00:00:00')
             if document_kind.is_return(doc_no, 'sales') else 0),
+        move_reweights_purchases=_costed_lots_after(conn, product_id, ledger['id']),
     )
 
 
@@ -609,6 +665,7 @@ def line_view(conn, doc_no, bsn_code):
         return None
     view = dict(row)
     view['doc_base'] = view['doc_base'] or doc_no.rsplit('-', 1)[0]
+    view['qty'] = _tidy(view['qty'])
     current = _norm(conn, view['unit'])
     view['unit_choices'] = [
         unit for unit in allowed_units(conn, view['product_id'])

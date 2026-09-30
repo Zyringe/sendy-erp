@@ -1113,9 +1113,19 @@ def _release_import_lock(fd):
 def import_running():
     """Whether an Express import holds the flock right now. A probe for a
     writer that must not start under a running import: nothing is kept."""
-    fd = _acquire_import_lock()
-    _release_import_lock(fd)
-    return fd is None
+    import fcntl
+    path = os.path.join(os.path.dirname(config.DATABASE_PATH), 'express_import.lock')
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    try:
+        # Shared, so it fails only against an import's exclusive lock: a probe
+        # never refuses another probe, and an upload landing mid-probe waits
+        # on nothing a probe holds for longer than this call.
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+    return False
 
 
 def _audit_forced_import_authorization(incoming, overrode, upload_meta):

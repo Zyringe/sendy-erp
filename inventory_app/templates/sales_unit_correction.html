@@ -53,6 +53,14 @@
   </div>
 </div>
 
+{# Outside the active/else split: a preview asked from a stale tab is refused
+   because the line was corrected meanwhile, and that must still be said. #}
+{% if refused %}
+<div class="alert alert-danger mb-3" id="uc-refused">
+  <i class="bi bi-x-circle me-2"></i>{{ refused }}
+</div>
+{% endif %}
+
 {% if active %}
 <!-- The active correction, and the way out of it -->
 <div class="card mb-3" id="uc-active">
@@ -101,11 +109,6 @@
     <p class="text-subtle mb-0">บรรทัดนี้ไม่มีหน่วยอื่นให้เลือก (ต้องเป็นหน่วยหลักหรือหน่วยที่มีอัตราแปลงของสินค้า)</p>
     {% endif %}
 
-    {% if refused %}
-    <div class="alert alert-danger mt-3 mb-0" id="uc-refused">
-      <i class="bi bi-x-circle me-2"></i>{{ refused }}
-    </div>
-    {% endif %}
   </div>
 </div>
 
@@ -121,9 +124,9 @@
       <input type="hidden" name="corrected_unit" value="{{ effect.corrected_unit }}">
 
       <p class="mb-3">
-        รายการตัดสต็อกของบรรทัดนี้:
-        <strong><span data-uc="old-effect">{{ effect.old_effect | fmt_qty }}</span> →
-        <span data-uc="new-effect">{{ effect.new_effect | fmt_qty }}</span></strong> {{ line.base_unit }}
+        {{ effect.ledger_heading }}:
+        <strong>{{ effect.ledger_verb }} <span data-uc="old-qty">{{ effect.old_qty | fmt_qty }}</span> →
+        <span data-uc="new-qty">{{ effect.new_qty | fmt_qty }}</span> {{ line.base_unit }}</strong>
       </p>
 
       <div class="form-check mb-2">
@@ -131,10 +134,10 @@
                {% if effect.proposed_mode == 'hold' %}checked{% endif %} required>
         <label class="form-check-label" for="uc-mode-hold" data-uc="mode-hold">
           <strong>คงยอดคงเหลือ</strong>{% if effect.proposed_mode == 'hold' %} (ระบบแนะนำ){% endif %}:
-          สต็อกตอนนี้ <span data-uc="stock-now">{{ effect.stock_now | fmt_qty }}</span> →
-          <span data-uc="stock-after-hold">{{ effect.stock_after_hold | fmt_qty }}</span>
+          สต็อกตอนนี้ <span data-uc="stock-now">{{ effect.stock_shown.now | fmt_qty }}</span> →
+          <span data-uc="stock-after-hold">{{ effect.stock_shown.after_hold | fmt_qty }}</span> {{ line.base_unit }}
           <br><span class="text-subtle small">ระบบจะลงรายการปรับยอด
-          <span data-uc="hold-offset">{{ effect.hold_offset | fmt_qty }}</span> ย้อนไปวันที่ขาย</span>
+          <span data-uc="hold-offset">{{ '+' if effect.hold_offset > 0 else '' }}{{ effect.hold_offset | fmt_qty }}</span> {{ line.base_unit }} ย้อนไปวันที่ขาย</span>
         </label>
       </div>
       <div class="form-check mb-3">
@@ -142,8 +145,8 @@
                {% if effect.proposed_mode == 'move' %}checked{% endif %} required>
         <label class="form-check-label" for="uc-mode-move" data-uc="mode-move">
           <strong>ขยับยอดคงเหลือ</strong>{% if effect.proposed_mode == 'move' %} (ระบบแนะนำ){% endif %}:
-          สต็อกตอนนี้ <span data-uc="stock-now">{{ effect.stock_now | fmt_qty }}</span> →
-          <span data-uc="stock-after-move">{{ effect.stock_after_move | fmt_qty }}</span>
+          สต็อกตอนนี้ <span data-uc="stock-now">{{ effect.stock_shown.now | fmt_qty }}</span> →
+          <span data-uc="stock-after-move">{{ effect.stock_shown.after_move | fmt_qty }}</span> {{ line.base_unit }}
         </label>
       </div>
 
@@ -156,9 +159,10 @@
         {% endif %}
       </p>
 
-      {% if effect.exposure_after != effect.exposure_before %}
+      {% if effect.move_reweights_purchases > 0 %}
       <div class="alert alert-warning small">
-        ถ้าเลือกขยับยอดคงเหลือ ต้นทุนเฉลี่ยย้อนหลังของสินค้านี้จะถูกคำนวณใหม่
+        ถ้าเลือกขยับยอดคงเหลือ: มีการรับเข้า <span data-uc="move-reweights">{{ effect.move_reweights_purchases }}</span> รายการหลังบรรทัดนี้
+        ต้นทุนเฉลี่ยย้อนหลังของสินค้านี้จะเปลี่ยน
         {% if effect.exposure_after.purchases_below_zero != effect.exposure_before.purchases_below_zero %}
         <br>รายการรับเข้าที่คิดต้นทุนตอนสต็อกติดลบ:
         <span data-uc="below-zero">{{ effect.exposure_before.purchases_below_zero }}</span> →
