@@ -943,9 +943,11 @@ def get_customers(search=None, region=None, page=1, per_page=50,
     # (card C P2), so this list can never disagree with the detail page; the SQL
     # only decides WHICH codes are listed (search + not-invoiced-in-error) and
     # reads the master columns. `is_billing` tells the two halves of the union
-    # apart. The placeholders keep the union's column shape.
+    # apart. `s.customer` is only the FALLBACK name (any bill name of the group):
+    # the template links a nameless row to /customer/<None> and 500s the list.
+    # The placeholders keep the union's column shape.
     billing_sql = f"""
-        SELECT NULL                                       AS customer,
+        SELECT s.customer                                AS customer,
                s.customer_code                            AS customer_code,
                COALESCE(c.address, '')                    AS address,
                COALESCE(sp.name, c.salesperson)           AS salesperson,
@@ -1031,10 +1033,10 @@ def get_customers(search=None, region=None, page=1, per_page=50,
                 default=None)
             newest = max((n for n in null_names if n in orphans),
                          key=lambda n: orphans[n]['last_activity'] or '', default=None)
-            r['customer'] = newest
+            r['customer'] = newest or r['customer']
         elif billing and code in hist:
             h = hist[code]
-            r['customer'] = h['bill_name']
+            r['customer'] = h['bill_name'] or r['customer']
             r['doc_count'] = h['doc_count']
             r['total_net'] = h['purchase_total']
             r['last_date'] = h['last_activity']

@@ -137,3 +137,30 @@ def test_a_marketplace_named_line_under_a_coded_customer_now_counts_in_call_spen
               if r['customer_code'] == 'A1']
     assert page_total == 140 and row['spend'] == 140
     assert oracle.call_spend(conn)['A1'] == 100        # the old /call figure
+
+
+def _admin_client():
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1
+        s['username'] = 'admin'
+        s['role'] = 'admin'
+    return c
+
+
+@pytest.mark.parametrize('code', ['', ' P1 '])
+def test_a_blank_or_padded_code_does_not_take_customers_down(empty_db_conn, code):
+    """P2 review W1: the row's name came only from histories(), whose key for a
+    blank code is the bill name, so the row kept name None and the template's
+    url_for(customer_name=None) raised BuildError: /customers 500 for everyone.
+    The old page listed it under its own bill name."""
+    conn = empty_db_conn
+    p = mk_product(conn, 'x')
+    add_line(conn, doc_base='IV1', date_iso='2026-08-01', pid=p, qty=1, net=100,
+             customer='ร้านชื่อเฉพาะ', code=code)
+    conn.commit()
+    r = _admin_client().get('/customers')
+    assert r.status_code == 200
+    assert 'ร้านชื่อเฉพาะ' in r.get_data(as_text=True)
