@@ -954,6 +954,10 @@ def get_order_margin(conn, order_id):
     product has no cost_price — reporting a partial total as if complete would
     mislead. The caller can still show the resolved `cogs` plus the `unresolved`
     / `cost_gap` counts and badge it "ไม่ครบ".
+
+    They are None too for a cancelled/returned order (`cancelled` True, status in
+    _CANCEL_RETURN_STATUSES): nothing was sold, so a settled payout of 0 minus the
+    goods' cost is not a loss. A TikTok cancel settles with net_payout 0.
     """
     net = conn.execute(
         """SELECT COALESCE(
@@ -974,9 +978,10 @@ def get_order_margin(conn, order_id):
            LEFT JOIN products p ON p.id = it.internal_product_id
            WHERE it.order_id = ?""", (order_id,)).fetchall()
 
-    platform = conn.execute(
-        "SELECT platform FROM marketplace_orders WHERE id = ?", (order_id,)).fetchone()
-    platform = platform['platform'] if platform else 'shopee'
+    header = conn.execute(
+        "SELECT platform, status FROM marketplace_orders WHERE id = ?", (order_id,)).fetchone()
+    platform = header['platform'] if header else 'shopee'
+    cancelled = bool(header) and header['status'] in _CANCEL_RETURN_STATUSES
 
     cogs = 0.0
     unresolved = 0
@@ -1003,12 +1008,13 @@ def get_order_margin(conn, order_id):
                           'ratio': ratio, 'ratio_source': source, 'line_cogs': line_cogs})
 
     cogs = round(cogs, 2)
-    complete = unresolved == 0 and cost_gap == 0 and net_val is not None
+    complete = unresolved == 0 and cost_gap == 0 and net_val is not None and not cancelled
     margin = round(net_val - cogs, 2) if complete else None
     margin_pct = (round(margin / net_val * 100, 1)
                   if complete and net_val else None)
     return {'net': net_val, 'cogs': cogs, 'margin': margin, 'margin_pct': margin_pct,
-            'unresolved': unresolved, 'cost_gap': cost_gap, 'lines': out_lines}
+            'unresolved': unresolved, 'cost_gap': cost_gap, 'cancelled': cancelled,
+            'lines': out_lines}
 
 
 # Customer NAME (not code) per platform, for the payments-received lookup.

@@ -208,3 +208,55 @@ def test_order_modal_shows_tiktok_fee_lines_with_real_names(conn):
                      'ค่าธุรกรรมการชำระเงิน': -13.96, 'ค่าโครงสร้างพื้นฐาน': -1.07}
     assert round(sum(lines.values()), 2) == 309.05
     assert 'fee_raw_json' not in d['fees']
+
+
+# ── margin: a cancelled order has none ───────────────────────────────────────
+
+TT_SKUS = {'1737136796219442872': 9401, '1737136999694436024': 9402,
+           '1736984084285458104': 9403, '1736984084285654712': 9404}
+
+
+def _seed_costed_listings(conn, cost=None):
+    """Each fixture SKU mapped to its own product; O379's product costs 20."""
+    cost = cost or {9401: 20.0, 9402: 10.0, 9403: 10.0, 9404: 10.0}
+    for vid, pid in TT_SKUS.items():
+        conn.execute("INSERT INTO products (id, product_name, cost_price) VALUES (?,?,?)",
+                     (pid, f'p{pid}', cost[pid]))
+        conn.execute("INSERT INTO platform_skus (platform, product_name, variation_id, stock, "
+                     "internal_product_id, qty_per_sale) VALUES ('tiktok', 'x', ?, 5, ?, 1)",
+                     (vid, pid))
+    conn.commit()
+
+
+def _margin(conn, platform, sn):
+    oid = conn.execute("SELECT id FROM marketplace_orders WHERE platform=? AND order_sn=?",
+                       (platform, sn)).fetchone()[0]
+    return models.get_order_margin(conn, oid)
+
+
+def test_settled_cancel_has_no_margin_and_a_sale_keeps_its_own(conn):
+    _seed_costed_listings(conn)
+    _import_orders(conn)
+    _upload(INCOME)
+    m817 = _margin(conn, 'tiktok', O817)
+    assert m817['net'] == 0.0                 # the fee row exists: the case that went red
+    assert m817['margin'] is None and m817['margin_pct'] is None
+    assert m817['cancelled'] is True
+    m379 = _margin(conn, 'tiktok', O379)
+    assert (m379['cogs'], m379['margin'], m379['margin_pct']) == (20.0, 289.05, 93.5)
+    assert m379['cancelled'] is False
+
+
+def test_shopee_cancel_without_settlement_is_unchanged(conn):
+    """Control: an unsettled Shopee cancel had no margin before (no net) and has none now."""
+    conn.execute("INSERT INTO products (id, product_name, cost_price) VALUES (9501, 's', 7)")
+    conn.execute("INSERT INTO platform_skus (platform, product_name, variation_id, stock, "
+                 "internal_product_id, qty_per_sale) VALUES ('shopee', 's', 'SV', 5, 9501, 1)")
+    conn.execute("INSERT INTO marketplace_orders (platform, order_sn, status) "
+                 "VALUES ('shopee', 'SPCAN1', 'ยกเลิกแล้ว')")
+    oid = conn.execute("SELECT id FROM marketplace_orders WHERE order_sn='SPCAN1'").fetchone()[0]
+    conn.execute("INSERT INTO marketplace_order_items (order_id, platform, order_sn, line_key, "
+                 "internal_product_id, qty) VALUES (?, 'shopee', 'SPCAN1', 'k', 9501, 1)", (oid,))
+    conn.commit()
+    m = _margin(conn, 'shopee', 'SPCAN1')
+    assert (m['net'], m['margin'], m['cogs']) == (None, None, 7.0)
