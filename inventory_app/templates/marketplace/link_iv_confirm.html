@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from 'macros.html' import PLAT_LABEL %}
 {# Confirm page for a manual IV pick (#545). Rendered as the response to the
    picker's POST; nothing is written until its own form is submitted. Its form
    carries the holders the person saw (expected_holders), so the save can refuse
@@ -11,7 +12,7 @@
   <section id="ivConfirmOrder" class="card mb-3">
     <div class="card-body">
       <div class="small text-muted">ออเดอร์</div>
-      <div class="fs-5"><code>{{ order.order_sn }}</code> · {{ order.platform | capitalize }}</div>
+      <div class="fs-5"><code>{{ order.order_sn }}</code> · {{ PLAT_LABEL.get(order.platform, order.platform) }}</div>
       <div>สั่งวันที่ {{ order.order_date | thaidate }} · ยอดโอน ฿{{ order.actual_payout | fmt_price }}
         {%- if plan.basis_label != 'ยอดโอน' %} · {{ plan.basis_label }} ฿{{ plan.basis | fmt_price }}{% endif %}</div>
     </div>
@@ -36,7 +37,7 @@
 
   {% if plan.other_channel %}
   <section id="ivConfirmChannel" class="alert alert-warning">
-    ใบนี้ออกในนาม <strong>{{ plan.channel }}</strong> ไม่ใช่ {{ order.platform | capitalize }}
+    ใบนี้ออกในนาม <strong>{{ plan.channel }}</strong> ไม่ใช่ {{ PLAT_LABEL.get(order.platform, order.platform) }}
   </section>
   {% endif %}
 
@@ -44,7 +45,7 @@
   <section id="ivConfirmHolder" class="alert alert-danger">
     {% for h in plan.holders %}
     <div class="{{ 'mb-2' if not loop.last }}">
-      ใบนี้ผูกกับออเดอร์ <code>{{ h.order_sn }}</code> ({{ h.platform | capitalize }}) อยู่ —
+      ใบนี้ผูกกับออเดอร์ <code>{{ h.order_sn }}</code> ({{ PLAT_LABEL.get(h.platform, h.platform) }}) อยู่ —
       {% if h.match_method == 'manual' %}ยืนยันเอง โดย {{ h.confirmed_by or 'ไม่ทราบชื่อ' }}
       {%- else %}ผูกอัตโนมัติ{% if h.confidence == 'review' %} (ต้องตรวจ){% endif %}{% endif %}
       <div class="fw-bold">ถ้าย้าย ออเดอร์ {{ h.order_sn }} จะไม่มีใบกำกับ</div>

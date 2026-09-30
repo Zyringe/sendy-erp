@@ -343,3 +343,13 @@ def test_a_failed_automatch_is_rolled_back_not_committed_by_the_next_platform(co
     assert 'จับคู่ใบกำกับอัตโนมัติไม่สำเร็จ' in html and 'injected' in html
     assert _links(conn, 'shopee') == [('SPKEEP1', 'IV6800001', 'Zหน้าร้าน', 'auto', 'confident')]
     assert len(_links(conn)) == 2                      # control: tiktok's automatch ran and committed
+
+
+def test_confirm_page_names_tiktok_properly(conn):
+    """A typed IV always goes through the confirm page; its platform label is
+    PLAT_LABEL's 'TikTok', not capitalize()'s 'Tiktok'."""
+    resp = _client().post(f'/marketplace/order/{_oid(conn, O379)}/link-iv?platform=tiktok',
+                          data={'doc_base_manual': 'IV6901503'})
+    html = resp.get_data(as_text=True)
+    assert resp.status_code == 200 and 'IV6901503' in html      # control: the confirm page
+    assert '· TikTok' in html and 'Tiktok' not in html
