@@ -104,3 +104,34 @@ def test_a_guarded_page_shows_the_refusal_instead_of_failing(corrected, client, 
     assert resp.status_code == 200
     assert 'ยกเลิกการแก้หน่วยบรรทัดก่อน (IV6900001-1)' in resp.get_data(as_text=True)
     assert sc.written_state(corrected) == before
+
+
+def test_mapping_save_reports_a_refused_ratio(corrected, client):
+    pid = sc.sales_row(corrected, LINE)['product_id']
+
+    resp = client.post('/mapping/save', json={'mappings': [{
+        'bsn_code': sc.CODE, 'bsn_name': 'x', 'action': 'map', 'product_id': pid,
+        'bsn_unit': 'โหล', 'unit_conversion_ratio': 10}]})
+
+    assert resp.get_json() == {
+        'ok': False, 'error': 'ยกเลิกการแก้หน่วยบรรทัดก่อน (IV6900001-1)'}
+    c = sc.raw(corrected)
+    assert c.execute("SELECT ratio FROM unit_conversions WHERE product_id=?"
+                     " AND bsn_unit='โหล'", (pid,)).fetchone()[0] == 12
+    c.close()
+
+
+def test_the_product_form_shows_the_refusal_for_a_base_unit_change(corrected, client):
+    pid = sc.sales_row(corrected, LINE)['product_id']
+
+    resp = client.post(f'/products/{pid}/edit', data={
+        'product_name': 'ใบมีดคัตเตอร์', 'unit_type': 'โหล', 'cost_price': '0',
+        'units_per_carton': '1', 'units_per_box': '1'},
+        follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert 'ยกเลิกการแก้หน่วยบรรทัดก่อน (IV6900001-1)' in resp.get_data(as_text=True)
+    c = sc.raw(corrected)
+    assert c.execute("SELECT unit_type FROM products WHERE id=?", (pid,)).fetchone()[0] \
+        == 'หลอด'
+    c.close()

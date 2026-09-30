@@ -178,3 +178,112 @@ def test_merge_product_refuses(guarded, direction, capsys):
     cancel()
     assert merge_product.main(argv) == 0
     assert _one(path, "SELECT is_active FROM products WHERE id=?", src) == 0
+
+
+def _ratio(path, pid, unit):
+    c = sc.raw(path)
+    try:
+        row = c.execute("SELECT ratio FROM unit_conversions WHERE product_id=?"
+                        " AND bsn_unit=?", (pid, unit)).fetchone()
+        return row[0] if row else None
+    finally:
+        c.close()
+
+
+def test_save_unit_conversions_refuses_a_changed_ratio_and_allows_a_new_unit(guarded):
+    import models
+    path, pid, other, cancel = guarded
+
+    result = models.save_unit_conversions([
+        {'product_id': pid, 'bsn_unit': 'โหล', 'ratio': 10},
+        {'product_id': pid, 'bsn_unit': 'โหล', 'ratio': 12},
+        {'product_id': pid, 'bsn_unit': 'ลัง', 'ratio': 24},
+    ])
+
+    assert result['refused'] == [REFUSAL]
+    assert result['saved'] == 2
+    assert (_ratio(path, pid, 'โหล'), _ratio(path, pid, 'ลัง')) == (12, 24)
+    assert sc.sale_ledger(path, LINE, pid)[0][1] == -2
+
+    cancel()
+    result = models.save_unit_conversions(
+        [{'product_id': pid, 'bsn_unit': 'โหล', 'ratio': 10}])
+    assert (result['saved'], result['refused']) == (1, [])
+    assert _ratio(path, pid, 'โหล') == 10
+
+
+def test_upsert_unit_conversion_refuses_a_changed_ratio_and_allows_a_new_unit(guarded):
+    import line_unit_correction as luc
+    import models
+    path, pid, other, cancel = guarded
+
+    with pytest.raises(luc.Refused) as exc:
+        models.upsert_unit_conversion(pid, 'โหล', 10)
+
+    assert str(exc.value) == REFUSAL
+    assert _ratio(path, pid, 'โหล') == 12
+    assert models.upsert_unit_conversion(pid, 'โหล', 12) is True
+    assert models.upsert_unit_conversion(pid, 'ลัง', 24) is True
+    assert _ratio(path, pid, 'ลัง') == 24
+
+    cancel()
+    assert models.upsert_unit_conversion(pid, 'โหล', 10) is True
+    assert _ratio(path, pid, 'โหล') == 10
+
+
+def test_update_product_refuses_a_base_unit_change(guarded):
+    import line_unit_correction as luc
+    import models
+    path, pid, other, cancel = guarded
+
+    def unit_type():
+        return _one(path, "SELECT unit_type FROM products WHERE id=?", pid)
+
+    with pytest.raises(luc.Refused) as exc:
+        models.update_product(pid, {'unit_type': 'โหล', 'product_name': 'ใหม่'})
+
+    assert str(exc.value) == REFUSAL
+    assert unit_type() == 'หลอด'
+    assert _one(path, "SELECT product_name FROM products WHERE id=?", pid) != 'ใหม่'
+    models.update_product(pid, {'unit_type': 'หลอด', 'product_name': 'ใหม่'})
+    assert _one(path, "SELECT product_name FROM products WHERE id=?", pid) == 'ใหม่'
+
+    cancel()
+    models.update_product(pid, {'unit_type': 'โหล'})
+    assert unit_type() == 'โหล'
+
+
+def test_cancel_refuses_when_a_hold_would_move_stock(guarded):
+    import line_unit_correction as luc
+    path, pid, other, cancel = guarded
+    c = sc.raw(path)
+    c.execute("UPDATE unit_conversions SET ratio=10 WHERE product_id=? AND bsn_unit='โหล'",
+              (pid,))
+    c.commit()
+    c.close()
+    before = sc.written_state(path)
+
+    with pytest.raises(luc.Refused) as exc:
+        cancel()
+
+    assert exc.value.code == 'stock_moved'
+    assert sc.written_state(path) == before
+    assert sc.corrections(path)[0]['status'] == 'active'
+
+
+def test_apply_refuses_when_a_hold_would_move_stock(empty_db, monkeypatch):
+    import line_unit_correction as luc
+    sc.seed_company(empty_db)
+    pid = sc.seed_product(empty_db)
+    sc.run_zip(monkeypatch, sc.standard_book())
+    before = sc.written_state(empty_db)
+    readings = iter(range(100, 200))
+    monkeypatch.setattr(luc, '_stock', lambda conn, product_id: next(readings))
+
+    c = sc.conn(empty_db)
+    with pytest.raises(luc.Refused) as exc:
+        luc.apply(c, LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
+    c.close()
+
+    assert exc.value.code == 'stock_moved'
+    assert sc.written_state(empty_db) == before
