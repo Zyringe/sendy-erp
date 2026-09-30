@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from filters import fmt_qty
 from tests import unit_correction_scenario as sc
 
 DOC = 'IV6900001'
@@ -25,6 +26,7 @@ LINE = 'IV6900001-1'
 KEY = {'doc_no': LINE, 'bsn_code': sc.CODE}
 PAGE = '/sales/unit-correction'
 CANCEL_REASON = 'ยกเลิกเพราะแก้ผิดบรรทัด'
+KIOSK_ANSWERS = [(302, "/m/stock")] * 4
 IMPORT_BUSY = 'กำลังนำเข้าข้อมูลจาก Express อยู่ ลองใหม่อีกครั้งในอีกสักครู่'
 
 _VOID = {'input', 'br', 'hr', 'img', 'meta', 'link'}
@@ -159,7 +161,7 @@ def test_the_page_shows_an_admin_the_line_and_the_units_it_may_become(line):
     for shown in (LINE, '2026-04-01', 'ลูกค้าทดสอบ', 'ใบมีดคัตเตอร์'):
         assert shown in card, shown
     values = page.values['uc-line']
-    assert _num(_one(values, 'qty')) == 2
+    assert _one(values, 'qty') == fmt_qty(2)
     assert _one(values, 'unit') == 'โหล'
     assert _num(_one(values, 'unit-price')) == 49
     assert _num(_one(values, 'net')) == 98
@@ -246,12 +248,18 @@ def test_preview_shows_both_stock_outcomes_and_proposes_hold_after_a_stock_adjus
     assert resp.status_code == 200
     page = _Page(resp.get_data(as_text=True))
     values = page.values['uc-confirm']
-    assert _num(_one(values, 'old-effect')) == -24
-    assert _num(_one(values, 'new-effect')) == -2
-    assert [_num(v) for v in values['stock-now']] == [181, 181]
-    assert _num(_one(values, 'stock-after-hold')) == 181
-    assert _num(_one(values, 'stock-after-move')) == 203
+    # Tokens, not only values: "24", never "24.0".
+    assert (_one(values, 'old-qty'), _one(values, 'new-qty')) == (fmt_qty(24), fmt_qty(2))
+    assert values['stock-now'] == [fmt_qty(181), fmt_qty(181)]
+    assert _one(values, 'stock-after-hold') == fmt_qty(181)
+    assert _one(values, 'stock-after-move') == fmt_qty(203)
+    assert _one(values, 'hold-offset') == '-' + fmt_qty(22)
     assert _num(_one(values, 'hold-offset')) == -22
+    flat = ' '.join(page.text['uc-confirm'].split())
+    assert 'รายการตัดสต็อกของบรรทัดนี้: ตัดสต็อก 24 → 2 หลอด' in flat
+    assert 'สต็อกตอนนี้ 181 → 181 หลอด' in flat
+    assert 'สต็อกตอนนี้ 181 → 203 หลอด' in flat
+    assert 'ระบบจะลงรายการปรับยอด -22 หลอด ย้อนไปวันที่ขาย' in flat
     assert _radios(page) == [('hold', True), ('move', False)]
     assert '(ระบบแนะนำ)' in _one(values, 'mode-hold')
     assert '(ระบบแนะนำ)' not in _one(values, 'mode-move')
@@ -280,8 +288,34 @@ def test_preview_proposes_move_when_no_adjust_follows_the_sale(line):
     panel = page.text['uc-confirm']
     assert 'ไม่พบรายการปรับสต็อกหลังวันขาย' in panel
     assert 'ระบบไม่รู้ว่ารายการนี้' not in panel
-    # Nothing about cost moves for this line, so neither warning is shown.
+    # One purchase follows the sale, so move would re-cost it. The running
+    # stock never reaches zero or below, so neither count line is printed.
+    flat = ' '.join(panel.split())
+    assert ('ถ้าเลือกขยับยอดคงเหลือ: มีการรับเข้า 1 รายการหลังบรรทัดนี้ '
+            'ต้นทุนเฉลี่ยย้อนหลังของสินค้านี้จะเปลี่ยน') in flat
+    assert _num(_one(values, 'move-reweights')) == 1
+    assert values['below-zero'] == [] and values['at-zero'] == []
+    assert 'ใบลดหนี้' not in panel
+
+
+def test_preview_shows_no_cost_warning_when_no_purchase_follows_the_line(
+        empty_db, monkeypatch):
+    """The lowest running stock still moves (76 to 98), which is not a reason
+    to warn: no lot is costed after this line."""
+    sc.seed_company(empty_db)
+    sc.seed_product(empty_db)
+    sc.run_zip(monkeypatch, sc.Book()
+               .purchase('RR6900001', [(1, sc.CODE, 100.0, 'หลอด', 10.0)],
+                         datetime.date(2026, 3, 10))
+               .sale(DOC, [(1, sc.CODE, 2.0, 'โหล', 49.0)]))
+
+    page = _Page(_preview(_client('admin')).get_data(as_text=True))
+
+    panel = page.text['uc-confirm']
+    # Control: the panel rendered, with this line's numbers.
+    assert _one(page.values['uc-confirm'], 'stock-after-move') == fmt_qty(98)
     assert 'ต้นทุนเฉลี่ย' not in panel
+    assert page.values['uc-confirm']['move-reweights'] == []
 
 
 def test_preview_warns_that_move_recosts_and_prints_only_the_count_that_changed(
@@ -300,7 +334,8 @@ def test_preview_warns_that_move_recosts_and_prints_only_the_count_that_changed(
     page = _Page(_preview(_client('admin')).get_data(as_text=True))
 
     panel = ' '.join(page.text['uc-confirm'].split())
-    assert 'ถ้าเลือกขยับยอดคงเหลือ ต้นทุนเฉลี่ยย้อนหลังของสินค้านี้จะถูกคำนวณใหม่' in panel
+    assert ('ถ้าเลือกขยับยอดคงเหลือ: มีการรับเข้า 1 รายการหลังบรรทัดนี้ '
+            'ต้นทุนเฉลี่ยย้อนหลังของสินค้านี้จะเปลี่ยน') in panel
     values = page.values['uc-confirm']
     assert [_num(v) for v in values['below-zero']] == [1, 0]
     assert values['at-zero'] == []
@@ -322,7 +357,10 @@ def test_preview_warns_when_hold_on_a_return_still_moves_cost(empty_db, monkeypa
     panel = ' '.join(page.text['uc-confirm'].split())
     assert ('บรรทัดนี้เป็นใบลดหนี้ และมีการรับเข้า 1 รายการในวันเดียวกัน '
             'ต้นทุนเฉลี่ยจะขยับแม้เลือกคงยอดคงเหลือ') in panel
-    assert _num(_one(page.values['uc-confirm'], 'reweights')) == 1
+    values = page.values['uc-confirm']
+    assert _num(_one(values, 'reweights')) == 1
+    assert 'รายการรับคืนของบรรทัดนี้: รับคืน 24 → 2 หลอด' in panel
+    assert _one(values, 'hold-offset') == '+' + fmt_qty(22)
 
 
 def test_preview_of_a_refused_unit_shows_the_refusal_and_no_confirm_panel(line):
@@ -332,9 +370,35 @@ def test_preview_of_a_refused_unit_shows_the_refusal_and_no_confirm_panel(line):
     page = _Page(resp.get_data(as_text=True))
     assert 'หน่วย "ลัง" ไม่ใช่หน่วยหลักและไม่มีอัตราแปลงของสินค้านี้' in page.text['uc-refused']
     assert 'uc-confirm' not in page.text
-    assert [t for t, a in page.tags['uc-correct'] if t == 'input' and a.get('type') == 'radio'] == []
     # The select is still there to try again.
     assert [a.get('value') for tag, a in page.tags['uc-correct'] if tag == 'option'] == ['หลอด']
+
+
+def test_preview_on_a_line_corrected_in_another_tab_says_why(line):
+    path, _pid = line
+    _luc(path, 'apply', LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
+
+    resp = _preview(_client('admin'), corrected_unit='โหล')
+
+    assert resp.status_code == 200
+    page = _Page(resp.get_data(as_text=True))
+    assert 'มีการแก้หน่วยค้างอยู่แล้ว ยกเลิกก่อนจึงแก้ใหม่ได้' in page.text['uc-refused']
+    assert 'uc-active' in page.text and 'uc-confirm' not in page.text
+
+
+def test_preview_without_a_unit_asks_for_one(line):
+    resp = _client('admin').post(PAGE + '/preview', data=KEY)
+
+    assert resp.status_code == 200
+    page = _Page(resp.get_data(as_text=True))
+    assert page.text['uc-refused'].strip() == 'ต้องเลือกหน่วยที่ถูกต้อง'
+    assert 'uc-confirm' not in page.text
+
+
+def test_preview_of_a_line_that_does_not_exist_is_a_404(line):
+    admin = _client('admin')
+    assert _preview(admin).status_code == 200
+    assert _preview(admin, doc_no='IV6900001-9').status_code == 404
 
 
 # ── apply ────────────────────────────────────────────────────────────────────
@@ -394,6 +458,21 @@ def test_a_refused_apply_writes_nothing_and_says_why(line, change, says):
     assert _everything(path) == before
 
 
+@pytest.mark.parametrize('missing', ['doc_no', 'bsn_code'])
+def test_apply_without_a_line_key_is_refused_without_the_word_none(line, missing):
+    path, _pid = line
+    before = _everything(path)
+    admin = _client('admin')
+
+    resp = admin.post(PAGE + '/apply',
+                      data={k: v for k, v in APPLY.items() if k != missing})
+
+    assert resp.status_code == 302 and _location(resp) == ('/sales', {})
+    (category, message), = _flashes(admin)
+    assert category == 'danger' and 'ไม่พบบรรทัด' in message and 'None' not in message
+    assert _everything(path) == before
+
+
 # ── cancel ───────────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -430,13 +509,22 @@ def test_cancel_puts_the_line_back_as_the_logged_in_admin(corrected):
      'การแก้หน่วยนี้ไม่ได้ค้างอยู่ ยกเลิกไม่ได้', ('/sales', {})),
     ({'correction_id': 'abc', 'reason': CANCEL_REASON},
      'การแก้หน่วยนี้ไม่ได้ค้างอยู่ ยกเลิกไม่ได้', ('/sales', {})),
+    # isdigit() is true of '²' and int() is not; 25 digits overflow the bind.
+    ({'correction_id': '²', 'reason': CANCEL_REASON},
+     'การแก้หน่วยนี้ไม่ได้ค้างอยู่ ยกเลิกไม่ได้', ('/sales', {})),
+    ({'correction_id': '1' * 25, 'reason': CANCEL_REASON},
+     'การแก้หน่วยนี้ไม่ได้ค้างอยู่ ยกเลิกไม่ได้', ('/sales', {})),
+    ({'correction_id': None, 'reason': CANCEL_REASON},
+     'การแก้หน่วยนี้ไม่ได้ค้างอยู่ ยกเลิกไม่ได้', ('/sales', {})),
 ])
 def test_a_refused_cancel_writes_nothing_and_says_why(corrected, data, says, back):
     path, _pid, cid = corrected
     before = _everything(path)
     admin = _client('admin')
 
-    resp = admin.post(PAGE + '/cancel', data=dict({'correction_id': str(cid)}, **data))
+    form = {k: v for k, v in dict({'correction_id': str(cid)}, **data).items()
+            if v is not None}
+    resp = admin.post(PAGE + '/cancel', data=form)
 
     assert resp.status_code == 302
     assert _location(resp) == back
@@ -467,6 +555,24 @@ def test_a_non_admin_post_is_forbidden_and_writes_nothing(corrected, role):
     assert sc.corrections(path)[0]['status'] == 'cancelled'
 
 
+def test_the_kiosk_role_is_sent_home_and_writes_nothing(corrected):
+    """`general` has no chrome to show a 403 in: the gate answers it with a
+    redirect to its own home, whatever the endpoint declares."""
+    path, _pid, cid = corrected
+    before = _everything(path)
+    kiosk = _client('general')
+
+    responses = [
+        kiosk.get(PAGE, query_string=KEY),
+        kiosk.post(PAGE + '/preview', data=dict(KEY, corrected_unit='โหล')),
+        kiosk.post(PAGE + '/apply', data=APPLY),
+        kiosk.post(PAGE + '/cancel', data={'correction_id': str(cid), 'reason': CANCEL_REASON}),
+    ]
+
+    assert [(r.status_code, _location(r)[0]) for r in responses] == KIOSK_ANSWERS
+    assert _everything(path) == before
+
+
 def test_a_simulating_admin_writes_under_their_own_name(line):
     """ADR 0003 lets an admin who is simulating another role reach admin-only
     endpoints. What they write must name them, not the account they view as."""
@@ -477,6 +583,7 @@ def test_a_simulating_admin_writes_under_their_own_name(line):
         s['user_id'], s['username'], s['role'] = 7, 'sim-staff', 'staff'
         s['_real_role'], s['_real_user_id'], s['_real_username'] = 'admin', 1, 'put'
 
+    assert sim.get(PAGE, query_string=KEY).status_code == 200
     assert sim.post(PAGE + '/apply', data=APPLY).status_code == 302
     correction, = sc.corrections(path)
     assert correction['created_by'] == 'put'
@@ -570,6 +677,35 @@ def test_a_cost_failure_is_a_flash_and_nothing_is_saved(line, monkeypatch):
         ('danger', 'คำนวณต้นทุนไม่สำเร็จ ระบบจึงไม่บันทึกการแก้หน่วย (ดูหน้าแจ้งเตือน)')]
     assert sc.written_state(path) == before
     assert sc.sales_row(path, LINE)['unit'] == 'โหล'
+
+
+def test_cancel_meets_a_locked_database_and_a_cost_failure_like_apply(corrected, monkeypatch):
+    import database
+    from models import wacc
+    path, _pid, cid = corrected
+    before = sc.written_state(path)
+    data = {'correction_id': str(cid), 'reason': CANCEL_REASON}
+
+    def locked(conn):
+        raise sqlite3.OperationalError('database is locked')
+
+    def broken(product_id, conn=None, **kwargs):
+        raise wacc.WaccIdentityError('ทดสอบ', product_id=product_id,
+                                     operation='unit_correction')
+    said = []
+    for module, name, fake in ((database, 'begin_immediate', locked),
+                               (wacc, 'recalculate_product_wacc', broken)):
+        admin = _client('admin')
+        with monkeypatch.context() as m:
+            m.setattr(module, name, fake)
+            resp = admin.post(PAGE + '/cancel', data=data)
+        assert resp.status_code == 302 and _location(resp) == (PAGE, KEY)
+        said += _flashes(admin)
+        assert sc.written_state(path) == before
+
+    assert said == [('danger', IMPORT_BUSY),
+                    ('danger', 'คำนวณต้นทุนไม่สำเร็จ ระบบจึงไม่บันทึกการแก้หน่วย (ดูหน้าแจ้งเตือน)')]
+    assert sc.corrections(path)[0]['status'] == 'active'
 
 
 def test_nothing_is_reachable_while_the_vat_book_is_active(corrected):
