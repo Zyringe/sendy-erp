@@ -172,6 +172,13 @@ def run(client, conn, ids):
     def last_id():
         return conn.execute("SELECT MAX(id) FROM cashbook_transactions").fetchone()[0]
 
+    def id_of(sql, params=()):
+        """The id a later step targets, or None when the step that should
+        have written it did not (e.g. a writer that escaped the redirect):
+        the run carries on so the dump's counts, not a crash, show the gap."""
+        row = conn.execute(sql, params).fetchone()
+        return row[0] if row else None
+
     def note(name, value):
         steps.append({'step': name, 'result': value})
 
@@ -242,8 +249,8 @@ def run(client, conn, ids):
             post(name, f'/hr/payroll/{run_id}/item/{item}/pay',
                  {'account_id': a392, 'pay_date': '2026-08-31'})
         post('unpay item 2', f'/hr/payroll/{run_id}/item/{ids["item2"]}/unpay')
-        salary_id = conn.execute("SELECT id FROM cashbook_transactions WHERE payroll_item_id = ?",
-                                 (ids['item1'],)).fetchone()[0]
+        salary_id = id_of("SELECT id FROM cashbook_transactions WHERE payroll_item_id = ?",
+                          (ids['item1'],))
 
         # ── commission (mode 1, mode 2, backfill, cancel) ───────────────────
         post('commission mode 1', '/commission/payout', {
@@ -258,9 +265,8 @@ def run(client, conn, ids):
                                  paid_by='Administrator')
         note('commission backfill (account_id=None)', 'ok')
         post('commission cancel mode 1', f'/commission/payout/{mode1}/delete')
-        commission_id = conn.execute(
-            "SELECT id FROM cashbook_transactions WHERE commission_payout_id IS NOT NULL"
-        ).fetchone()[0]
+        commission_id = id_of(
+            "SELECT id FROM cashbook_transactions WHERE commission_payout_id IS NOT NULL")
 
         # ── payout mirror (insert both, drop one, describe, conflict skip) ──
         def mirror_run(name):
@@ -278,9 +284,8 @@ def run(client, conn, ids):
                      "VALUES ('shopee', '2026-08-19', 820.0, 1)")
         conn.commit()
         mirror_run('mirror conflict skip')
-        payout_id = conn.execute(
-            "SELECT id FROM cashbook_transactions WHERE payout_platform IS NOT NULL"
-        ).fetchone()[0]
+        payout_id = id_of(
+            "SELECT id FROM cashbook_transactions WHERE payout_platform IS NOT NULL")
 
         # ── edits ───────────────────────────────────────────────────────────
         edit(single_id, amount='275', txn_date='2026-08-22', account_id=lex)
@@ -290,6 +295,9 @@ def run(client, conn, ids):
         edit(single_id, account_id=lex, txn_date='2026-08-22', amount='275',
              category=SALARY_CATEGORY)
         for txn in (ids['advance_txn'], salary_id, commission_id, payout_id):
+            if txn is None:
+                note('edit locked: row missing', None)
+                continue
             edit(txn)
         post('edit missing row', '/cashbook/txn/99999/edit', {})
 
@@ -298,6 +306,9 @@ def run(client, conn, ids):
         post('delete un-deducted advance E2', f'/cashbook/txn/{adv2_id}/delete')
         post('delete deducted advance', f'/cashbook/txn/{ids["advance_txn"]}/delete')
         for txn in (salary_id, commission_id, payout_id):
+            if txn is None:
+                note('delete locked: row missing', None)
+                continue
             post(f'delete locked {txn}', f'/cashbook/txn/{txn}/delete')
     finally:
         message_flashed.disconnect(on_flash, flask_app)
