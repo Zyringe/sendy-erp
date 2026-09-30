@@ -117,6 +117,16 @@ ALLOWED = {
         1, PAYABLE, ('salary_pay_event',),
         "the salary pay-event ('จ่ายแล้ว') write path (is_active checked in "
         'Python just above the flag).'),
+    'cashbook_ledger.py::post_salary': (
+        1, PAYABLE, ('ledger_post_salary',),
+        "card F's seam for the salary pay-event: hr.post_salary_payment's "
+        'account rule moved verbatim (is_active checked in Python just above '
+        'the flag). Nothing calls it until PR-3.'),
+    'cashbook_ledger.py::post_commission': (
+        1, PAYABLE, ('ledger_post_commission',),
+        "card F's seam for the commission cashbook row: record_payout's "
+        'account rule as a backstop (record_payout keeps the up-front check). '
+        'Nothing calls it until PR-3.'),
     'hr_queries.py::get_active_cashbook_accounts': (
         1, PAYABLE, ('pay_from_picker',),
         'the pay-from pickers (salary pay-event, commission payout, employee '
@@ -253,7 +263,7 @@ def test_the_census_is_not_empty():
     """CONTROL: a sweep that found nothing would satisfy the census above
     only if ALLOWED were emptied with it — pin the size so it cannot."""
     found = _census()
-    assert len(found) == len(ALLOWED) == 21, sorted(found)
+    assert len(found) == len(ALLOWED) == 23, sorted(found)
 
 
 @pytest.mark.parametrize('site', sorted(ALLOWED))
