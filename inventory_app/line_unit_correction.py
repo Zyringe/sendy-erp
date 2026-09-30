@@ -24,6 +24,11 @@ import database
 import document_kind
 import unit_conversion
 
+KEEP = 'keep'
+EXPRESS_AGREES = 'express_agrees'
+EXPRESS_CHANGED = 'express_changed'
+EXPRESS_REMOVED = 'express_removed'
+
 MODES = ('hold', 'move')
 MIN_REASON = 12
 EPSILON = 1e-9
@@ -34,6 +39,13 @@ OFFSET_NOTE_PREFIX = 'แก้หน่วยบรรทัด '
 ADJUST_UNKNOWN_TH = 'ระบบไม่รู้ว่ารายการนี้เป็นการตั้งยอดหรือไม่'
 
 _SALES_LEDGER_NOTES = ('BSN ขาย', 'BSN ขาย-คืน')
+
+_RETIRE_CAUSE_TH = {
+    EXPRESS_CHANGED: 'Express แก้บรรทัดนี้ ระบบจึงใช้ค่าของ Express',
+    EXPRESS_REMOVED: 'Express ลบบรรทัดนี้แล้ว',
+    EXPRESS_AGREES: 'Express แก้หน่วยตรงกับที่แก้ไว้แล้ว (รายการปรับยอดคงเหลือคงไว้ตามเดิม)',
+}
+
 
 class Refused(ValueError):
     """The correction cannot be made, cancelled or previewed. `code` names the
@@ -399,6 +411,79 @@ def cancel(conn, correction_id, reason, actor):
     except WaccIdentityError as exc:
         _alert_wacc_failure(exc, doc_no)
         raise
+
+
+def active_by_line_key(conn):
+    """{(doc_no, bsn_code): correction} for every active correction, each with
+    its two units normalised through TODAY's unit map (`express_unit_norm`,
+    `corrected_unit_norm`), so a later respelling in the map is not read as an
+    Express change."""
+    out = {}
+    for c in _dicts(conn.execute(
+            "SELECT * FROM sales_line_unit_corrections WHERE status='active'")):
+        c['express_unit_norm'] = _norm(conn, c['express_unit'])
+        c['corrected_unit_norm'] = _norm(conn, c['corrected_unit'])
+        out[(c['doc_no'], c['bsn_code'])] = c
+    return out
+
+
+def _num_same(a, b):
+    return abs((a or 0) - (b or 0)) < EPSILON
+
+
+def decide(correction, entry, product_id):
+    """What an incoming Express line means for its active correction. Pure.
+
+    `entry['unit']` is the importer's already-normalised Express unit and
+    `product_id` the product the mapping resolved on that unit.
+    """
+    unit = entry['unit'] or ''
+    same_line = (
+        _num_same(entry['qty'], correction['qty'])
+        and _num_same(entry['unit_price'], correction['unit_price'])
+        and _num_same(entry['net'], correction['net'])
+        and (product_id or 0) == correction['product_id'])
+    if same_line and unit == correction['express_unit_norm']:
+        return KEEP
+    if same_line and unit == correction['corrected_unit_norm']:
+        return EXPRESS_AGREES
+    return EXPRESS_CHANGED
+
+
+def retire(conn, correction, cause, actor):
+    """The importer ends a correction because Express moved. On the caller's
+    connection and inside its transaction: no re-sync, no scan, no WACC here.
+    Returns the products whose ledger the importer must rebuild.
+
+    `express_agrees` keeps the offset: Express now says what Sendy says, so
+    nothing physical changed and the stock must not move.
+    """
+    from models.system_alerts import create_system_alert, KIND_UNIT_CORRECTION_RETIRED
+    pids = {correction['product_id']}
+    if cause != EXPRESS_AGREES and correction['offset_txn_id'] is not None:
+        offset = conn.execute(
+            "SELECT product_id FROM transactions WHERE id=?",
+            (correction['offset_txn_id'],)).fetchone()
+        if offset is not None:
+            pids.add(offset[0])
+            conn.execute("DELETE FROM transactions WHERE id=?",
+                         (correction['offset_txn_id'],))
+    conn.execute(
+        "UPDATE sales_line_unit_corrections SET status='retired', end_cause=?,"
+        " ended_at=datetime('now','localtime'), ended_by=?"
+        " WHERE id=? AND status='active'",
+        (cause, actor, correction['id']))
+    create_system_alert(
+        KIND_UNIT_CORRECTION_RETIRED,
+        f'การแก้หน่วยบรรทัด {correction["doc_no"]} '
+        f'({correction["express_unit"]} → {correction["corrected_unit"]}) '
+        f'สิ้นสุดแล้ว: {_RETIRE_CAUSE_TH[cause]}',
+        dedupe_key=str(correction['id']), severity='warning',
+        context={'correction_id': correction['id'], 'doc_no': correction['doc_no'],
+                 'bsn_code': correction['bsn_code'],
+                 'product_id': correction['product_id'], 'cause': cause},
+        conn=conn)
+    return pids
 
 
 def badges_for_doc(conn, doc_base):

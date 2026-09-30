@@ -1588,6 +1588,10 @@ def express_dbf_upload():
                 if _bid:
                     try:
                         rr.scan_after_import(_bid)
+                        # A retired correction's line can be unchanged or gone,
+                        # so no row carries this batch id and the scan above
+                        # would not reach its document (#692).
+                        rr.scan_docs(per_type['sales'].get('unit_correction_docs'))
                     except Exception as _scan_exc:
                         flashes.append(('warning', f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}'))
                 # Each register is isolated from the money import, so one that

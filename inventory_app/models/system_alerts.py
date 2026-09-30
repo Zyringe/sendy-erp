@@ -62,6 +62,7 @@ KIND_UNMAPPED_CODES = 'unmapped_bsn_codes'
 KIND_ACTOR_MISSING = 'actor_missing'
 KIND_EXPRESS_DOC_DRIFT = 'express_doc_drift'
 KIND_EXPRESS_DRIFT_SKIPPED = 'express_doc_drift_skipped'
+KIND_UNIT_CORRECTION_RETIRED = 'unit_correction_retired'
 
 # Prod runs `gunicorn --timeout 60` (Procfile / railway.toml). A request that
 # exceeds it is SIGABRT'd mid-flight, so it cannot report itself — the warning

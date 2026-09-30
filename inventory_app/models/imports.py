@@ -13,6 +13,7 @@ import sqlite3
 import actor
 from database import get_connection
 import bsn_units
+import line_unit_correction
 
 from .mapping import _resolve_mapping, get_pending_mappings
 from .bsn_sync import _sync_bsn_to_stock, reverse_platform_deduction
@@ -193,6 +194,17 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
         )
         batch_id = cur.lastrowid
 
+        # แก้หน่วยบรรทัด (#692, ADR 0021). Loaded AFTER the INSERT above on
+        # purpose: that INSERT takes the write lock, so no correction can be
+        # applied or cancelled between this read and the commit. Sales of the
+        # main book only: the VAT book copies Express and the same document
+        # number can exist in both books.
+        corrections = {}
+        if file_type == 'sales' and book == bsn_units.DEFAULT_BOOK:
+            corrections = line_unit_correction.active_by_line_key(conn)
+        corrections_retired = 0
+        correction_docs = set()   # docs the route re-scans for ตรวจบิล flags
+
         imported = ignored = overwritten = unchanged = removed = removed_skipped = 0
         non_stock = 0
         # Per-code detail for the lines we SKIP because the mapping says is_ignored.
@@ -289,6 +301,24 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
 
             if not mapped and e['product_code_raw']:
                 new_bsn_codes[e['product_code_raw']] = e['product_name_raw']
+
+            correction = corrections.get((doc_no, e['product_code_raw']))
+            if correction is not None:
+                verdict = (line_unit_correction.EXPRESS_REMOVED if old is None
+                           else line_unit_correction.decide(correction, e, product_id))
+                if verdict == line_unit_correction.KEEP:
+                    unchanged += 1
+                    continue
+                # Express moved, so Express wins. `express_agrees` keeps the
+                # offset and the line then reads unchanged below; any other
+                # verdict takes the ordinary insert/replace path, and pass 2
+                # rebuilds the returned products on the final state.
+                retired_pids = line_unit_correction.retire(
+                    conn, correction, verdict, filename)
+                if verdict != line_unit_correction.EXPRESS_AGREES:
+                    affected_pids.update(retired_pids)
+                corrections_retired += 1
+                correction_docs.add(doc_base)
 
             carry_from = None
             if old is not None:
@@ -393,6 +423,13 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
             for r in to_remove:
                 if r['product_id']:
                     affected_pids.add(r['product_id'])
+                correction = corrections.get((r['doc_no'], r['bsn_code']))
+                if correction is not None:
+                    affected_pids.update(line_unit_correction.retire(
+                        conn, correction, line_unit_correction.EXPRESS_REMOVED,
+                        filename))
+                    corrections_retired += 1
+                    correction_docs.add(bsn_line.doc_base(r['doc_no']))
                 # The sale did not happen, so the listing gets its units back.
                 # Nothing re-posts for this row afterwards — pass 2 replays only
                 # what is still in the table.
@@ -585,6 +622,8 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
         'batch_id': batch_id,
         'non_stock': non_stock,
         'ignored_contradictions': sorted(contradictions),
+        'unit_corrections_retired': corrections_retired,
+        'unit_correction_docs': sorted(correction_docs),
     }
 
 

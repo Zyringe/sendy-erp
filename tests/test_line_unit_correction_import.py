@@ -211,6 +211,28 @@ def test_a_corrected_line_deleted_behind_the_importer_is_retired_and_reinserted(
     assert sc.stock(path, pid) == 176
 
 
+def test_retiring_rebuilds_the_ledger_even_when_the_stored_row_already_equals_express(
+        corrected, monkeypatch):
+    path, pid, cid = corrected
+    c = sc.raw(path)
+    c.execute("UPDATE sales_transactions SET qty=3, net=147, unit='โหล',"
+              " change_source='import', change_actor='hand', change_token='hand-1'"
+              " WHERE doc_no=?", (LINE,))
+    c.commit()
+    c.close()
+    changed = sc.standard_book()
+    changed.stcrd[1]['TRNQTY'] = 3.0
+    changed.stcrd[1]['TRNVAL'] = changed.stcrd[1]['NETVAL'] = 147.0
+
+    result = sc.run_zip(monkeypatch, changed)
+
+    assert result['sales']['overwritten'] == 0
+    assert sc.corrections(path)[0]['end_cause'] == 'express_changed'
+    assert sc.offsets(path, pid) == []
+    assert sc.sale_ledger(path, LINE, pid)[0][1] == -36
+    assert sc.stock(path, pid) == 164
+
+
 def test_a_retired_line_can_be_corrected_again(corrected, monkeypatch):
     path, pid, cid = corrected
     changed = sc.standard_book()
