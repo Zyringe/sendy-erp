@@ -262,21 +262,6 @@ def get_call_list(conn, *, q=None, region=None, call=None,
         LEFT JOIN customers c ON c.code = TRIM(st.customer_code)
     """).fetchall()
 
-    # Deduplicate by canonical_code (multiple name variants can map to same code)
-    seen_codes = {}
-    for row in customer_rows:
-        code = row['canonical_code']
-        if not code:
-            continue
-        if code not in seen_codes:
-            seen_codes[code] = {
-                'canonical_code': code,
-                'name': row['name'],
-                'address': row['address'],
-                'salesperson_code': row['salesperson_code'],
-                'phone': row['phone'],
-            }
-
     # ── 2+3. Spend and last_buy — ONE purchase_history.histories() call ─────
     # Both are the customer page's own definitions (card C P2), so this list
     # cannot drift from it:
@@ -292,6 +277,23 @@ def get_call_list(conn, *, q=None, region=None, call=None,
     hist = purchase_history.histories(conn, total_since=cutoff)
     spend_map = {k: v['purchase_total'] or 0.0 for k, v in hist.items()}
     last_buy_map = {k: v['last_purchase'] for k, v in hist.items()}
+
+    # Deduplicate by canonical_code (multiple name variants can map to same code).
+    # The keys are histories()' keys (card C P4, A1): a credit note filed without a
+    # code has joined its shop's code there, so its bill name is no entry of its own.
+    seen_codes = {}
+    for row in customer_rows:
+        code = row['canonical_code']
+        if not code or code not in hist:
+            continue
+        if code not in seen_codes:
+            seen_codes[code] = {
+                'canonical_code': code,
+                'name': row['name'],
+                'address': row['address'],
+                'salesperson_code': row['salesperson_code'],
+                'phone': row['phone'],
+            }
 
     # ── 4. last_called aggregate (one query) ──────────────────────────────────
     last_called_rows = conn.execute("""

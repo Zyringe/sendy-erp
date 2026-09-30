@@ -36,9 +36,12 @@ def _build_shop(conn, rng, code, pids, marketplace=0.08):
             add_line(conn, doc_base=doc, date_iso=date, pid=rng.choice(pids), qty=qty,
                      net=net, customer=customer, code=code, suffix=n + 1,
                      unit=rng.choice(['ตัว', 'ตัว', 'โหล']))
-    # a code-less credit note under the same bill name: never part of `code`
+    # A code-less credit note under a bill name NO code carries: a true orphan, never
+    # part of `code`. (Under the shop's own bill name it would now join the code, card C
+    # P4 / A1: that shape is pinned by test_card_c_p4_orphan_credit_notes.py, and would
+    # make this old-vs-new equality false on purpose.)
     add_line(conn, doc_base='SRNC%s' % code, date_iso='2026-04-04', pid=pids[0], qty=1,
-             net=77, customer=name, code=None)
+             net=77, customer=name + ' (ไม่มีรหัส)', code=None)
     for doc in docs:
         r = rng.random()
         if r < 0.1:

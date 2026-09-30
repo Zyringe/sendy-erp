@@ -876,6 +876,7 @@ def get_customers(search=None, region=None, page=1, per_page=50,
             newest = max((n for n in null_names if n in orphans),
                          key=lambda n: orphans[n]['last_activity'] or '', default=None)
             r['customer'] = newest or r['customer']
+            r['_drop'] = not mine   # every NULL-code name joined its code (A1): no phantom row
         elif billing and code in hist:
             h = hist[code]
             r['customer'] = h['bill_name'] or r['customer']
@@ -884,6 +885,7 @@ def get_customers(search=None, region=None, page=1, per_page=50,
             r['last_date'] = h['last_activity']
             r['last_purchase_date'] = h['last_purchase']
         r['region'] = customer_geo.region_of(r.pop('address'))
+    rows = [r for r in rows if not r.pop('_drop', False)]
     if region:
         rows = [r for r in rows if r['region'] == region]
 

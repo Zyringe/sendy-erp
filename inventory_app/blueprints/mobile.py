@@ -132,9 +132,6 @@ def customer_detail(customer_code):
     pay_speed = payments_alloc.payment_speed(customer_code) if customer else None
     # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
     unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
-    # #493: the shared document grouping — same one the desktop customer page
-    # uses — so this page's doc list/count can never drift from it again.
-    last_sales = models.get_customer_documents('customer_code', customer_code, limit=5)
     unpaid = unpaid_full[:5]
     unpaid_total = sum((b['total_net'] or 0) for b in unpaid_full)
     # What was REMOVED from that total (ADR 0012, #468), keyed identically to
@@ -151,6 +148,9 @@ def customer_detail(customer_code):
     # documents (#493), and a document invoiced in error is out of both the
     # figures and the `last_sales` list above.
     totals = purchase_history.totals(conn, customer_code)
+    # #493: the shared document grouping — same one the desktop customer page
+    # uses — so this page's doc list/count can never drift from it again.
+    last_sales = purchase_history.documents(conn, customer_code, limit=5)
     stats = {
         'doc_count': totals['doc_count'],
         'total_net': round(totals['purchase_total'], 2),
