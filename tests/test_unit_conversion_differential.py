@@ -202,12 +202,25 @@ def _new_cli():
     return mod
 
 
+# Card C P3 moved the call card's ROWS onto purchase_history (which rows are listed,
+# and their qty / ล่าสุด / doc_count), so the whole-list equality this test asserted
+# no longer holds. What card A owns in _assemble_products is the unit arithmetic:
+# `base` and `customer_price`, the promo and the tiers. Those still must be identical
+# to the baseline for every (product, unit) the two lists share.
 def test_call_card(world):
     conn, _ = world
     old = _old('inventory_app/call_card.py', '_old_call_card')
-    for names in (['ร้านทดสอบ'], ['หน้าร้านS']):
-        assert (old._assemble_products(conn, names, None, today='2026-09-29')
-                == call_card._assemble_products(conn, names, None, today='2026-09-29'))
+    got_old = {(p['product_id'], p['unit']): p for p in
+               old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
+    got_new = {(p['product_id'], p['unit']): p for p in
+               call_card._assemble_products(conn, 'ร้านทดสอบ', None, today='2026-09-29')}
+    shared = sorted(set(got_old) & set(got_new), key=repr)
+    assert len(shared) >= 10, 'control: the two lists must share rows to compare'
+    for k in shared:
+        for f in ('base', 'customer_price', 'promo', 'promo_label', 'price_tiers'):
+            assert repr(got_old[k][f]) == repr(got_new[k][f]), (k, f)
+    # A marketplace shop account is never "bought" history (purchase population).
+    assert call_card._assemble_products(conn, 'หน้าร้านS', None, today='2026-09-29') == []
 
 
 STOCK_UNIT_TYPES = UNIT_TYPES + ['ตัว ', ' ตัว', ' ตัว', '']

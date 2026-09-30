@@ -263,7 +263,8 @@ def _seed_c3(conn):
 def test_call_card_product_list_is_ordered_net_of_returns(tmp_db_conn):
     a, e = _seed_c3(tmp_db_conn)
     import call_card
-    products = call_card._assemble_products(tmp_db_conn, [C3], None)
+    # Card C P3: _assemble_products takes the customer key (was the bill-name list [C3]).
+    products = call_card._assemble_products(tmp_db_conn, C3_CODE, None)
     assert len(products) == 2
     assert [p['product_id'] for p in products] == [e, a]
     qty = {p['product_id']: p['total_qty'] for p in products}
@@ -272,8 +273,9 @@ def test_call_card_product_list_is_ordered_net_of_returns(tmp_db_conn):
 
 def test_call_card_top_product_name_is_net_of_returns(tmp_db_conn):
     a, e = _seed_c3(tmp_db_conn)
-    import models
-    top = models.get_customer_summary(C3)['top_products']
+    import call_card
+    # Card C P3: the call card's own summary (get_customer_summary is retired).
+    top = call_card.get_card(tmp_db_conn, C3_CODE)['summary']['top_products']
     # TWO rows: the credit note's own raw name must not split A (#627 review).
     assert len(top) == 2
     assert top[0]['product_id'] == e, 'แบรนด์เด่น reads top_products[0]'
@@ -285,8 +287,10 @@ def test_customer_page_pieces_are_net_of_returns(tmp_db_conn):
     จำนวนชิ้น must follow the same rule, or one page disagrees with itself
     (team lead's ruling on #627). 10 + 9 − 3 = 16, never 22."""
     _seed_c3(tmp_db_conn)
+    import call_card
     import models
-    for summary in (models.get_customer_summary(C3)['summary'],
+    # Card C P3: the call card's header replaces the retired name-keyed summary here.
+    for summary in (call_card.get_card(tmp_db_conn, C3_CODE)['summary']['summary'],
                     models.get_customer_summary_by_code(C3_CODE)['summary']):
         assert summary['doc_count'] == 3                 # CONTROL: the credit note is there
         assert summary['total_net'] == pytest.approx(1000 + 900 - 300)

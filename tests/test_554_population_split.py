@@ -96,10 +96,6 @@ EXPECTED = {
         'guessed: the first draft declared `_family_hint`, the CALLER.'),
 
     # ── PURCHASE: "did this shop buy from us, and when?" (Put, 2026-09-17) ──
-    'models/customers.py::_customer_sales_aggregates': ('purchase',
-        'the customer page ซื้อล่าสุด + จำนวนครั้งซื้อ pair. A written-off bill '
-        'is still a purchase; moving this date backwards is exactly what Put '
-        'ruled against (prod 99ส09, 2025-03-31 -> 2024-12-10).'),
     'models/customers.py::_cross_sell_suggestions': ('purchase',
         'เสนอเพิ่ม (#498): how many OTHER shops bought a product, and whether '
         'THIS shop ever did. All THREE sites in this function must agree, or '
@@ -109,11 +105,11 @@ EXPECTED = {
         'card C: ครั้งที่ซื้อ / ซื้อครั้งแรก / ซื้อล่าสุด in ONE query, shared by '
         'history() and totals() (/m/customer). A written-off bill is still a '
         'purchase.'),
-    'purchase_history.py::history': ('purchase',
-        'card C: the one customer-history module the customer page, the mobile '
-        'page, /customers, /call and the sales trip read (P2). ครั้งที่ซื้อ / '
-        'ซื้อล่าสุด / times_bought, one query each; a written-off bill is still '
-        'a purchase.'),
+    'purchase_history.py::products': ('purchase',
+        'card C: the per-product rows the customer page and the call card read '
+        '(P3). times_bought / last_purchase are CASEs over the purchase population: '
+        'the last PAID purchase, never a credit note or a freebie. A written-off '
+        'bill is still a purchase. Moved out of history() in P3.'),
     'purchase_history.py::histories': ('purchase',
         'card C: /customers, /call and the sales trip read their ซื้อล่าสุด from '
         'here (P2). The list surfaces no longer name the predicate themselves.'),

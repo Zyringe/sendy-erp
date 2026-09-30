@@ -560,9 +560,11 @@ def _assemble_db():
     return c
 
 
+# Card C P3: _assemble_products takes the customer KEY (`key='C001'`, the code) where it
+# took the bill names (`names=['ร้าน A']`); every call below changed for that reason only.
 def test_assemble_products_attaches_promo_tiers_and_peer_fields():
     c = _assemble_db()
-    products = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001')
+    products = cc._assemble_products(c, key='C001', canon_code='C001')
     assert len(products) == 1
     p = products[0]
     # Full promo dict passes through (not just a truncated label)
@@ -584,7 +586,7 @@ def test_assemble_products_no_promo_is_none_tiers_independent():
     c = _assemble_db()
     c.execute("DELETE FROM promotions")
     c.commit()
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001')[0]
     assert p['promo'] is None
     # price tiers are independent of promo
     assert p['price_tiers'][0]['qty_label'] == '1 โหล'
@@ -611,7 +613,7 @@ def test_assemble_products_price_promo_not_shadowed_by_later_qty_promo():
         "VALUES (2,1,'แถม1','bundle',10,1,1,'2026-06-02 00:00:00')"  # created AFTER
     )
     c.commit()
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
     assert p['customer_price'] == 90.0        # 100 * (1 - 10%), from the PRICE promo
     assert p['promo']['promo_type'] == 'percent'
 
@@ -621,7 +623,7 @@ def test_assemble_products_qty_only_promo_still_displayed_when_no_price_promo():
     shown as `promo` (display falls back to qty_promo) even though it
     does not change customer_price."""
     c = _assemble_db()  # fixture's only promo is the 'bundle' one
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
     assert p['customer_price'] == 100.0
     assert p['promo']['promo_type'] == 'bundle'
 
@@ -644,7 +646,7 @@ def test_assemble_products_peer_filtered_by_epoch_excludes_pre_epoch_peer():
         "VALUES (1,'ดอกสว่าน','ตัว','ร้าน C','C003',1,100,80,0,'20%','IV3','IV3','2026-06-01')"
     )
     c.commit()
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
     assert p['peer_n'] == 1
     assert p['peer_median'] == 80
 
@@ -668,7 +670,7 @@ def test_assemble_products_pre_epoch_bill_is_returned_and_marked_stale():
         "VALUES (1,'base_sell_price',80,100,?)", (epoch_date + ' 09:00:00',))
     c.commit()
     # C001's only bill (2026-05-01, seeded by _assemble_db) predates the epoch.
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
     assert p['customer_latest'] is not None      # shown, not blanked (decision B)
     assert p['customer_latest_is_stale'] is True
     assert p['customer_latest_date'] < epoch_date, p['customer_latest_date']
@@ -680,7 +682,7 @@ def test_assemble_products_pre_epoch_bill_is_returned_and_marked_stale():
         "VALUES (1,'ดอกสว่าน','ตัว','ร้าน A','C001',1,100,70,0,'30%','IV9','IV9','2026-07-01')"
     )
     c.commit()
-    p2 = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p2 = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
     assert p2['customer_latest'] == 70
     assert p2['customer_latest_is_stale'] is False   # control: in-window, not stale
 
@@ -729,7 +731,7 @@ def test_assemble_products_peer_position_names_and_orders():
     """v2: each product carries peer position (min/max/cheaper_pct), a per-peer
     breakdown enriched with customer NAMES, and this customer's order history."""
     c = _assemble_db()
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001')[0]
     # Peer position: one peer (C002 @ 95); customer @ 90 → cheaper than 100%
     assert p['peer_min'] == 95 and p['peer_max'] == 95
     assert p['peer_cheaper_pct'] == 100
@@ -785,7 +787,7 @@ def test_card_latest_line_is_one_canonical_row_not_the_median_representative():
                   "AND date_iso='2026-07-01'").fetchone()[0]
     assert n == 2, n
 
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
 
     # 1. satang precision + higher-id line, NOT the 75.43 same-date median
     assert p['customer_latest'] == 70.37, p['customer_latest']
@@ -826,7 +828,7 @@ def test_pre_epoch_bill_is_shown_flagged_stale_not_blanked():
                   "AND product_id=1 AND date_iso < ?", (epoch_date,)).fetchone()[0]
     assert n >= 1, n                       # count before property
 
-    p = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
 
     assert p['customer_latest'] is not None, "the pre-epoch bill must still be SHOWN"
     assert p['customer_latest_is_stale'] is True
@@ -841,7 +843,7 @@ def test_pre_epoch_bill_is_shown_flagged_stale_not_blanked():
         "qty,unit_price,net,vat_type,discount,doc_no,doc_base,date_iso) "
         "VALUES (1,'ดอกสว่าน','ตัว','ร้าน A','C001',1,100,70,0,'30%','IV9','IV9','2026-07-01')")
     c.commit()
-    p2 = cc._assemble_products(c, names=['ร้าน A'], canon_code='C001', today='2026-08-01')[0]
+    p2 = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
     assert p2['customer_latest'] == 70
     assert p2['customer_latest_is_stale'] is False
 

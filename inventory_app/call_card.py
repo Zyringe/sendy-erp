@@ -2,14 +2,13 @@
 
 Dual-key design
 ---------------
-Sales data (sales_transactions) is keyed on the customer NAME column
-(`sales_transactions.customer`).  The call_log and crm tables are keyed on the
-CANONICAL customer key — `customers.code` when a master row exists, else the
-customer name for orphans.  This matches the ar_followup resolver so the AR and
-call-card agree on who is who.
+The call_log and crm tables are keyed on the CANONICAL customer key —
+`customers.code` when a master row exists, else the customer name for orphans.
+This matches the ar_followup resolver so the AR and call-card agree on who is who.
+Sales history (purchase_history) is keyed on the same customer key.
 
-`get_card` reconciles the two keys:
-  canonical_key → arf_mod._resolve_target → names_list → query sales by name.
+`get_card` reconciles the URL key:
+  URL key → arf_mod._resolve_target → canonical key → purchase_history.
 
 Public surface
 --------------
@@ -39,7 +38,6 @@ from typing import Optional
 
 import customer_geo as geo
 import purchase_history
-import sales_filters
 import unit_conversion
 import vat_math
 
@@ -442,6 +440,34 @@ def special_customers(conn):
             if len(flags) >= 3 and sum(flags) / len(flags) >= 0.5}
 
 
+def _summary(conn, hist, master):
+    """The card header's dict, in the shape templates/call/card.html reads
+    (`summary.summary.*`, `top_products`, `salesperson`), built from
+    purchase_history.history(): the same figures the desktop customer page shows.
+
+    ซื้อครั้งแรก is the first PAID purchase (`first_purchase_date`, Put's E1); the
+    raw first document stays as `first_date`. The salesperson comes from the
+    customers master row this card is already showing.
+    """
+    t = hist['totals']
+    sp_code = master.get('salesperson')
+    salesperson = None
+    if sp_code:
+        sp = conn.execute("SELECT name FROM salespersons WHERE code=?", (sp_code,)).fetchone()
+        salesperson = sp['name'] if sp and sp['name'] else sp_code
+    return {
+        'summary': {
+            'doc_count': t['doc_count'], 'total_net': t['purchase_total'],
+            'total_qty': t['qty_total'], 'first_date': t['first_activity'],
+            'last_date': t['last_activity'], 'purchase_doc_count': t['purchase_count'],
+            'first_purchase_date': t['first_purchase'],
+            'last_purchase_date': t['last_purchase'],
+        },
+        'top_products': hist['top_products'],
+        'salesperson': salesperson,
+    }
+
+
 # ── get_card ──────────────────────────────────────────────────────────────────
 
 def get_card(conn, customer_code):
@@ -456,7 +482,7 @@ def get_card(conn, customer_code):
     -------
     dict with keys:
       master       - customers row or synthetic dict for orphans
-      summary      - get_customer_summary result
+      summary      - header stats from purchase_history (see _summary)
       products     - top products with peer pricing + base price (unit-aware) + promo
       winback      - products with ≥3 prior buys whose last buy > median inter-purchase interval
       clearance    - hard_to_sell products in-stock that match customer's bought categories
@@ -469,13 +495,15 @@ def get_card(conn, customer_code):
     # Lazy imports to avoid circular deps at module load time
     import ar_followup as arf_mod
     import cashflow as cf_mod
-    import models
     import peer_pricing as pp
 
-    # ── 1. Resolve canonical key → names for sales queries ───────────────────
+    # ── 1. Resolve the URL key → canonical customer key ──────────────────────
     canon_code, names = arf_mod._resolve_target(conn, customer_code)
-    # Use the first resolved name for get_customer_summary (it accepts names)
     primary_name = names[0] if names else customer_code
+    # The key every sales read below uses (purchase_history's customer key): the
+    # code, or the bill name only for a true orphan. Never `names[0]` — that made
+    # the header one bill name's history (card C).
+    key = canon_code or primary_name
 
     # ── 2. Master row ─────────────────────────────────────────────────────────
     # The URL key first: `call_contact` writes `WHERE code = <this key>`, so the
@@ -501,23 +529,18 @@ def get_card(conn, customer_code):
         master = {'code': canon_code or customer_code, 'name': primary_name, 'fax': None,
                   'nickname': None, 'contact_note': None}
 
-    # ── 3. Sales summary (via models — uses customer NAME) ───────────────────
-    summary = models.get_customer_summary(primary_name)
+    # ── 3. History: header, แบรนด์เด่น, product rows and win-back, one call ───
+    # Win-back (#497) is always over the customer's full history and scoped by
+    # the key, never by bill name (two codes can share one name, BUG 2 /
+    # ทรัพย์ทวี): the module owns both rules.
+    hist = purchase_history.history(conn, key, today=_today())
+    summary = _summary(conn, hist, master)
 
     # ── 4. Top products: peer pricing + unit-aware base + promo + price tiers ──
-    products = _assemble_products(conn, names, canon_code)
+    products = _assemble_products(conn, key, canon_code, rows=hist['products'])
 
-    # ── 5. Win-back: one shared computation (#497) — scoped by customer_code
-    # when we have one (never by bill name: two codes can share one name,
-    # BUG 2 / ทรัพย์ทวี), by the orphan name only for a true orphan (no code
-    # anywhere for this customer, `canon_code is None`).
-    import winback as wb_mod
-    from models.customers import _customer_sales_scope
-    if canon_code:
-        wb_where, wb_params = _customer_sales_scope('customer_code', canon_code, None, None)
-    else:
-        wb_where, wb_params = _customer_sales_scope('customer', primary_name, None, None)
-    winback = wb_mod.compute_winback(conn, wb_where, wb_params, today=_today())
+    # ── 5. Win-back ───────────────────────────────────────────────────────────
+    winback = hist['winback']
 
     # ── 6. Clearance: hard_to_sell=1 products in stock that overlap customer's categories
     clearance = _compute_clearance(conn, products)
@@ -551,14 +574,19 @@ def get_card(conn, customer_code):
     }
 
 
-def _assemble_products(conn, names, canon_code, today=None):
+def _assemble_products(conn, key, canon_code, today=None, rows=None):
     """Build the 'ซื้อประจำ' product list: the customer's top-30 products by net
     revenue, each enriched with unit-aware base price, the full active-promotion
     dict, quantity price-tiers, and peer pricing (the customer's latest line + a
     representative-peer line, both carrying gross list price + raw discount text).
 
-    Extracted from get_card so the pricing assembly is unit-testable without the
-    models.get_customer_summary dependency (which opens its own connection).
+    The (product, unit) rows come from purchase_history (card C P3): a product the
+    customer only ever returned, got free or was invoiced in error for is absent,
+    quantity and money are net of credit notes and leave out documents invoiced in
+    error, `last_buy` is the last PAID purchase and `doc_count` is how many
+    invoices that was. `key` is the customer key (code, or bill name for a true
+    orphan); `rows` are `purchase_history.products(conn, key)` (get_card passes
+    the ones it already has from history()).
 
     `today` (default: real wall-clock date, ISO string) — positional-or-keyword
     like price_lookup's own `today` params, so every existing call site
@@ -584,27 +612,31 @@ def _assemble_products(conn, names, canon_code, today=None):
 
     today_str = today or dt.date.today().isoformat()
 
-    # Pull customer's top products by money, NET of returns (#627): a credit
-    # note subtracts from both the ranking key and the ซื้อรวม qty.
-    product_rows = conn.execute(f"""
-        SELECT
-            st.product_id,
-            COALESCE(p.product_name, st.product_name_raw) AS product_name,
-            st.unit,
-            SUM({sales_filters.sales_qty_sql('st')}) AS total_qty,
-            SUM({sales_filters.sales_net_sql('st')}) AS total_net,
-            COUNT(DISTINCT st.doc_base) AS doc_count,   -- invoices, not lines (#496)
-            MAX(st.date_iso) AS last_buy,
-            p.base_sell_price,
-            p.unit_type
-        FROM sales_transactions st
-        LEFT JOIN products p ON p.id = st.product_id
-        WHERE st.customer IN ({",".join("?" * len(names))})
-          AND st.product_id IS NOT NULL
-        GROUP BY st.product_id, st.unit
-        ORDER BY total_net DESC
-        LIMIT 30
-    """, names).fetchall()
+    if rows is None:
+        rows = purchase_history.products(conn, key)
+    # Top 30 by money, net of returns (#627). An unmapped line (no product_id)
+    # has no price to enrich, so it is not a row here.
+    mapped = sorted((r for r in rows if r['product_id'] is not None),
+                    key=lambda r: (-(r['net'] or 0), r['product_id'], r['unit'] or ''))[:30]
+    base_info = {}
+    if mapped:
+        ph0 = ",".join("?" * len(mapped))
+        base_info = {b['id']: b for b in conn.execute(
+            f"SELECT id, base_sell_price, unit_type FROM products WHERE id IN ({ph0})",
+            [r['product_id'] for r in mapped]).fetchall()}
+    product_rows = [{
+        'product_id': r['product_id'],
+        'product_name': r['name'],
+        'unit': r['unit'],
+        'total_qty': r['qty'],
+        'total_net': r['net'],
+        'doc_count': r['times_bought'],     # invoices, not lines (#496)
+        'last_buy': r['last_purchase'],
+        'base_sell_price': (base_info[r['product_id']]['base_sell_price']
+                            if r['product_id'] in base_info else None),
+        'unit_type': (base_info[r['product_id']]['unit_type']
+                      if r['product_id'] in base_info else None),
+    } for r in mapped]
 
     # C2: one epoch per (product_id, unit) PAIR — a product bought at two
     # units must not have one unit's epoch silently overwrite the other's.
@@ -660,10 +692,10 @@ def _assemble_products(conn, names, canon_code, today=None):
         # (the product-name click modal). One query, grouped by product_id.
         order_rows = conn.execute(
             f"SELECT product_id, date_iso, doc_no, qty, unit, unit_price, discount, net, vat_type "
-            f"FROM sales_transactions "
-            f"WHERE customer IN ({','.join('?' * len(names))}) AND product_id IN ({ph}) "
+            f"FROM sales_transactions s "
+            f"WHERE {purchase_history.customer_key_sql('s')} = ? AND product_id IN ({ph}) "
             f"ORDER BY product_id, date_iso DESC, doc_no DESC",
-            list(names) + pid_list,
+            [key] + pid_list,
         ).fetchall()
         orders_map = {}
         for r in order_rows:

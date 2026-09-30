@@ -579,7 +579,8 @@ def test_customer_page_low_stock_row_gets_the_warning_class(tmp_db):
 def test_call_card_still_reads_top_products_unaffected(tmp_db):
     """/code-review risk: product_cards is ADDITIVE. top_products must stay
     money-ordered and untouched — call/card.html's "แบรนด์เด่น" reads
-    top_products[0].name (get_customer_summary, name-keyed, via call_card.py).
+    top_products[0].name (call_card.get_card, from purchase_history; card C P3
+    retired the name-keyed get_customer_summary this used to call).
     A cheap product bought many times must NOT outrank an expensive one here,
     even though it does in product_cards (times-bought order)."""
     import sqlite3
@@ -594,18 +595,19 @@ def test_call_card_still_reads_top_products_unaffected(tmp_db):
               qty=1, unit_price=10, net=10, vat_type=0)
     _line(conn, doc_base='IV49360', suffix=1, pid=pid_costly, date_iso='2026-01-01',
           qty=1, unit_price=5000, net=5000, vat_type=0)
-    conn.close()
 
-    import models
-    data = models.get_customer_summary(TEST_NAME)
+    import call_card
+    data = call_card.get_card(conn, TEST_CODE)['summary']
+    conn.close()
     assert data['top_products'][0]['product_id'] == pid_costly
 
 
 def test_call_card_summary_region_is_phak_not_the_retired_region_id(tmp_db):
-    """#528 (code-review finding): get_customer_summary is the one place that
-    still read customers.region_id -> regions after the retirement — unused
-    by call/card.html today, but a loaded gun for whoever wires it in next.
-    Pin it to customer_geo.region_of, same as every other surface."""
+    """#528 (code-review finding): a customer-summary loader must not read the
+    retired customers.region_id -> regions. Pin the loader to
+    customer_geo.region_of, same as every other surface. (Card C P3 deleted the
+    name-keyed get_customer_summary this pinned; get_customer_summary_by_code is the
+    surviving loader that returns a region, so the pin moves there.)"""
     import sqlite3
     import customer_geo
     conn = sqlite3.connect(tmp_db)
@@ -621,6 +623,6 @@ def test_call_card_summary_region_is_phak_not_the_retired_region_id(tmp_db):
     conn.close()
 
     import models
-    data = models.get_customer_summary(TEST_NAME)
+    data = models.get_customer_summary_by_code(TEST_CODE)
     assert data['region'] == customer_geo.region_of('123 ถ.สุขุมวิท ชลบุรี')
     assert data['region'] == 'ภาคตะวันออก'  # control: the address really parses

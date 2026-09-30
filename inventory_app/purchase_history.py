@@ -137,6 +137,41 @@ def totals(conn, key, date_from=None, date_to=None):
     return _totals(conn, where, params)
 
 
+def products(conn, key, date_from=None, date_to=None):
+    """Just `history()['products']`: one statement. For a surface that renders the
+    per-product table and needs nothing else (the call card's rows)."""
+    import price_lookup
+
+    where, params = _scope(key, date_from, date_to)
+    # Money and quantity are NET of credit notes (#646); times_bought and
+    # last_purchase stay on the purchase half (a credit note is not a purchase,
+    # the invoice it reverses still is). HAVING drops a product that was only
+    # ever returned, given away or invoiced in error.
+    return [dict(r) for r in conn.execute(f"""
+        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
+               s.unit,
+               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
+                                   THEN s.doc_base END) AS times_bought,
+               MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
+                        THEN s.date_iso END) AS last_purchase,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.qty ELSE s.qty END) AS qty,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.net ELSE s.net END) AS net,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.net ELSE 0 END), 0) AS returned_net
+        FROM sales_transactions s
+        LEFT JOIN products p ON p.id = s.product_id
+        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
+                           OR {price_lookup.returned_lines_filter('s')})
+        GROUP BY s.product_id, s.unit
+        HAVING times_bought > 0
+        ORDER BY s.product_id, s.unit
+    """, params).fetchall()]
+
+
 def history(conn, key, date_from=None, date_to=None, today=None):
     """Everything one customer page / call card needs. The window applies to
     every field EXCEPT 'winback' (always all-time). `today` pins win-back's clock.
@@ -193,33 +228,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         LIMIT 20
     """, params).fetchall()]
 
-    # Money and quantity are NET of credit notes (#646); times_bought and
-    # last_purchase stay on the purchase half (a credit note is not a purchase,
-    # the invoice it reverses still is). HAVING drops a product that was only
-    # ever returned, given away or invoiced in error.
-    products = [dict(r) for r in conn.execute(f"""
-        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
-               s.unit,
-               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
-                                   THEN s.doc_base END) AS times_bought,
-               MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
-                        THEN s.date_iso END) AS last_purchase,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.qty ELSE s.qty END) AS qty,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.net ELSE s.net END) AS net,
-               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
-               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.net ELSE 0 END), 0) AS returned_net
-        FROM sales_transactions s
-        LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
-                           OR {price_lookup.returned_lines_filter('s')})
-        GROUP BY s.product_id, s.unit
-        HAVING times_bought > 0
-        ORDER BY s.product_id, s.unit
-    """, params).fetchall()]
+    products_ = products(conn, key, date_from, date_to)
 
     returned_net_total = conn.execute(f"""
         SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
@@ -235,7 +244,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         'monthly': monthly,
         'documents': documents,
         'top_products': top_products,
-        'products': products,
+        'products': products_,
         'returned_net_total': returned_net_total,
         'winback': winback_rows,
     }

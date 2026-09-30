@@ -222,6 +222,8 @@ def test_pricing_page_shows_invoice_counts(admin):
 
 
 # ── call card (call_card.get_card, per-product doc_count; not rendered today) ─
+# Card C P3 (Put B1, 2026-09-30): the call card's per-product count is the number of
+# PURCHASES (purchase_history `times_bought`), no longer the raw document count.
 
 def test_call_card_per_product_count_is_invoices(seeded):
     import call_card
@@ -229,8 +231,9 @@ def test_call_card_per_product_count_is_invoices(seeded):
     assert len(x['products']) == 2
     by_key = {(p['product_id'], p['unit']): p['doc_count'] for p in x['products']}
     # X's P1 ตัว lines: 01-1, 01-2 (freebie), 02-1, 04-1, 04-2 (freebie), SR-1,
-    # SR-2 = 7 lines on 4 documents. This population keeps the credit note.
-    assert by_key == {(P1, 'ตัว'): 4, (P2, 'ตัว'): 1}
+    # SR-2 = 7 lines on 4 documents. This population NO LONGER keeps the credit
+    # note (it is not a purchase): IV49601, IV49602, IV49604 = 3. (was 4)
+    assert by_key == {(P1, 'ตัว'): 3, (P2, 'ตัว'): 1}
 
     y = call_card.get_card(seeded, Y_CODE)
     assert len(y['products']) == 2
@@ -396,4 +399,6 @@ def test_freebie_only_invoice_counts_where_its_population_does(seeded):
     import call_card
     x = {(p['product_id'], p['unit']): p['doc_count']
          for p in call_card.get_card(seeded, X_CODE)['products']}
-    assert x[(P1, 'ตัว')] == 5
+    # Card C P3 (was 5): the call card counts PURCHASES now. IV49605 carries only a
+    # ฿0 freebie line, so it is not one; the count stays IV49601/02/04 = 3.
+    assert x[(P1, 'ตัว')] == 3

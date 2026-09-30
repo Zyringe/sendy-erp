@@ -54,8 +54,10 @@ MUST_USE_HELPER = {
     'models/sales.py::get_sales_summary': 2,          # /sales cards: qty + net
     'models/sales.py::get_trade_dashboard': 6,        # card (2) + weekly (1) + top products (2) + top customers (1)
     'models/sales.py::get_product_trade_summary': 8,  # card (2) + customers (2) + monthly (2) + docs (1) + doc units (1)
-    'call_card.py::_assemble_products': 2,            # ซื้อประจำ ordering + its ซื้อรวม qty
-    'models/customers.py::_customer_sales_aggregates': 3,  # จำนวนชิ้น + top_products (the call card's แบรนด์เด่น)
+    # card C P3 removed two entries that stood here: call_card._assemble_products (its ordering
+    # and ซื้อรวม qty now come from purchase_history.products, netted by returned_lines_filter)
+    # and customers._customer_sales_aggregates (deleted; its จำนวนชิ้น and top_products live
+    # in purchase_history._totals / history below).
     'purchase_history.py::history': 2,                # card C: top_products (qty, net)
     'purchase_history.py::_totals': 1,                # card C: จำนวนชิ้น (history() and totals() share it)
 }
@@ -105,11 +107,14 @@ ALLOWED = {
     'payments_alloc.py::cash_in_rows': (1,
         'cash received per invoice for /cashflow, over non-SR non-HS bills. Cash, not ยอดขาย.'),
     # ── one document, one product's price, one order, one platform ──
-    'purchase_history.py::history': (5,
+    'purchase_history.py::products': (4,
         'card C, per-product rows: qty and net are netted by returned_lines_filter '
         'in a CASE (the #646 shape, mirror of _customer_product_cards), plus '
-        'returned_qty, returned_net and returned_net_total, which are the '
-        'credit notes THEMSELVES. Not un-netted sales.'),
+        'returned_qty and returned_net, which are the credit notes THEMSELVES. '
+        'Not un-netted sales. Split out of history() in card C P3.'),
+    'purchase_history.py::history': (1,
+        'card C: returned_net_total, the credit notes THEMSELVES summed for the '
+        'page\'s footnote. Not un-netted sales.'),
     'purchase_history.py::customer_documents': (1,
         'one row per DOCUMENT, a credit note already negated in Python. A document list.'),
     'commission.py::get_invoices_for_salesperson': (1,

@@ -52,7 +52,7 @@ MOVED_NAMES = {
         'create_promotion', 'deactivate_promotion', 'get_product_price_tiers',
     ],
     'customers': [
-        'get_customer_summary', 'get_customers',
+        'get_customers',
         'get_active_salespersons',
         'get_orphan_salesperson_codes', 'get_customer_master',
         'update_customer_assignment', 'get_customers_master',

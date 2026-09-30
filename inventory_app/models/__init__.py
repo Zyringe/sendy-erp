@@ -68,7 +68,7 @@ from .promotions import (
     is_current, classify_promotions,
 )
 from .customers import (
-    get_customer_summary, get_customers,
+    get_customers,
     get_active_salespersons, get_orphan_salesperson_codes, get_customer_master,
     update_customer_assignment, update_customer_edit,
     CUSTOMER_CONTACT_FIELDS, get_customer_audit_history,
