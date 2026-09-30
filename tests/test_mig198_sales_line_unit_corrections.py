@@ -1,5 +1,6 @@
 """mig 198: sales_line_unit_corrections (#692). The table CHECKs are the state
 machine, so they are tested as the contract they are."""
+import json
 import os
 import sqlite3
 
@@ -111,3 +112,44 @@ def test_a_shape_outside_the_state_machine_is_refused(migrated, bad):
 
     with pytest.raises(sqlite3.IntegrityError):
         _insert(migrated, **bad)
+
+
+def _audit(conn, row_id):
+    return [(action, json.loads(fields), user, row_key) for action, fields, user, row_key
+            in conn.execute(
+                "SELECT action, changed_fields, user, row_key FROM audit_log"
+                " WHERE table_name='sales_line_unit_corrections' AND row_id=?"
+                " ORDER BY id", (row_id,))]
+
+
+def test_every_write_to_a_correction_is_audited(migrated):
+    rid = _insert(migrated)
+    migrated.execute(
+        "UPDATE sales_line_unit_corrections SET status='cancelled',"
+        " end_cause='cancelled', ended_at='2026-09-30 10:00:00', ended_by='mam',"
+        " end_reason='แก้ผิดบรรทัด ยกเลิก' WHERE id=?", (rid,))
+    migrated.execute("UPDATE sales_line_unit_corrections SET created_at=created_at"
+                     " WHERE id=?", (rid,))
+    migrated.execute("DELETE FROM sales_line_unit_corrections WHERE id=?", (rid,))
+
+    inserted, updated, deleted = _audit(migrated, rid)
+
+    assert inserted[0] == 'INSERT' and inserted[2:] == ('put', 'IV6900001-1|C1')
+    assert (inserted[1]['corrected_unit'], inserted[1]['express_unit_raw'],
+            inserted[1]['stock_mode'], inserted[1]['reason']) == \
+        ('หลอด', 'โหล', 'hold', 'คีย์หน่วยผิดจากออเดอร์จริง')
+    assert updated == ('UPDATE', {
+        'status': ['active', 'cancelled'], 'end_cause': [None, 'cancelled'],
+        'ended_at': [None, '2026-09-30 10:00:00'], 'ended_by': [None, 'mam'],
+        'end_reason': [None, 'แก้ผิดบรรทัด ยกเลิก']}, 'mam', 'IV6900001-1|C1')
+    assert deleted[0] == 'DELETE' and deleted[1]['status'] == 'cancelled'
+
+
+def test_rollback_drops_the_audit_triggers(migrated):
+    def triggers():
+        return migrated.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'"
+            " AND name LIKE 'audit_sales_line_unit_corrections_%'").fetchone()[0]
+    assert triggers() == 3
+    _script(migrated, _DOWN)
+    assert triggers() == 0
