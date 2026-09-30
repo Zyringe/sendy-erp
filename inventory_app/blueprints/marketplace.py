@@ -599,6 +599,11 @@ def upload():
                     # and run_automatch has no tiktok _CUST_CODE until PR-3.
                     parsed = parse_tiktok_income.parse_tiktok_income(
                         *parse_tiktok_income.load_tiktok_income(io.BytesIO(data)))
+                    if not parsed['settlements'] and not parsed['adjustments']:
+                        problems.append(('warning', f'⚠️ {name}: ไฟล์ Income ของ TikTok'
+                                                    ' ไม่มีรายการ — ไม่ได้นำเข้าอะไรค่ะ'))
+                        _log_import(conn, name, notes='marketplace:tt_income:EMPTY')
+                        continue
                     # A fee row needs its order: none is written for an order not
                     # imported yet (the settlement UPDATE already skips those).
                     known = {r[0] for r in conn.execute(

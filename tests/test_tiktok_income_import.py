@@ -260,3 +260,19 @@ def test_shopee_cancel_without_settlement_is_unchanged(conn):
     conn.commit()
     m = _margin(conn, 'shopee', 'SPCAN1')
     assert (m['net'], m['margin'], m['cogs']) == (None, None, 7.0)
+
+
+def test_empty_income_file_warns_instead_of_reporting_success(conn, tmp_path):
+    import openpyxl
+    wb = openpyxl.load_workbook(INCOME_XLSX)
+    wb['รายละเอียดคำสั่งซื้อ'].delete_rows(2, 3)
+    for row in wb['รายงาน'].iter_rows():
+        if row[1].value == 'ยอดการชำระเงินทั้งหมด':
+            row[5].value = '0'
+    empty = tmp_path / 'income_empty.xlsx'
+    wb.save(empty)
+    _import_orders(conn)
+    html = _upload((str(empty), 'income_empty.xlsx'))
+    assert 'alert-success' not in html
+    assert 'ไม่มีรายการ' in html
+    assert _fees(conn) == []
