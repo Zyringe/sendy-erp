@@ -49,12 +49,13 @@ Override cache contract (`commission_overrides` table):
 """
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from collections import defaultdict
 
+import cashbook_ledger
 import commission_attribution
+import database
 import sales_filters
 from config import DATABASE_PATH
 
@@ -112,27 +113,50 @@ def _connect(db_path=None):
 
 
 class _ConnCtx:
-    """Use the caller's connection if given (no close); else open/own one.
-    Mirrors hr.py::_ConnCtx — record_payout/delete_payout need an atomic,
-    single-commit multi-statement write (plan.md finding #2), and tests reuse
-    one connection across setup + assertion (same pattern as the salary
-    pay-event tests)."""
+    """The transaction record_payout / delete_payout run in (card F, plan §3c).
+    Every entry locks or adopts; there is no unlocked mode.
+
+    - owned (`conn` None): opens a connection, `database.immediate` on it,
+      closes it on the way out.
+    - borrowed-clean (a connection with no open transaction): `database.immediate`
+      on it; commits on a clean exit, rolls back on an exception, never closes.
+    - borrowed-in-flight (the caller already holds a transaction, e.g.
+      scripts/2026_09_19_589_commission_03_backrecord.py): adopted. No BEGIN,
+      no COMMIT, no ROLLBACK: the caller owns its transaction and its cleanup.
+
+    Either way nothing here commits mid-body, so a refusal raised before the
+    first INSERT leaves nothing written in every state."""
 
     def __init__(self, conn=None, db_path=None):
         self._given = conn
         self._db_path = db_path
         self._owned = None
+        self._txn = None
 
     def __enter__(self):
-        if self._given is not None:
-            return self._given
-        self._owned = _connect(self._db_path)
-        return self._owned
+        c = self._given
+        if c is not None and c.in_transaction:
+            return c
+        if c is None:
+            self._owned = c = _connect(self._db_path)
+        try:
+            self._txn = database.immediate(c)
+            self._txn.__enter__()
+        except BaseException:
+            if self._owned is not None:
+                self._owned.close()
+                self._owned = None
+            raise
+        return c
 
-    def __exit__(self, *exc):
-        if self._owned is not None:
-            self._owned.close()
-        return False
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._txn is not None:
+                return self._txn.__exit__(exc_type, exc, tb)
+            return False
+        finally:
+            if self._owned is not None:
+                self._owned.close()
 
 
 def _load_tiers(conn):
@@ -649,9 +673,10 @@ def record_payout(year_month, salesperson_code, amount_paid,
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (year_month, salesperson_code, amount_paid, paid_date,
                   paid_method or None, note or None, paid_by or None, invoice_no))
-            c.commit()
             return cur.lastrowid
 
+        # Checked here, before the payout INSERT, so a refusal writes nothing;
+        # post_commission re-checks it as a backstop.
         account = c.execute(
             "SELECT * FROM cashbook_accounts WHERE id = ?", (account_id,)
         ).fetchone()
@@ -659,11 +684,6 @@ def record_payout(year_month, salesperson_code, amount_paid,
             raise ValueError("บัญชีที่เลือกไม่ถูกต้องหรือถูกปิดใช้งานแล้ว")
         if account["is_transfer"] == 1:
             raise ValueError("ไม่สามารถจ่ายค่าคอมมิชชั่นเข้าบัญชีประเภทเงินโอนได้")
-
-        sp = c.execute(
-            "SELECT name FROM salespersons WHERE code = ?", (salesperson_code,)
-        ).fetchone()
-        sp_name = sp["name"] if sp else salesperson_code
 
         cur = c.execute("""
             INSERT INTO commission_payouts
@@ -673,35 +693,10 @@ def record_payout(year_month, salesperson_code, amount_paid,
         """, (year_month, salesperson_code, amount_paid, paid_date,
               paid_method or None, note or None, paid_by or None, invoice_no))
         payout_id = cur.lastrowid
-
-        description = f"ค่าคอมมิชชั่น {year_month} — {sp_name}"
-        try:
-            cur2 = c.execute("""
-                INSERT INTO cashbook_transactions
-                    (account_id, txn_date, direction, category, amount,
-                     user_category, description, created_by, commission_payout_id)
-                VALUES (?, ?, 'expense', 'จ่ายค่าคอมมิชชั่น', ?, ?, ?, ?, ?)
-            """, (account_id, paid_date, amount_paid, sp_name, description,
-                  paid_by or None, payout_id))
-        except sqlite3.IntegrityError:
-            # UNIQUE(commission_payout_id) tripped — should be unreachable
-            # (payout_id is a brand-new lastrowid), kept for parity with
-            # hr.post_salary_payment's same defense-in-depth guard.
-            raise ValueError(
-                "รายการจ่าย commission นี้ถูกบันทึกลงบัญชีรับ-จ่ายไปแล้ว"
-            )
-        txn_id = cur2.lastrowid
-        # Attribute the cash-out to the actor: the mig-076 AFTER INSERT trigger
-        # stamps user=NULL, so mirror hr.post_salary_payment's explicit audit row.
-        c.execute(
-            """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
-                 VALUES ('cashbook_transactions', ?, 'INSERT', ?, ?)""",
-            (txn_id,
-             json.dumps({"commission_payout_id": payout_id, "amount": amount_paid,
-                         "account_id": account_id}, ensure_ascii=False),
-             paid_by or ''),
-        )
-        c.commit()
+        # The locked cashbook row and its actor-attributed audit row, derived
+        # from the payout row just inserted (card F seam).
+        cashbook_ledger.post_commission(c, payout_id=payout_id, account_id=account_id,
+                                        actor=paid_by)
         return payout_id
 
 
@@ -713,21 +708,8 @@ def delete_payout(payout_id, actor='', conn=None, db_path=None):
     with no linked row (the 2071 pre-Phase-3 payouts and any account_id=None
     top-up rows are never backfilled — plan.md ground truth)."""
     with _ConnCtx(conn, db_path) as c:
-        cb = c.execute(
-            "SELECT id FROM cashbook_transactions WHERE commission_payout_id = ?",
-            (payout_id,),
-        ).fetchone()
-        if cb is not None:
-            txn_id = cb["id"]
-            c.execute("DELETE FROM cashbook_transactions WHERE id = ?", (txn_id,))
-            c.execute(
-                """INSERT INTO audit_log (table_name, row_id, action, changed_fields, user)
-                     VALUES ('cashbook_transactions', ?, 'DELETE', ?, ?)""",
-                (txn_id, json.dumps({"commission_payout_id": payout_id}, ensure_ascii=False),
-                 actor or ''),
-            )
+        cashbook_ledger.cancel_commission(c, payout_id=payout_id, actor=actor)
         c.execute('DELETE FROM commission_payouts WHERE id = ?', (payout_id,))
-        c.commit()
 
 
 # ── All-invoices view (paid + unpaid) for one salesperson ───────────────────

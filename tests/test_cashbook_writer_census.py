@@ -30,8 +30,6 @@ WRITE_RE = re.compile(
 
 # {repo-relative path: (exact hit count, reason)}
 ALLOWED = {
-    'commission.py': (
-        2, "commission payout INSERT + cancel DELETE; moves to the ledger in PR-3"),
     'cashbook_payout_mirror.py': (
         4, "mirror INSERT, DELETE, UPDATE description + the module docstring's "
            "'Insert/delete/update cashbook_transactions' prose; PR-3 rewords it"),

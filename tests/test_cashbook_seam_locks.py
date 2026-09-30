@@ -192,3 +192,149 @@ def test_hr_unpay_refuses_a_caller_transaction(db):
     finally:
         c.close()
     assert _hr_paid(path, ids) == 1
+
+
+# ── commission: record_payout / delete_payout and their routes ───────────────
+
+def _payouts(path):
+    return _q(path, "SELECT COUNT(*) FROM commission_payouts")[0][0]
+
+
+def _record(ids, conn=None, **kw):
+    args = dict(year_month='2026-08', salesperson_code=ids['sp'], amount_paid=450.0,
+                paid_date='2026-09-01', paid_by='Administrator', invoice_no='IV6901',
+                account_id=ids['acct_392'])
+    args.update(kw)
+    return commission.record_payout(conn=conn, **args)
+
+
+def _route_mode(ids, mode):
+    form = {'month': '2026-08', 'paid_date': '2026-09-01', 'account_id': str(ids['acct_392']),
+            'sp_code': ids['sp']}
+    if mode == 1:
+        form.update({'invoice_no': 'IV6901', 'amount_IV6901': '450'})
+    else:
+        form[f'amount_{ids["sp"]}'] = '300'
+    return _client().post('/commission/payout', data=form)
+
+
+_COMMISSION_KINDS = ['record owned', 'record borrowed-clean', 'delete owned',
+                     'delete borrowed-clean', 'route mode 1', 'route mode 2', 'route delete']
+
+
+def _drive_commission(path, ids, kind):
+    """Setup before probing: a payout to delete for the delete kinds."""
+    if 'delete' in kind:
+        return _record(ids)
+    return None
+
+
+def _do_commission(path, ids, kind, pid, conn):
+    if kind == 'record owned':
+        _record(ids)
+    elif kind == 'record borrowed-clean':
+        _record(ids, conn=conn)
+    elif kind == 'delete owned':
+        commission.delete_payout(pid, actor='x')
+    elif kind == 'delete borrowed-clean':
+        commission.delete_payout(pid, actor='x', conn=conn)
+    elif kind == 'route delete':
+        assert _client().post(f'/commission/payout/{pid}/delete').status_code == 302
+    else:
+        assert _route_mode(ids, int(kind[-1])).status_code == 302
+
+
+@pytest.mark.parametrize('kind', _COMMISSION_KINDS)
+def test_probe_a_commission_holds_the_write_lock(db, monkeypatch, kind):
+    path, ids = db
+    pid = _drive_commission(path, ids, kind)
+    before = _payouts(path)
+    conn = commission._connect(path) if 'borrowed' in kind else None
+    try:
+        seen = _probe_a(monkeypatch, path, ids, 'commission_payouts')
+        _do_commission(path, ids, kind, pid, conn)
+    finally:
+        if conn is not None:
+            conn.close()
+    want = before - 1 if 'delete' in kind else before + 1
+    assert _payouts(path) == want, "control: the write landed and was committed"
+    assert seen == ['blocked'], f"{kind}: {seen}"
+
+
+@pytest.mark.parametrize('kind', _COMMISSION_KINDS)
+def test_probe_t_commission_begins_before_reading(db, monkeypatch, kind):
+    path, ids = db
+    pid = _drive_commission(path, ids, kind)
+    if 'borrowed' in kind:
+        conn = commission._connect(path)
+        stmts = []
+        conn.set_trace_callback(stmts.append)
+        traces = [stmts]
+    else:
+        conn = None
+        traces = _trace_factory(monkeypatch, commission, '_connect')
+    try:
+        _do_commission(path, ids, kind, pid, conn)
+    finally:
+        if conn is not None:
+            conn.close()
+    stmts = _writer_trace(traces, 'commission_payouts')
+    _assert_begin_first(stmts, kind)
+    if kind.startswith('record') or kind.startswith('route mode'):
+        up = [s.upper() for s in stmts]
+        acct = next(i for i, s in enumerate(up) if s.startswith('SELECT')
+                    and 'FROM CASHBOOK_ACCOUNTS' in s)
+        ins_p = next(i for i, s in enumerate(up) if s.startswith('INSERT INTO COMMISSION_PAYOUTS'))
+        ins_c = next(i for i, s in enumerate(up) if s.startswith('INSERT INTO CASHBOOK_TRANSACTIONS'))
+        assert 0 < acct < ins_p < ins_c, (kind, acct, ins_p, ins_c)
+
+
+def test_commission_borrowed_in_flight_is_adopted_never_ended(db):
+    """A caller's open transaction: no BEGIN, no COMMIT, no ROLLBACK (the #589
+    script's shape); its writes stay the caller's to commit or roll back."""
+    path, ids = db
+    conn = commission._connect(path)
+    stmts = []
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.set_trace_callback(stmts.append)
+        pid = _record(ids, conn=conn)
+        assert conn.in_transaction, "the caller's transaction must still be open"
+        conn.set_trace_callback(None)
+        conn.rollback()
+    finally:
+        conn.close()
+    up = [s.strip().upper() for s in stmts]
+    assert pid and any(s.startswith('INSERT INTO COMMISSION_PAYOUTS') for s in up), "control"
+    assert not [s for s in up if s.startswith(('BEGIN', 'COMMIT', 'ROLLBACK', 'END'))], up
+    assert _payouts(path) == 0, "the caller's rollback took the payout with it"
+
+
+def test_commission_refusal_in_flight_writes_nothing_and_leaves_the_txn(db):
+    path, ids = db
+    conn = commission._connect(path)
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        with pytest.raises(ValueError, match='บัญชีที่เลือกไม่ถูกต้อง'):
+            _record(ids, conn=conn, account_id=9999)
+        assert conn.in_transaction
+        assert conn.execute("SELECT COUNT(*) FROM commission_payouts").fetchone()[0] == 0
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize('owned', [True, False])
+def test_commission_refusal_releases_the_lock(db, owned):
+    path, ids = db
+    conn = None if owned else commission._connect(path)
+    try:
+        with pytest.raises(ValueError, match='บัญชีที่เลือกไม่ถูกต้อง'):
+            _record(ids, conn=conn, account_id=9999)
+        if conn is not None:
+            assert not conn.in_transaction, "borrowed-clean: the refusal rolled back"
+    finally:
+        if conn is not None:
+            conn.close()
+    assert _competing(path, ids, 'commission_payouts') == 'went through'
+    assert _payouts(path) == 1          # only the competing row
