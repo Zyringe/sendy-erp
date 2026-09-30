@@ -276,8 +276,10 @@ EXPECTED = {
         'import_tiktok_snapshot, so the scanner (keyed by the ENCLOSING '
         'function of the literal itself, not of its caller) attributes it '
         'here rather than tracing the name reference -- see "WHAT THIS '
-        'SWEEP CANNOT CATCH" in the module docstring. TikTok has no orders '
-        'in the ERP yet (D9), so this is snapshot-only; import_tiktok_'
+        'SWEEP CANNOT CATCH" in the module docstring. TikTok orders are '
+        'imported (mig 197) but never deduct the mirror (Put 2026-09-30: '
+        'only platforms in bsn_sync.PLATFORM_STOCK_DEDUCT_CUSTOMERS do), '
+        'so this stays snapshot-only; import_tiktok_'
         'snapshot also calls _supersede_deduction_provenance (its own '
         'entry below) when the export DOES carry stock.',
 

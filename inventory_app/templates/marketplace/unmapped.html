@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from 'macros.html' import platform_badge %}
 {% block title %}รายการยังไม่จับคู่ – Marketplace{% endblock %}
 {% block page_title %}รายการที่ยังจับคู่สินค้าไม่ได้{% endblock %}
 
@@ -13,7 +14,7 @@
 <div class="alert alert-light border small text-muted mb-3">
   <i class="bi bi-info-circle me-1"></i>
   รายการเหล่านี้ยังจับคู่กับสินค้าในระบบไม่ได้ (ชื่อ/SKU ไม่ตรงกับ
-  <code>platform_skus</code>). วิธีแก้: ไปที่หน้า E-commerce → จับคู่ SKU ของ Shopee/Lazada
+  <code>platform_skus</code>). วิธีแก้: ไปที่หน้า E-commerce → จับคู่ SKU ของ Shopee/Lazada/TikTok
   กับสินค้าให้ครบ แล้วนำเข้าไฟล์ order ใหม่ — ระบบจะจับคู่ให้อัตโนมัติ
 </div>
 
@@ -31,8 +32,7 @@
         {% for r in rows %}
         <tr>
           <td>
-            {% if r.platform == 'shopee' %}<span class="badge" style="background:#ee4d2d">Shopee</span>
-            {% else %}<span class="badge" style="background:#003087">Lazada</span>{% endif %}
+            {{ platform_badge(r.platform) }}
           </td>
           <td class="small">{{ r.item_name or '-' }}</td>
           <td class="small">{{ r.variation_name or '-' }}</td>

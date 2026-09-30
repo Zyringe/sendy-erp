@@ -23,9 +23,13 @@ touch OTHER `marketplace_orders` columns (`settled_at`, `actual_payout`,
 never fake order freshness.
 """
 import inspect
+import os
 
 import models.marketplace as marketplace_mod
 from models.marketplace import get_order_staleness_alerts, ORDER_STALENESS_DAYS
+
+MIG_197 = os.path.join(os.path.dirname(__file__), '..', 'data', 'migrations',
+                       '197_marketplace_orders_tiktok.sql')
 
 
 def _seed_listing(conn, platform, variation_id, is_ignored=0):
@@ -105,12 +109,21 @@ def test_no_active_listing_no_alert(empty_db_conn):
 
 
 def test_tiktok_never_alerts_even_with_active_listing_and_no_orders(empty_db_conn):
-    """D9: TikTok is fully out of scope -- no TikTok orders exist in the
-    ERP, so warning about a TikTok order-import gap would be nonsense."""
+    """TikTok orders are imported (mig 197) but never deduct the mirror, so no
+    mirror goes stale without them: no 10-day upload chore, no alert, whether
+    TikTok has no orders or only old ones. Control: Shopee in the same state
+    does alert."""
     conn = empty_db_conn
+    with open(MIG_197, encoding='utf-8') as f:
+        conn.executescript(f.read())
     _seed_listing(conn, 'tiktok', 'V-TT')
+    _seed_listing(conn, 'shopee', 'V-S')
 
-    assert get_order_staleness_alerts(conn) == []
+    assert [a['platform'] for a in get_order_staleness_alerts(conn)] == ['shopee']
+
+    _seed_order(conn, 'tiktok', 'ORD-TT', 40)
+    _seed_order(conn, 'shopee', 'ORD-S', 40)
+    assert [a['platform'] for a in get_order_staleness_alerts(conn)] == ['shopee']
 
 
 def test_names_the_right_platform_among_two(empty_db_conn):

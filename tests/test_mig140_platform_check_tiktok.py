@@ -119,14 +119,19 @@ def test_invalid_platform_still_rejected_after_migration(pre140_conn):
 
 
 def test_marketplace_orders_check_untouched(pre140_conn):
-    """Out-of-scope guard: marketplace_orders.platform stays shopee/lazada-only."""
+    """Out-of-scope guard: mig 140 leaves marketplace_orders exactly as it found
+    it. Mig 197 widens that CHECK later, so this compares the table's DDL before
+    and after 140 instead of probing for a tiktok insert, which would go red
+    here as soon as 197 exists."""
     conn = pre140_conn
+    ddl = lambda: conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='marketplace_orders'"
+    ).fetchone()[0]
+    before = ddl()
+    assert 'CHECK(platform IN' in before       # control: the table and its CHECK exist
     _apply(conn, MIG_140)
     conn.commit()
-    with pytest.raises(sqlite3.IntegrityError):
-        conn.execute(
-            "INSERT INTO marketplace_orders (platform, order_sn) VALUES ('tiktok','O1')"
-        )
+    assert ddl() == before
 
 
 def test_existing_shopee_lazada_rows_preserved(pre140_conn):

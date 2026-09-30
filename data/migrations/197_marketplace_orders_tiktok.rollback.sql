@@ -1,0 +1,12 @@
+-- Rollback 197 is NOT this file. Run the guarded script instead:
+--
+--     python3 scripts/rollback_197_marketplace_orders_tiktok.py --db <db>
+--
+-- A SQL rollback is unsafe here. Under the sqlite3 CLI a failing CHECK does not
+-- stop the script: with a tiktok row present the INSERT ... SELECT fails, the
+-- CLI carries on, DROPs marketplace_orders and COMMITs, and every order is lost.
+-- The script refuses before BEGIN in that case and asserts counts before COMMIT.
+--
+-- The statement below fails on purpose and does nothing else, so running this
+-- file by mistake stops at once, under executescript() and under the CLI alike.
+SELECT * FROM "rollback 197: run scripts/rollback_197_marketplace_orders_tiktok.py";
