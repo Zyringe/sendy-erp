@@ -302,9 +302,13 @@ def test_cli_json_and_exit_code(db):
     assert ok.returncode == 0, ok.stderr
     report = json.loads(ok.stdout)
     assert len(report['invariants']) == len(oracle.INVARIANTS)
+    # the I14 pin carries where and when it was read, and its count is the set's
+    assert report['pins']['I14'] == {'env': 'PROD', 'read': '2026-09-30',
+                                     'count': len(oracle.EXPECTED['I14'])}
     _txn(path, ids, category='หมวดที่ไม่มี')
     bad = subprocess.run([sys.executable, SCRIPT, '--db', path], capture_output=True, text=True)
     assert bad.returncode == 1 and 'BAD I9' in bad.stdout, bad.stdout
+    assert 'pin I14: 29 ids read on PROD 2026-09-30' in bad.stdout, bad.stdout
 
 
 def test_oracle_never_writes(db):

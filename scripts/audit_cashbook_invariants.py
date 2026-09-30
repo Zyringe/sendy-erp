@@ -44,6 +44,10 @@ EXPECTED = {
                       407, 408, 409, 410, 418, 419, 443, 444, 445, 475, 476, 477, 507,
                       508, 509, 510}),
 }
+# Where and when each pin was read. EXPECTED holds PROD ids: the dev copy
+# happens to share them, which does not make the pin env-neutral. Printed with
+# every report so a stale pin is visible (PR-1 review N3).
+EXPECTED_READ = {"I14": {"env": "PROD", "read": "2026-09-30", "count": 29}}
 
 _UNLINKED = ("t.payroll_item_id IS NULL AND t.salary_advance_id IS NULL "
              "AND t.commission_payout_id IS NULL AND t.payout_platform IS NULL")
@@ -362,12 +366,15 @@ def main(argv=None):
     report = {"db": os.path.abspath(args.db),
               "read_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "migrations": {"max": mig[0], "count": mig[1]},
+              "pins": EXPECTED_READ,
               "invariants": results}
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=1))
     else:
         print(f"db {report['db']} · read {report['read_at_utc']} · "
               f"migrations {mig[0]} ({mig[1]})")
+        for key, pin in EXPECTED_READ.items():
+            print(f"pin {key}: {pin['count']} ids read on {pin['env']} {pin['read']}")
         for r in results:
             flag = "ok " if r["ok"] else "BAD"
             extra = f"  unexpected: {' '.join(r['unexpected'][:20])}" if r["unexpected"] else ""
