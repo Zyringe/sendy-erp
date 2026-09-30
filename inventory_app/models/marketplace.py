@@ -842,6 +842,7 @@ def get_marketplace_order(conn, order_id):
         """SELECT mo.*,
                   CASE WHEN mo.platform='lazada'
                        THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                       WHEN mo.platform='tiktok' THEN mo.item_total
                        ELSE mo.actual_payout END AS billed_basis
            FROM marketplace_orders mo
            LEFT JOIN marketplace_order_fees f
@@ -1017,8 +1018,9 @@ def get_order_margin(conn, order_id):
             'lines': out_lines}
 
 
-# Customer NAME (not code) per platform, for the payments-received lookup.
-_RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้าร้านL'}
+# Customer NAME (not code) per platform, for the payments-received lookup. A hard
+# lookup: an unknown platform raises instead of silently reading Shopee's payments.
+_RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้าร้านL', 'tiktok': 'หน้าร้านT'}
 
 
 # ONE definition of "what the IV should equal", shared by the reconciliation that
@@ -1038,6 +1040,7 @@ _RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้�
 # Requires the query to expose `mo` and to LEFT JOIN marketplace_order_fees AS f.
 _BILLED_BASIS_SQL = """CASE WHEN mo.platform='lazada'
                             THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                            WHEN mo.platform='tiktok' THEN mo.item_total
                             ELSE mo.actual_payout END"""
 
 
@@ -1056,7 +1059,7 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
     import payments_alloc
     from collections import OrderedDict
 
-    cust_name = _RECON_CUSTOMER.get(platform, 'หน้าร้านS')
+    cust_name = _RECON_CUSTOMER[platform]
     settle = {r['doc_base']: r
               for r in payments_alloc.invoice_settlement(customer=cust_name, conn=conn)}
     # Manager acknowledgements of billed≠payout discrepancies (survive re-matching).
@@ -1721,6 +1724,12 @@ def unassign_batch(batch_id, conn=None):
             conn.close()
 
 
+# Bucket A's "completed, just not settled yet" word per platform. Deliberately
+# NOT marketplace_match._STATUS_COMPLETED: that set also holds จัดส่งสำเร็จแล้ว /
+# delivered / confirmed, and using it would change Shopee/Lazada bucket A.
+_BUCKET_A_COMPLETED = {'tiktok': 'เสร็จสมบูรณ์'}
+
+
 def get_iv_match_worklist(conn, platform='shopee'):
     """Read-only diagnostic (build-phase 1 of marketplace-iv-matching): classify
     every non-cancelled/returned ``platform`` order into ONE of four
@@ -1840,7 +1849,7 @@ def get_iv_match_worklist(conn, platform='shopee'):
         op = item['product_ids']
 
         if not has_settlement:
-            if in_deposit or status == 'สำเร็จแล้ว':
+            if in_deposit or status == _BUCKET_A_COMPLETED.get(platform, 'สำเร็จแล้ว'):
                 period = (o['settled_at'] or o['order_date'] or '')[:7]
                 bucket = a_by_period.setdefault(
                     period, {'period': period, 'count': 0, 'wallet_income': 0.0})
