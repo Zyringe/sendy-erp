@@ -287,3 +287,36 @@ def test_apply_refuses_when_a_hold_would_move_stock(empty_db, monkeypatch):
 
     assert exc.value.code == 'stock_moved'
     assert sc.written_state(empty_db) == before
+
+
+def test_a_correction_cannot_slip_in_between_the_ratio_guard_and_its_write(
+        empty_db, monkeypatch):
+    import sqlite3
+    import line_unit_correction as luc
+    import models
+    sc.seed_company(empty_db)
+    pid = sc.seed_product(empty_db)
+    sc.run_zip(monkeypatch, sc.standard_book())
+    real_blocking = luc.blocking
+    attempts = []
+
+    def blocking_then_a_rival_apply(conn, **kwargs):
+        found = real_blocking(conn, **kwargs)
+        rival = sc.conn(empty_db)
+        rival.execute("PRAGMA busy_timeout = 100")
+        try:
+            luc.apply(rival, LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
+            attempts.append('applied')
+        except sqlite3.OperationalError as exc:
+            attempts.append(str(exc))
+        finally:
+            rival.close()
+        return found
+    monkeypatch.setattr(luc, 'blocking', blocking_then_a_rival_apply)
+
+    result = models.update_unit_conversion_ratio(pid, 'โหล', 10)
+
+    assert attempts == ['database is locked']
+    assert result == {'ok': True}
+    assert sc.corrections(empty_db) == []
+    assert sc.sale_ledger(empty_db, LINE, pid)[0][1] == -20
