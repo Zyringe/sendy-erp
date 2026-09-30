@@ -74,13 +74,20 @@ def test_repoint_refuses_for_a_correction_on_the_destination_product(guarded):
     import line_unit_correction as luc
     import models
     path, pid, other, cancel = guarded
+    before = sc.written_state(path)
 
     with pytest.raises(luc.Refused) as exc:
         models.repoint_bsn_code(None, 'OTHER', pid)
 
     assert str(exc.value) == REFUSAL
+    assert sc.written_state(path) == before
     assert _one(path, "SELECT product_id FROM product_code_mapping WHERE bsn_code='OTHER'") \
         == other
+
+    cancel()
+    models.repoint_bsn_code(None, 'OTHER', pid)
+    assert _one(path, "SELECT product_id FROM product_code_mapping WHERE bsn_code='OTHER'") \
+        == pid
 
 
 def test_update_unit_conversion_ratio_refuses(guarded):

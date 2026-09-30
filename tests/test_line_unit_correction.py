@@ -456,6 +456,25 @@ def test_a_cost_failure_rolls_the_whole_correction_back(line, monkeypatch):
     assert 'unit_correction' in alert['context_json']
 
 
+def test_a_cost_failure_rolls_the_whole_cancel_back(line, monkeypatch):
+    from models import wacc
+    path, pid = line
+    cid = _apply(path, 'hold')
+    before = sc.written_state(path)
+
+    def boom(conn, product_ids, operation=None):
+        raise wacc.WaccIdentityError('forced by the test', product_id=pid,
+                                     reference_no=LINE, operation=operation)
+    monkeypatch.setattr(wacc, 'preflight_batch', boom)
+
+    with pytest.raises(wacc.WaccIdentityError):
+        _cancel(path, cid)
+
+    assert sc.written_state(path) == before
+    assert sc.corrections(path)[0]['status'] == 'active'
+    assert len(sc.alerts(path, 'wacc_identity')) == 1
+
+
 def test_badges_return_the_latest_correction_of_each_line(line):
     import line_unit_correction as luc
     path, pid = line

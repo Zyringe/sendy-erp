@@ -312,7 +312,7 @@ def test_a_correction_committed_before_the_importers_first_write_is_honoured(
 
 def test_respelling_express_code_in_the_unit_map_keeps_the_correction(
         empty_db, monkeypatch):
-    import bsn_units
+    import models
     sc.seed_company(empty_db)
     pid = sc.seed_product(empty_db, ratios=(('ZZ', 12),))
     book = sc.standard_book()
@@ -320,7 +320,7 @@ def test_respelling_express_code_in_the_unit_map_keeps_the_correction(
     sc.run_zip(monkeypatch, book)
     assert sc.sales_row(empty_db, LINE)['unit'] == 'ZZ'
     _apply(empty_db)
-    bsn_units.learn('ZZ', bsn_units.DEFAULT_BOOK, 'โหล')
+    models.learn_acronyms_normalize({'ZZ': 'โหล'})
 
     result = sc.run_zip(monkeypatch, book)
 
@@ -333,17 +333,71 @@ def test_respelling_express_code_in_the_unit_map_keeps_the_correction(
 
 def test_respelling_the_corrected_word_in_the_unit_map_keeps_the_correction(
         corrected, monkeypatch):
-    import bsn_units
+    import models
     path, pid, cid = corrected
-    bsn_units.learn('หลอด', bsn_units.DEFAULT_BOOK, 'หลอดยาว')
+    models.learn_acronyms_normalize({'หลอด': 'หลอดยาว'})
+    assert sc.sales_row(path, LINE)['unit'] == 'หลอดยาว'
 
     result = sc.run_zip(monkeypatch, sc.standard_book())
 
     assert result['sales']['unit_corrections_retired'] == 0
     assert result['sales']['overwritten'] == 0
     assert sc.corrections(path)[0]['status'] == 'active'
-    assert sc.sales_row(path, LINE)['unit'] == 'หลอด'
+    assert sc.sales_row(path, LINE)['unit'] == 'หลอดยาว'
     assert sc.stock(path, pid) == 176
+
+
+def _sr_book(qty=2.0):
+    return sc.standard_book().sale(
+        'SR6900001', [(1, sc.CODE, qty, 'โหล', 49.0)], datetime.date(2026, 4, 10))
+
+
+def test_a_corrected_return_line_is_kept_then_retired_when_express_changes_it(
+        empty_db, monkeypatch):
+    sc.seed_company(empty_db)
+    pid = sc.seed_product(empty_db)
+    sc.run_zip(monkeypatch, _sr_book())
+    assert sc.stock(empty_db, pid) == 200
+    _apply(empty_db, doc_no='SR6900001-1')
+    (ledger_id, qty), = sc.sale_ledger(empty_db, 'SR6900001-1', pid)
+    assert qty == 2 and sc.offsets(empty_db, pid)[0]['quantity_change'] == 22
+
+    kept = sc.run_zip(monkeypatch, _sr_book())
+
+    assert kept['sales']['overwritten'] == 0
+    assert kept['sales']['unit_corrections_retired'] == 0
+    assert sc.sale_ledger(empty_db, 'SR6900001-1', pid) == [(ledger_id, 2)]
+    assert sc.corrections(empty_db)[0]['status'] == 'active'
+
+    changed = sc.run_zip(monkeypatch, _sr_book(qty=3.0))
+
+    assert changed['sales']['unit_corrections_retired'] == 1
+    assert sc.corrections(empty_db)[0]['end_cause'] == 'express_changed'
+    assert sc.offsets(empty_db, pid) == []
+    assert sc.sale_ledger(empty_db, 'SR6900001-1', pid)[0][1] == 36
+    assert sc.stock(empty_db, pid) == 212
+
+
+def test_a_corrected_line_missing_from_a_file_without_removals_stays_corrected(
+        empty_db, monkeypatch):
+    import models
+    from express_dbf_source import build_sales_entries
+    sc.seed_company(empty_db)
+    pid = sc.seed_product(empty_db)
+    sc.seed_product(empty_db, 'OTHER', ratios=(), name='อื่น')
+    sc.run_zip(monkeypatch, _book((2.0, 'โหล', 49.0)))
+    _apply(empty_db)
+    tables = _book(None).tables()
+    entries = build_sales_entries(tables['ARTRN'], tables['STCRD'], tables['ARMAS'])
+
+    result = models.import_weekly(entries, 'sales', 'partial', apply_removals=False)
+
+    assert (result['removed'], result['removed_skipped']) == (0, 1)
+    assert result['unit_corrections_retired'] == 0
+    assert sc.corrections(empty_db)[0]['status'] == 'active'
+    assert sc.sales_row(empty_db, LINE)['unit'] == 'หลอด'
+    assert len(sc.offsets(empty_db, pid)) == 1
+    assert sc.stock(empty_db, pid) == 176
 
 
 def test_the_vat_book_import_ignores_corrections(corrected):
