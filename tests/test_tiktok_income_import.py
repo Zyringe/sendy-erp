@@ -2,8 +2,8 @@
 
 Plan: projects/tiktok-order-import/tiktok-order-import-plan.md, PR-2 steps 2-5.
 Put's scope (2026-09-30): no cashbook entry, no wallet/withdrawal rows, no
-automatch, no reconcile. The money is still in TikTok (Q1) and IV linking is
-PR-3, whose _CUST_CODE has no tiktok key yet.
+reconcile. The money is still in TikTok (Q1). Automatch was off in PR-2 and is
+wired by PR-3 (IV linking).
 
 Fixtures: the real order CSV and income file of 2026-09-30, on empty_db with
 migration 197 applied (re-runnable), so nothing depends on the dev DB.
@@ -141,16 +141,17 @@ def test_income_and_orders_in_one_batch_orders_land_first(conn):
     assert [p for _, p, _, _ in _payouts(conn)] == [0.0, 88.38, 309.05]
 
 
-def test_upload_never_calls_automatch_or_reconcile_for_tiktok(conn, monkeypatch):
+def test_upload_runs_automatch_but_never_reconcile_for_tiktok(conn, monkeypatch):
+    """PR-3 wires TikTok into automatch (as Shopee/Lazada income files do), but
+    never into reconcile: that is built on bank deposits and TikTok has none."""
     calls = []
     monkeypatch.setattr(marketplace_match, 'run_automatch', lambda c, p: calls.append(('match', p)))
     monkeypatch.setattr(marketplace_reconcile, 'reconcile_payouts',
                         lambda c, p: calls.append(('reconcile', p)) or {})
     _import_orders(conn)
     _upload(INCOME)
-    assert calls == []
-    # Control: run_automatch really cannot take tiktok yet (PR-3 adds _CUST_CODE).
-    assert 'tiktok' not in marketplace_match._CUST_CODE
+    assert calls == [('match', 'tiktok')]
+    assert marketplace_match._CUST_CODE['tiktok'] == 'Tหน้าร้าน'
 
 
 def test_adjustment_rows_are_named_in_the_flash(conn, monkeypatch):

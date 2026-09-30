@@ -1,0 +1,238 @@
+"""TikTok orders -> their Express IV (PR-3 of the TikTok order import).
+
+Plan: projects/tiktok-order-import/tiktok-order-import-plan.md, PR-3.
+- Customer code Tหน้าร้าน; billed basis = what the buyer paid = o.item_total
+  (Put Q2: the team keys the IV at the buyer-paid amount, 405 not 435 or 309.05).
+- The three basis CASE copies each get a tiktok branch; they are NOT unified
+  (they differ for Shopee on purpose).
+- Automatch runs after the income file, never after the order file (Shopee and
+  Lazada behave the same). Never reconcile, never cashbook.
+- The settlement page stays Shopee/Lazada: it is built on bank deposits.
+
+Fixtures: the real order CSV and income file of 2026-09-30 on empty_db with
+migration 197, the 4 TikTok SKUs mapped to products, and two Express IVs keyed
+the way prod has them: IV6901503 (฿405, order …379) and IV6901501 (฿119, …543).
+"""
+import io
+import os
+import re
+
+import pytest
+
+os.environ.setdefault('SKIP_DB_INIT', '1')
+
+import marketplace_match
+import marketplace_reconcile
+import models
+import models.marketplace as mm
+import parse_tiktok_income as pti
+from marketplace_files import load_order_export
+from models.marketplace import import_marketplace_orders
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+APP = os.path.join(REPO, 'inventory_app')
+FIX = os.path.join(REPO, 'tests', 'fixtures', 'tiktok')
+ORDERS_CSV = os.path.join(FIX, 'tiktok_orders_sample.csv')
+INCOME_XLSX = os.path.join(FIX, 'tiktok_income_sample.xlsx')
+MIG_197 = os.path.join(REPO, 'data', 'migrations', '197_marketplace_orders_tiktok.sql')
+
+O379, O543, O817 = '585884671861360379', '585884215723460543', '585883444661159817'
+SKU_PID = {'1737136796219442872': 9401, '1737136999694436024': 9402,
+           '1736984084285458104': 9403, '1736984084285654712': 9404}
+
+
+def _read(p):
+    with open(p, 'rb') as f:
+        return f.read()
+
+
+def _add_iv(c, doc_base, net, date_iso, product_id, customer_code='Tหน้าร้าน'):
+    c.execute(
+        """INSERT INTO sales_transactions
+           (date_iso, doc_no, doc_base, customer, customer_code, qty, unit_price,
+            vat_type, total, net, product_id, created_at, synced_to_stock)
+           VALUES (?,?,?,?,?,1,?,1,?,?,?, '2026-09-05 00:00:00', 1)""",
+        (date_iso, f'{doc_base}-1', doc_base, 'หน้าร้านT', customer_code,
+         net, net, net, product_id))
+    c.commit()
+
+
+def _import_income(c):
+    p = pti.parse_tiktok_income(*pti.load_tiktok_income(io.BytesIO(_read(INCOME_XLSX))))
+    models.upsert_marketplace_settlements(c, p['settlements'], 'income.xlsx', platform='tiktok')
+    models.upsert_marketplace_fees(c, p['fee_rows'], 'income.xlsx', platform='tiktok')
+
+
+@pytest.fixture
+def conn(empty_db_conn):
+    c = empty_db_conn
+    with open(MIG_197, encoding='utf-8') as f:
+        c.executescript(f.read())
+    for vid, pid in SKU_PID.items():
+        c.execute("INSERT INTO products (id, product_name) VALUES (?, ?)", (pid, f'p{pid}'))
+        c.execute("INSERT INTO platform_skus (platform, product_name, variation_id, stock, "
+                  "internal_product_id) VALUES ('tiktok', 'x', ?, 5, ?)", (vid, pid))
+    c.commit()
+    import_marketplace_orders(c, load_order_export(_read(ORDERS_CSV))[1], 'orders.csv')
+    _import_income(c)
+    _add_iv(c, 'IV6901503', 405.0, '2026-09-04', 9401)
+    _add_iv(c, 'IV6901501', 119.0, '2026-09-04', 9402)
+    return c
+
+
+def _links(c, platform='tiktok'):
+    return [tuple(r) for r in c.execute(
+        "SELECT order_sn, doc_base, customer_code, match_method, confidence "
+        "FROM marketplace_order_invoice WHERE platform=? ORDER BY order_sn", (platform,))]
+
+
+def _oid(c, sn):
+    return c.execute("SELECT id FROM marketplace_orders WHERE platform='tiktok' AND order_sn=?",
+                     (sn,)).fetchone()[0]
+
+
+# ── automatch oracle ─────────────────────────────────────────────────────────
+
+def test_automatch_links_the_two_sales_and_leaves_the_cancel(conn):
+    r = marketplace_match.run_automatch(conn, 'tiktok')
+    assert _links(conn) == [
+        (O543, 'IV6901501', 'Tหน้าร้าน', 'auto', 'confident'),
+        (O379, 'IV6901503', 'Tหน้าร้าน', 'auto', 'confident'),
+    ]
+    assert (r['confident'], r['review'], r['returns_matched']) == (2, 0, 0)
+    # O817 is cancelled and settled at 0: the returns pass looks and finds no doc.
+    assert [o['order_sn'] for o in marketplace_match._settled_cancel_return_orders(conn, 'tiktok')] == [O817]
+
+
+def test_automatch_rerun_is_idempotent(conn):
+    marketplace_match.run_automatch(conn, 'tiktok')
+    first = _links(conn)
+    marketplace_match.run_automatch(conn, 'tiktok')
+    assert _links(conn) == first and len(first) == 2
+
+
+def test_automatch_breaks_a_tie_on_what_the_buyer_paid(conn):
+    """Two same-product IVs on the same day: ฿405 (buyer paid) and ฿309.05 (the
+    payout). The basis decides, and TikTok's basis is item_total."""
+    _add_iv(conn, 'IV6901599', 309.05, '2026-09-04', 9401)
+    marketplace_match.run_automatch(conn, 'tiktok')
+    assert dict((sn, doc) for sn, doc, *_ in _links(conn))[O379] == 'IV6901503'
+
+
+def test_completed_tiktok_status_is_matchable_even_unsettled():
+    assert marketplace_match._is_matchable_status('เสร็จสมบูรณ์', settled=False) is True
+    assert marketplace_match._is_matchable_status('ยกเลิกแล้ว', settled=True) is False
+
+
+# ── the three basis copies ───────────────────────────────────────────────────
+
+_BASIS_CASE = re.compile(r"CASE\s+WHEN\s+(\w+)\.platform\s*=\s*'lazada'(.*?)\bEND\b", re.S)
+
+
+def _basis_cases():
+    hits = []
+    for root, _, files in os.walk(APP):
+        for fn in files:
+            if fn.endswith('.py'):
+                p = os.path.join(root, fn)
+                with open(p, encoding='utf-8') as f:
+                    for m in _BASIS_CASE.finditer(f.read()):
+                        hits.append((os.path.relpath(p, APP), m.group(0)))
+    return hits
+
+
+def test_every_billed_basis_case_has_a_tiktok_branch():
+    hits = _basis_cases()
+    # Control: the three known copies, and no fourth appeared unnoticed.
+    assert sorted(f for f, _ in hits) == ['marketplace_match.py', 'models/marketplace.py',
+                                          'models/marketplace.py']
+    for f, case in hits:
+        assert re.search(r"WHEN\s+\w+\.platform\s*=\s*'tiktok'\s+THEN\s+\w+\.item_total\b", case), (f, case)
+
+
+def test_the_three_copies_agree_for_a_tiktok_order(conn):
+    oid = _oid(conn, O379)
+    matchable = {o['order_sn']: o['billed_basis'] for o in marketplace_match._matchable_orders(conn, 'tiktok')}
+    picker = models.get_marketplace_order(conn, oid)['billed_basis']
+    recon = conn.execute(
+        f"SELECT {mm._BILLED_BASIS_SQL} FROM marketplace_orders mo "
+        "LEFT JOIN marketplace_order_fees f ON f.platform=mo.platform AND f.order_sn=mo.order_sn "
+        "WHERE mo.id=?", (oid,)).fetchone()[0]
+    # Control: the payout differs, so a copy that fell to actual_payout would show.
+    assert conn.execute("SELECT actual_payout FROM marketplace_orders WHERE id=?", (oid,)).fetchone()[0] == 309.05
+    assert matchable[O379] == picker == recon == 405.0
+
+
+# ── picker, manual pick, worklist ────────────────────────────────────────────
+
+def test_picker_ranks_the_right_iv_first_at_zero_difference(conn):
+    cands = marketplace_match.iv_candidates(conn, models.get_marketplace_order(conn, _oid(conn, O379)))
+    assert cands[0]['doc_base'] == 'IV6901503'
+    assert cands[0]['product_match'] is True and cands[0]['amount_diff'] == 0.0
+
+
+def _client():
+    from app import app as flask_app
+    flask_app.config['TESTING'] = True
+    c = flask_app.test_client()
+    with c.session_transaction() as sess:
+        sess['user_id'] = 4
+        sess['username'] = 'staffer'
+        sess['role'] = 'staff'
+    return c
+
+
+def test_manual_pick_links_a_tiktok_order(conn):
+    oid = _oid(conn, O379)
+    resp = _client().post(f'/marketplace/order/{oid}/link-iv?platform=tiktok',
+                          data={'doc_base': 'IV6901503',
+                                'next': '/marketplace/review?platform=tiktok'})
+    assert resp.status_code == 302
+    assert _links(conn) == [(O379, 'IV6901503', 'Tหน้าร้าน', 'manual', 'manual')]
+
+
+def test_review_page_offers_tiktok(conn):
+    marketplace_match.run_automatch(conn, 'tiktok')
+    html = _client().get('/marketplace/review?platform=tiktok').get_data(as_text=True)
+    assert '<h4 class="mb-0">ต้องตรวจการจับคู่ใบกำกับ — TikTok</h4>' in html
+    assert "platform=tiktok" in html               # the switcher button
+    # Control: the worklist was built for tiktok, not the Shopee fallback.
+    assert models.get_iv_match_worklist(conn, platform='tiktok')['platform'] == 'tiktok'
+
+
+def test_settlement_still_falls_back_to_shopee(conn):
+    html = _client().get('/marketplace/settlement?platform=tiktok').get_data(as_text=True)
+    assert '<h4 class="mb-0">Settlement — Shopee</h4>' in html
+
+
+def test_recon_customer_is_a_hard_lookup(conn):
+    assert mm._RECON_CUSTOMER['tiktok'] == 'หน้าร้านT'
+    with pytest.raises(KeyError):
+        models.get_marketplace_reconciliation(conn, platform='thaimart')
+
+
+# ── upload wiring ────────────────────────────────────────────────────────────
+
+def _upload(path, name):
+    return _client().post('/marketplace/upload',
+                          data={'files': [(io.BytesIO(_read(path)), name)]},
+                          content_type='multipart/form-data', follow_redirects=True)
+
+
+def test_income_upload_runs_automatch_for_tiktok_and_never_reconcile(conn, monkeypatch):
+    calls = []
+    real = marketplace_match.run_automatch
+    monkeypatch.setattr(marketplace_match, 'run_automatch',
+                        lambda c, p: calls.append(('match', p)) or real(c, p))
+    monkeypatch.setattr(marketplace_reconcile, 'reconcile_payouts',
+                        lambda c, p: calls.append(('reconcile', p)) or {})
+    _upload(INCOME_XLSX, 'income.xlsx')
+    assert calls == [('match', 'tiktok')]
+    assert [doc for _, doc, *_ in _links(conn)] == ['IV6901501', 'IV6901503']
+
+
+def test_order_upload_does_not_run_automatch_like_shopee(conn, monkeypatch):
+    calls = []
+    monkeypatch.setattr(marketplace_match, 'run_automatch', lambda c, p: calls.append(p))
+    _upload(ORDERS_CSV, 'orders.csv')
+    assert calls == []
