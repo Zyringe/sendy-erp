@@ -486,6 +486,34 @@ def retire(conn, correction, cause, actor):
     return pids
 
 
+def blocking(conn, *, product_id=None, doc_base=None, bsn_code=None):
+    """Active corrections a writer would strand: those on any of `product_id`
+    (one id or several), on `doc_base`, or on `bsn_code`. A writer that gets a
+    non-empty list refuses with `refusal(...)` before its first write."""
+    clauses, params = [], []
+    if product_id is not None:
+        pids = [product_id] if isinstance(product_id, int) else list(product_id)
+        if pids:
+            clauses.append(f"product_id IN ({','.join('?' * len(pids))})")
+            params += pids
+    if doc_base is not None:
+        clauses.append("doc_base = ?")
+        params.append(doc_base)
+    if bsn_code is not None:
+        clauses.append("bsn_code = ?")
+        params.append(bsn_code)
+    if not clauses:
+        raise ValueError('blocking() needs a product, a document or a code')
+    return _dicts(conn.execute(
+        "SELECT * FROM sales_line_unit_corrections WHERE status='active'"
+        f" AND ({' OR '.join(clauses)}) ORDER BY id", params))
+
+
+def refusal(corrections):
+    docs = ', '.join(sorted({c['doc_no'] for c in corrections}))
+    return f'ยกเลิกการแก้หน่วยบรรทัดก่อน ({docs})'
+
+
 def badges_for_doc(conn, doc_base):
     """{(doc_no, bsn_code): the line's latest correction, any status}."""
     out = {}

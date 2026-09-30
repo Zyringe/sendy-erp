@@ -25,6 +25,7 @@ from collections import defaultdict
 from database import get_connection
 import bsn_units
 import document_kind
+import line_unit_correction
 from .bsn_sync import PLATFORM_STOCK_DEDUCT_CUSTOMERS, _get_base_qty
 
 # Mirrors express_dbf_source._SCOPE_RECTYP — kept as a separate literal
@@ -603,6 +604,13 @@ def apply_reconcile_flag(flag_id, resolved_by, conn=None):
         if row['class'] != 'deleted':
             c.rollback()
             return {'ok': False, 'error': 'apply ได้เฉพาะ class "deleted" เท่านั้น'}
+
+        # The offset of an active unit correction carries no reference_no, so
+        # the ledger check below cannot see it and would leave it behind.
+        blockers = line_unit_correction.blocking(c, doc_base=row['doc_base'])
+        if blockers:
+            c.rollback()
+            return {'ok': False, 'error': line_unit_correction.refusal(blockers)}
 
         payload = json.loads(row['latest_payload_json'])
         payload_rows = payload['rows']

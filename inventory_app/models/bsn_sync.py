@@ -13,6 +13,7 @@ import uuid as _uuid
 
 import bsn_units
 import document_kind
+import line_unit_correction
 import unit_conversion
 
 from .stock_filters import is_non_stock_code, non_stock_clause
@@ -603,6 +604,10 @@ def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str,
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        blockers = line_unit_correction.blocking(conn, product_id=product_id)
+        if blockers:
+            raise line_unit_correction.Refused(
+                'active_correction', line_unit_correction.refusal(blockers))
         for table in ('sales_transactions', 'purchase_transactions'):
             protected = conn.execute(
                 f"SELECT COUNT(*) FROM {table}"
@@ -718,6 +723,13 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     conn = get_connection()
     # #590 A2: the ratio and the re-synced stock commit before the WACC replay.
     require_actor_or_alert(conn, 'ratio_change', extra={'product_id': product_id})
+
+    # A new ratio re-posts the corrected line but not its offset, which was
+    # measured under the old one.
+    blockers = line_unit_correction.blocking(conn, product_id=product_id)
+    if blockers:
+        conn.close()
+        return {'error': line_unit_correction.refusal(blockers)}
 
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(new_ratio) != 1):

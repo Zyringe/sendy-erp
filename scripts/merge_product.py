@@ -91,6 +91,13 @@ def main(argv=None):
             print(f"product {pid} not found", file=sys.stderr)
             return 2
 
+    import line_unit_correction  # noqa: E402
+    blockers = line_unit_correction.blocking(conn, product_id=[a.src, a.dst])
+    if blockers:
+        print(line_unit_correction.refusal(blockers), file=sys.stderr)
+        conn.close()
+        return 2
+
     tabs = tables_with_product_id(conn)
 
     def stock(pid):

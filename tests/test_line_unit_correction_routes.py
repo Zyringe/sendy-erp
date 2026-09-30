@@ -87,3 +87,20 @@ def test_a_retired_correction_is_shown_on_the_alerts_page(
 
     assert 'การแก้หน่วยบรรทัด IV6900001-1 (โหล → หลอด) สิ้นสุดแล้ว' in html
     assert 'Express แก้บรรทัดนี้ ระบบจึงใช้ค่าของ Express' in html
+
+
+@pytest.mark.parametrize('url,form', [
+    ('/mapping/split-save', {'bsn_code': sc.CODE, 'bsn_unit': 'โหล'}),
+    ('/unit-conversions/dismiss', {'bsn_unit': 'แพ็ค'}),
+], ids=['split-save', 'dismiss'])
+def test_a_guarded_page_shows_the_refusal_instead_of_failing(corrected, client, url, form):
+    other = sc.seed_product(corrected, 'OTHER', name='อื่น')
+    pid = sc.sales_row(corrected, LINE)['product_id']
+    target = other if url == '/mapping/split-save' else pid
+    before = sc.written_state(corrected)
+
+    resp = client.post(url, data=dict(form, product_id=target), follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert 'ยกเลิกการแก้หน่วยบรรทัดก่อน (IV6900001-1)' in resp.get_data(as_text=True)
+    assert sc.written_state(corrected) == before
