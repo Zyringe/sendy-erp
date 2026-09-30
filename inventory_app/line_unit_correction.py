@@ -83,6 +83,11 @@ class Effect:
     # hold offset. 0 for a sale, where hold leaves cost history untouched.
     hold_reweights_purchases: int
 
+    @property
+    def hold_offset(self):
+        """The ADJUST a `hold` correction posts to keep stock where it is."""
+        return round(self.old_effect - self.new_effect, 4)
+
 
 def _dicts(cur):
     cols = [d[0] for d in cur.description]
@@ -586,3 +591,37 @@ def badges_for_doc(conn, doc_base):
             " ORDER BY created_at, id", (doc_base,))):
         out[(c['doc_no'], c['bsn_code'])] = c
     return out
+
+
+def line_view(conn, doc_no, bsn_code):
+    """The line as Sendy holds it, for the correction page, or None when no
+    row carries the key. `unit_choices` is what the line may be corrected TO:
+    `allowed_units` without the unit it already has."""
+    row = conn.execute(
+        "SELECT s.*, COALESCE(p.product_name, s.product_name_raw) AS display_name,"
+        "       p.unit_type AS base_unit"
+        " FROM sales_transactions s LEFT JOIN products p ON p.id = s.product_id"
+        " WHERE s.doc_no=? AND s.bsn_code=? ORDER BY s.id LIMIT 1",
+        (doc_no, bsn_code)).fetchone()
+    if row is None:
+        return None
+    view = dict(row)
+    view['doc_base'] = view['doc_base'] or doc_no.rsplit('-', 1)[0]
+    current = _norm(conn, view['unit'])
+    view['unit_choices'] = [
+        unit for unit in allowed_units(conn, view['product_id'])
+        if _norm(conn, unit) != current]
+    return view
+
+
+def corrections_for_line(conn, doc_no, bsn_code):
+    """Every correction of one line, any status, newest first."""
+    return _dicts(conn.execute(
+        "SELECT * FROM sales_line_unit_corrections WHERE doc_no=? AND bsn_code=?"
+        " ORDER BY created_at DESC, id DESC", (doc_no, bsn_code)))
+
+
+def correction(conn, correction_id):
+    rows = _dicts(conn.execute(
+        "SELECT * FROM sales_line_unit_corrections WHERE id=?", (correction_id,)))
+    return rows[0] if rows else None

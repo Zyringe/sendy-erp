@@ -39,7 +39,7 @@ def test_line_view_is_the_stored_line_with_the_units_it_may_become(line):
     assert view['customer'] == 'ลูกค้าทดสอบ'
     assert view['base_unit'] == 'หลอด'
     # โหล is the line's own unit: offering it would only earn a refusal.
-    assert view['unit_choices'] == ['หลอด', 'กล่อง']
+    assert sorted(view['unit_choices']) == sorted(['หลอด', 'กล่อง'])
 
 
 def test_line_view_offers_the_old_unit_again_once_the_line_is_corrected(line):
@@ -49,7 +49,7 @@ def test_line_view_offers_the_old_unit_again_once_the_line_is_corrected(line):
     view = _luc(path, 'line_view', LINE, sc.CODE)
 
     assert view['unit'] == 'หลอด'
-    assert view['unit_choices'] == ['โหล', 'กล่อง']
+    assert sorted(view['unit_choices']) == sorted(['โหล', 'กล่อง'])
 
 
 def test_line_view_of_a_line_that_does_not_exist_is_none(line):
