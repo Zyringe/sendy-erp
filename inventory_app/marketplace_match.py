@@ -340,7 +340,8 @@ def _order_basis(order):
 
 
 def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
-    """IVs that could be ``order``, for the manual picker — Zหน้าร้าน/Lหน้าร้าน IVs
+    """IVs that could be ``order``, for the manual picker — the order's own
+    platform's IVs (``_CUST_CODE``: Zหน้าร้าน / Lหน้าร้าน / Tหน้าร้าน)
     dated on/after the platform order date within the window, ranked by
     product-match → amount-closeness → nearest date. Each candidate carries the ฿
     difference from the payout, whether it shares a product (directly or via a
