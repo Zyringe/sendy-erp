@@ -5,6 +5,7 @@ importers, so a sales line always has the ledger row `_sync_bsn_to_stock`
 would have written for it. `empty_db` carries no unit map rows, so every
 spelling is its own word until a test adds a row.
 """
+import contextlib
 import datetime
 import os
 import sqlite3
@@ -25,6 +26,28 @@ def raw(path):
     c = sqlite3.connect(path)
     c.row_factory = sqlite3.Row
     return c
+
+
+def clone_db(path, dest):
+    """A byte-for-byte second DB, through the backup API (the source is WAL)."""
+    src, dst = sqlite3.connect(path), sqlite3.connect(dest)
+    try:
+        src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+    return dest
+
+
+@contextlib.contextmanager
+def on_db(monkeypatch, path):
+    """Point the app at another DB file for the duration of the block."""
+    import config
+    import database
+    with monkeypatch.context() as m:
+        m.setattr(config, 'DATABASE_PATH', path)
+        m.setattr(database, 'DATABASE_PATH', path)
+        yield m
 
 
 def seed_product(path, code=CODE, *, unit_type='หลอด', ratios=(('โหล', 12),),
@@ -192,14 +215,17 @@ def alerts(path, kind):
 _CHANGE_COLS = ('change_source', 'change_actor', 'change_reason', 'change_token')
 
 
-def semantic_state(path, pid):
+def semantic_state(path, pid, *, across_dbs=False):
     """The "pre-correction state" of ADR 0021: what cancel must restore.
     Ledger rows as a multiset without ids, the sales rows without their four
-    change_* columns, stock at 4 dp, the cost ledger without ids."""
+    change_* columns, stock at 4 dp, the cost ledger without ids.
+    `across_dbs` also drops the sales rows' insert time, which two separate
+    runs cannot share."""
+    skip = _CHANGE_COLS + (('created_at',) if across_dbs else ())
     c = raw(path)
     try:
         sales = sorted(
-            tuple((k, r[k]) for k in r.keys() if k not in _CHANGE_COLS)
+            tuple((k, r[k]) for k in r.keys() if k not in skip)
             for r in c.execute("SELECT * FROM sales_transactions WHERE product_id=?",
                                (pid,)))
         ledger = sorted(tuple(r) for r in c.execute(

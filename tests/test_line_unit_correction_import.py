@@ -5,7 +5,6 @@ IV6900001-1 (2 โหล, ledger -24) is corrected to หลอด in `hold` mod
 plus an offset of -22, stock 176 as before the correction.
 """
 import datetime
-import sqlite3
 
 import pytest
 
@@ -56,16 +55,8 @@ def _book(line):
 def _control(tmp_path, monkeypatch, path, book):
     """Run `book` through the zip on a DB that never had the correction and
     return that DB's path. `path` must not be corrected yet."""
-    import config
-    import database
-    control = str(tmp_path / 'control.db')
-    src, dst = sqlite3.connect(path), sqlite3.connect(control)
-    src.backup(dst)
-    src.close()
-    dst.close()
-    with monkeypatch.context() as m:
-        m.setattr(config, 'DATABASE_PATH', control)
-        m.setattr(database, 'DATABASE_PATH', control)
+    control = sc.clone_db(path, str(tmp_path / 'control.db'))
+    with sc.on_db(monkeypatch, control) as m:
         sc.run_zip(m, book)
     return control
 
