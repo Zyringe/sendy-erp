@@ -114,6 +114,12 @@ EXPECTED = {
         'value, so it is not a consumer of the non-stock semantics at all '
         '(tests/test_fresh_db_build.py::test_init_db_from_empty_completes)',
 
+    ('line_unit_correction.py', 'preview'):
+        'allowlisted: reads the flag only to REFUSE a unit correction on a line '
+        'that holds no ledger movement. A non-stock line is permanently 0, so it '
+        'is refused like any other unsynced line and nothing is written '
+        '(tests/test_line_unit_correction.py::test_apply_refuses_and_writes_nothing)',
+
     ('models/bsn_sync.py', '_sync_bsn_to_stock'):
         'guarded: is_non_stock_code check at the top of the row loop skips a '
         'non-stock line before any INSERT/UPDATE '
@@ -261,6 +267,9 @@ EXPECTED_SEQUENCE = {
     ('database.py', 'init_db'): [
         'synced_to_stock',
         'ADD COLUMN synced_to_stock INTEGER NOT NULL DEFAULT 0',
+    ],
+    ('line_unit_correction.py', 'preview'): [
+        'synced_to_stock',
     ],
     ('models/bsn_sync.py', '_sync_bsn_to_stock'): [
         'สร้าง transaction ย้อนหลังสำหรับแถว BSN ที่มี product_id แล้ว     แต่ยังไม่ถูก s',

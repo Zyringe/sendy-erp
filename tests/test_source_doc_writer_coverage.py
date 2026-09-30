@@ -106,6 +106,9 @@ VIA_HELPER = {
     'import_credit_notes.py':
         'the ref_invoice backfill during a credit-note import calls declared_update '
         'with actor=credit-notes-backfill',
+    'line_unit_correction.py':
+        'apply and cancel set one sales line\'s unit through declared_update with '
+        'source=manual, the admin as actor and the admin\'s reason (#692)',
 }
 
 # ⛔ A bare string is not a reason. Name the route or the caller, and what it sets.
