@@ -137,9 +137,16 @@ def totals(conn, key, date_from=None, date_to=None):
     return _totals(conn, where, params)
 
 
-def products(conn, key, date_from=None, date_to=None):
+def products(conn, key, date_from=None, date_to=None, counted=False):
     """Just `history()['products']`: one statement. For a surface that renders the
-    per-product table and needs nothing else (the call card's rows)."""
+    per-product table and needs nothing else (the call card's rows).
+
+    `counted=True` adds `qty_counted` / `net_counted` to every row: quantity and
+    money over EVERY counted line of the (product, unit), net of credit notes
+    (sales_filters.sales_qty_sql / sales_net_sql, the trade screens' figures), so a
+    free (แถม) line and a line the purchase population drops still count. The call
+    card's ซื้อรวม has always been that figure; `qty` / `net` are the customer
+    page's stricter ones. One more statement, so only the call card asks."""
     import price_lookup
 
     where, params = _scope(key, date_from, date_to)
@@ -147,7 +154,7 @@ def products(conn, key, date_from=None, date_to=None):
     # last_purchase stay on the purchase half (a credit note is not a purchase,
     # the invoice it reverses still is). HAVING drops a product that was only
     # ever returned, given away or invoiced in error.
-    return [dict(r) for r in conn.execute(f"""
+    rows = [dict(r) for r in conn.execute(f"""
         SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
                s.unit,
                COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
@@ -170,6 +177,19 @@ def products(conn, key, date_from=None, date_to=None):
         HAVING times_bought > 0
         ORDER BY s.product_id, s.unit
     """, params).fetchall()]
+    if counted:
+        totals = {(r['product_id'], r['unit']): r for r in conn.execute(f"""
+            SELECT s.product_id, s.unit,
+                   SUM({sales_filters.sales_qty_sql('s')}) AS qty_counted,
+                   SUM({sales_filters.sales_net_sql('s')}) AS net_counted
+            FROM sales_transactions s
+            WHERE {where}
+            GROUP BY s.product_id, s.unit
+        """, params).fetchall()}
+        for r in rows:
+            t = totals[(r['product_id'], r['unit'])]
+            r['qty_counted'], r['net_counted'] = t['qty_counted'], t['net_counted']
+    return rows
 
 
 def history(conn, key, date_from=None, date_to=None, today=None):

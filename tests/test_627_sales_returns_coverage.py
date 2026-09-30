@@ -60,6 +60,7 @@ MUST_USE_HELPER = {
     # in purchase_history._totals / history below).
     'purchase_history.py::history': 2,                # card C: top_products (qty, net)
     'purchase_history.py::_totals': 1,                # card C: จำนวนชิ้น (history() and totals() share it)
+    'purchase_history.py::products': 2,               # card C P3: the call card's ซื้อรวม qty + the money it ranks by (counted=True)
 }
 
 # file::function -> (raw aggregates it holds, why a return is not subtracted there).

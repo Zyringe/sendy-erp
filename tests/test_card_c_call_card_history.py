@@ -19,6 +19,7 @@ below, not a re-run of the code under test.
   IV-2     2026-02-15  N2         PA  5 ตัว ฿500  +  PC 3 ตัว ฿0   (freebie-only product)
   GV-3     2026-03-01  N1         PA  7 ตัว ฿700               flagged excludes_revenue=1
   SR-4     2026-03-20  N1         PA  2 ตัว ฿200            credit note, after the last invoice
+  IV-1 also carries PD 4 ตัว ฿400 + PD 1 ตัว ฿0 (a free unit inside a paid bill)
 """
 import os
 import re
@@ -42,9 +43,14 @@ def card_conn(empty_db_conn):
     pa = mk_product(c, 'สินค้าพีสาม เอ')
     pb = mk_product(c, 'สินค้าพีสาม บี คืนอย่างเดียว')
     pc = mk_product(c, 'สินค้าพีสาม ซี แถมอย่างเดียว')
+    pd = mk_product(c, 'สินค้าพีสาม ดี')
     kw = dict(code=CODE)
     add_line(c, doc_base='SR-0', date_iso='2025-12-01', pid=pb, qty=2, net=200, customer=N1, **kw)
     add_line(c, doc_base='IV-1', date_iso='2026-01-10', pid=pa, qty=10, net=1000, customer=N1, **kw)
+    add_line(c, doc_base='IV-1', date_iso='2026-01-10', pid=pd, qty=4, net=400, customer=N1,
+             suffix=2, **kw)
+    add_line(c, doc_base='IV-1', date_iso='2026-01-10', pid=pd, qty=1, net=0, customer=N1,
+             suffix=3, **kw)
     add_line(c, doc_base='IV-2', date_iso='2026-02-15', pid=pa, qty=5, net=500, customer=N2, **kw)
     add_line(c, doc_base='IV-2', date_iso='2026-02-15', pid=pc, qty=3, net=0, customer=N2,
              suffix=2, **kw)
@@ -57,7 +63,7 @@ def card_conn(empty_db_conn):
 
 def _pid(conn, tag):
     name = {'A': 'สินค้าพีสาม เอ', 'B': 'สินค้าพีสาม บี คืนอย่างเดียว',
-            'C': 'สินค้าพีสาม ซี แถมอย่างเดียว'}[tag]
+            'C': 'สินค้าพีสาม ซี แถมอย่างเดียว', 'D': 'สินค้าพีสาม ดี'}[tag]
     return conn.execute("SELECT id FROM products WHERE product_name = ?", (name,)).fetchone()[0]
 
 
@@ -72,8 +78,8 @@ def test_header_equals_the_desktop_page_for_the_same_key(card_conn):
     page = models.get_customer_summary_by_code(CODE)['summary']
     s = card['summary']['summary']
 
-    # 1000 + 500 - 200 (SR-0) - 200 (SR-4); GV-3 is invoiced in error and is out.
-    assert s['total_net'] == 1100
+    # 1000 + 400 (PD) + 500 - 200 (SR-0) - 200 (SR-4); GV-3 is invoiced in error and is out.
+    assert s['total_net'] == 1500
     assert s['total_net'] == page['total_net'], 'call card header != desktop page (ยอดซื้อรวม)'
     assert s['purchase_doc_count'] == 2 == page['purchase_doc_count']    # IV-1, IV-2
     assert s['last_purchase_date'] == '2026-02-15' == page['last_purchase_date']
@@ -95,7 +101,8 @@ def test_last_buy_skips_a_credit_note_dated_after_the_last_invoice(card_conn):
 def test_products_only_returned_or_given_free_are_absent(card_conn):
     card = call_card.get_card(card_conn, CODE)
     by = _by_pid(card)
-    assert list(by) == [_pid(card_conn, 'A')], 'CONTROL: the bought product must be the ONE row'
+    assert list(by) == [_pid(card_conn, 'A'), _pid(card_conn, 'D')], \
+        'CONTROL: the two bought products, ranked by money (1,300 then 400)'
     assert _pid(card_conn, 'B') not in by, 'returned-only product still listed (C1)'
     assert _pid(card_conn, 'C') not in by, 'freebie-only product still listed (C1)'
 
@@ -105,6 +112,15 @@ def test_giveaway_document_does_not_count_in_the_quantity(card_conn):
     p = _by_pid(call_card.get_card(card_conn, CODE))[_pid(card_conn, 'A')]
     assert p['total_qty'] == 13
     assert p['total_net'] == 1300
+
+
+def test_free_units_inside_a_paid_bill_still_count_in_the_quantity(card_conn):
+    """Not a decision, the old behaviour kept: ซื้อรวม counts EVERY counted line, so the
+    แถม unit on IV-1 is in it (4 paid + 1 free = 5). The customer page's stricter
+    figure would say 4; only D1's flagged giveaway is taken out."""
+    p = _by_pid(call_card.get_card(card_conn, CODE))[_pid(card_conn, 'D')]
+    assert p['total_qty'] == 5
+    assert p['total_net'] == 400
 
 
 def test_doc_count_is_times_bought(card_conn):

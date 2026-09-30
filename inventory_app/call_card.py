@@ -537,7 +537,7 @@ def get_card(conn, customer_code):
     summary = _summary(conn, hist, master)
 
     # ── 4. Top products: peer pricing + unit-aware base + promo + price tiers ──
-    products = _assemble_products(conn, key, canon_code, rows=hist['products'])
+    products = _assemble_products(conn, key, canon_code)
 
     # ── 5. Win-back ───────────────────────────────────────────────────────────
     winback = hist['winback']
@@ -574,7 +574,7 @@ def get_card(conn, customer_code):
     }
 
 
-def _assemble_products(conn, key, canon_code, today=None, rows=None):
+def _assemble_products(conn, key, canon_code, today=None):
     """Build the 'ซื้อประจำ' product list: the customer's top-30 products by net
     revenue, each enriched with unit-aware base price, the full active-promotion
     dict, quantity price-tiers, and peer pricing (the customer's latest line + a
@@ -582,11 +582,11 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
 
     The (product, unit) rows come from purchase_history (card C P3): a product the
     customer only ever returned, got free or was invoiced in error for is absent,
-    quantity and money are net of credit notes and leave out documents invoiced in
-    error, `last_buy` is the last PAID purchase and `doc_count` is how many
-    invoices that was. `key` is the customer key (code, or bill name for a true
-    orphan); `rows` are `purchase_history.products(conn, key)` (get_card passes
-    the ones it already has from history()).
+    `last_buy` is the last PAID purchase and `doc_count` is how many invoices that
+    was. ซื้อรวม qty and the ranking money keep the call card's own figure, over
+    every counted line net of credit notes (free units included) but leaving out
+    documents invoiced in error (Put D1): the module's `qty_counted` / `net_counted`.
+    `key` is the customer key (code, or bill name for a true orphan).
 
     `today` (default: real wall-clock date, ISO string) — positional-or-keyword
     like price_lookup's own `today` params, so every existing call site
@@ -612,12 +612,12 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
 
     today_str = today or dt.date.today().isoformat()
 
-    if rows is None:
-        rows = purchase_history.products(conn, key)
+    rows = purchase_history.products(conn, key, counted=True)
     # Top 30 by money, net of returns (#627). An unmapped line (no product_id)
     # has no price to enrich, so it is not a row here.
     mapped = sorted((r for r in rows if r['product_id'] is not None),
-                    key=lambda r: (-(r['net'] or 0), r['product_id'], r['unit'] or ''))[:30]
+                    key=lambda r: (-(r['net_counted'] or 0), r['product_id'],
+                                   r['unit'] or ''))[:30]
     base_info = {}
     if mapped:
         ph0 = ",".join("?" * len(mapped))
@@ -628,8 +628,8 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
         'product_id': r['product_id'],
         'product_name': r['name'],
         'unit': r['unit'],
-        'total_qty': r['qty'],
-        'total_net': r['net'],
+        'total_qty': r['qty_counted'],
+        'total_net': r['net_counted'],
         'doc_count': r['times_bought'],     # invoices, not lines (#496)
         'last_buy': r['last_purchase'],
         'base_sell_price': (base_info[r['product_id']]['base_sell_price']
