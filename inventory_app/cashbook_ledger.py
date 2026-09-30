@@ -20,8 +20,8 @@ NOT NULL constraint raises), dates are checked with `date.fromisoformat` only
 where today's route checks them (manual, edit), and a `belongs_to_period` CHECK
 failure raises sqlite3.IntegrityError as today.
 
-PR-1 (card F): nothing calls this module yet. The routes move in PR-2, hr /
-commission / the payout mirror in PR-3.
+Callers (card F): the /cashbook routes since PR-2 (new, edit, delete,
+advance). hr / commission / the payout mirror move in PR-3.
 
 No Flask here, and never an import of hr, commission, a blueprint or the
 mirror: `app.py` loads `blueprints.hr` before `blueprints.cashbook`, so any
@@ -32,7 +32,6 @@ Python 3.9 — Optional[...] not `X | None`.
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from datetime import date
 from typing import Dict, Optional, Tuple
@@ -45,6 +44,8 @@ PAYOUT_CREATED_BY = "ระบบ"
 MIN_DEPOSIT_DATE = "2026-01-01"
 PLATFORM_ACCOUNT_CODE = {"lazada": "LEX", "shopee": "SPX"}
 PLATFORM_LABEL_TH = {"lazada": "Lazada", "shopee": "Shopee"}
+# The five row kinds `row_kind` returns: documentation of the vocabulary, no
+# code reads this tuple (the oracle and the parity scenario spell their own).
 KINDS = ("manual", "salary", "advance", "commission", "payout")
 
 # The shape of a stored `txn_date`. scripts/audit_cashbook_invariants.py keeps
@@ -52,7 +53,6 @@ KINDS = ("manual", "salary", "advance", "commission", "payout")
 # module); tests/test_audit_cashbook_invariants.py pins the two equal. Not
 # enforced on any writer until D-1 (PR-4, parked).
 ISO_DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
-ISO_DATE_RE = re.compile(ISO_DATE_PATTERN)
 
 
 class CashbookError(ValueError):

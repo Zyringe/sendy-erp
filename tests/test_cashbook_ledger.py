@@ -188,45 +188,36 @@ def test_row_kind(kind):
     assert ledger.row_kind(_row(kind)) == kind
 
 
-def _blueprint_flash(reject, row, role='admin'):
-    """What today's `_reject_if_*` flashes for `row`, or None if it lets it through."""
-    import flask
-    from werkzeug.exceptions import Forbidden
-    from app import app as flask_app
-    with flask_app.test_request_context():
-        flask.session['role'] = role
-        try:
-            reject(row)
-        except Forbidden:
-            msgs = flask.get_flashed_messages()
-            assert len(msgs) == 1
-            return msgs[0]
-        assert flask.get_flashed_messages() == []
-        return None
+# The texts `blueprints/cashbook.py::_reject_if_*` flashed at c9ef583, frozen
+# here when PR-2 deleted those functions (the routes now flash lock_reason).
+# PR-1 compared the ledger to the live blueprint; this pins the same bytes.
+_COMMISSION_LOCK = ("รายการนี้เป็นรายการคอมมิชชั่นที่ผูกกับหน้าคอมมิชชั่น — "
+                    "แก้ไข/ลบที่นี่ไม่ได้ ({})")
+_TODAY_LOCK = {
+    'salary': "รายการนี้เป็นรายการเงินเดือนที่ผูกกับ Payroll — แก้ไข/ลบที่นี่ไม่ได้",
+    'advance': ("รายการเบิกล่วงหน้าแก้ไขที่นี่ไม่ได้ — ให้ลบแล้วเพิ่มใหม่ "
+                "(ทำได้ก่อนถูกหักในรอบเงินเดือน)"),
+    'payout': ("รายการนี้เป็นยอดโอนจากมาร์เก็ตเพลสที่ระบบลงให้อัตโนมัติ — "
+               "แก้ไข/ลบที่นี่ไม่ได้ (แก้ที่หน้ามาร์เก็ตเพลสแทน)"),
+}
 
 
 @pytest.mark.parametrize('role', ['admin', 'manager'])
 @pytest.mark.parametrize('kind', list(_LINKS))
 @pytest.mark.parametrize('action', ['edit', 'delete'])
-def test_lock_reason_matches_the_blueprint_byte_for_byte(action, kind, role):
+def test_lock_reason_matches_the_frozen_blueprint_text(action, kind, role):
     import access_control
-    from blueprints import cashbook as bp
-    rejects = ([bp._reject_if_salary_row, bp._reject_if_advance_edit,
-                bp._reject_if_commission_row, bp._reject_if_payout_row] if action == 'edit'
-               else [bp._reject_if_salary_row, bp._reject_if_commission_row,
-                     bp._reject_if_payout_row])
-    row = _row(kind)
-    today = None
-    for reject in rejects:
-        today = _blueprint_flash(reject, row, role)
-        if today is not None:
-            break
     can_cancel = access_control.role_can_post(role, 'commission.commission_delete_payout')
-    got = ledger.lock_reason(row, action, can_cancel_commission=can_cancel)
-    assert got == today
     if kind == 'manual' or (kind == 'advance' and action == 'delete'):
-        assert got is None
+        today = None
+    elif kind == 'commission':
+        today = _COMMISSION_LOCK.format('ยกเลิกได้ที่หน้าคอมมิชชั่นเท่านั้น' if can_cancel
+                                        else 'ให้แอดมินยกเลิกที่หน้าคอมมิชชั่น')
     else:
+        today = _TODAY_LOCK[kind]
+    got = ledger.lock_reason(_row(kind), action, can_cancel_commission=can_cancel)
+    assert got == today
+    if today is not None:
         assert got, "a linked row must be locked"
 
 
@@ -352,8 +343,9 @@ def test_post_manual_off_system_commission_passes(db):
 
 
 def test_policy_texts_match_the_blueprint():
-    """The ledger's plain text is the blueprint's reason; the blueprint adds the
-    Markup link to the commission page after it."""
+    """The ledger's plain text is the c9ef583 blueprint's reason (frozen);
+    the blueprint's `_policy_flash` appends the Markup link to the rep's
+    commission page, exactly as `_policy_blocked_reason` did."""
     from app import app as flask_app
     from blueprints import cashbook as bp
     c = sqlite3.connect(':memory:')
@@ -361,15 +353,20 @@ def test_policy_texts_match_the_blueprint():
     c.execute("CREATE TABLE salespersons (code TEXT, name TEXT, is_active INT, real_name TEXT)")
     c.execute("INSERT INTO salespersons VALUES ('06', 'TOU /06', 1, 'เจียรนัย')")
     with flask_app.test_request_context():
-        today = bp._policy_blocked_reason(c, {'category': scn.SALARY_CATEGORY, 'user_category': ''})
-        assert str(ledger.policy_block(c, scn.SALARY_CATEGORY, '')) == today
-        today = str(bp._policy_blocked_reason(
-            c, {'category': scn.COMMISSION_CATEGORY, 'user_category': 'เจียรนัย'}))
+        got = ledger.policy_block(c, scn.SALARY_CATEGORY, '')
+        assert str(got) == "เงินเดือนบันทึกที่หน้าเงินเดือน (HR) เท่านั้น"
+        assert bp._policy_flash(got) == str(got)
         got = ledger.policy_block(c, scn.COMMISSION_CATEGORY, 'เจียรนัย')
-        assert today.startswith(str(got) + " — "), (today, str(got))
-        today = bp._edit_policy_blocked_reason(c, scn.ADVANCE_CATEGORY, 'ชาย')
+        assert str(got) == "คอมมิชชั่นของเซลส์ในระบบบันทึกที่หน้าคอมมิชชั่นเท่านั้น"
+        flashed = bp._policy_flash(got)
+        assert flashed == ('คอมมิชชั่นของเซลส์ในระบบบันทึกที่หน้าคอมมิชชั่นเท่านั้น — '
+                           '<a href="/commission/sp/06">ไปจ่ายที่หน้าคอมมิชชั่นของ '
+                           'เจียรนัย (TOU /06)</a>'), flashed
+        assert hasattr(flashed, '__html__'), "the link must stay Markup"
         got = ledger.edit_policy_block(c, scn.ADVANCE_CATEGORY, 'ชาย')
-        assert str(got) == today and got.kind == 'advance_on_edit'
+        assert str(got) == ("เปลี่ยนเป็นหมวดเบิกล่วงหน้าที่นี่ไม่ได้ — ให้ลบรายการนี้แล้ว"
+                            "เพิ่มใหม่ที่หน้าบันทึกรายการ เพื่อให้ระบบผูกกับรายการเบิกของพนักงานให้")
+        assert got.kind == 'advance_on_edit'
         assert ledger.policy_block(c, scn.MANUAL_CATEGORY, 'เจียรนัย') is None
         assert ledger.policy_block(c, scn.COMMISSION_CATEGORY, 'อัคเรศ') is None
 

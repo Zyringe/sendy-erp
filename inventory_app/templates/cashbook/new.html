@@ -349,7 +349,7 @@
   var COMMISSION_REPS = [
     {% for rep in commission_reps %}{code:{{ rep.code|tojson }}, name:{{ rep.name|tojson }}, real_name:{{ rep.real_name|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}
   ];
-  // Mirrors `_in_engine_commission_rep` server-side (cashbook.py):
+  // Mirrors `in_engine_commission_rep` server-side (cashbook_ledger.py):
   // code, name, OR real_name all count as an in-engine identifier match.
   var IN_ENGINE_IDENTS = (function () {
     var s = {};

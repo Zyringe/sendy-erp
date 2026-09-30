@@ -530,20 +530,21 @@ def test_advance_post_holds_the_write_lock_across_the_cap_check(clean_migrated_d
     IMMEDIATE transaction. Under gunicorn -w 2 a second worker could
     otherwise insert a competing advance between the read and the write.
 
-    hr_mod._begin_immediate IS the first write (BEGIN IMMEDIATE reserves the
-    write lock immediately, before any statement) — same shape as
+    database.begin_immediate IS the first write (BEGIN IMMEDIATE reserves the
+    write lock immediately, before any statement). Since card F PR-2 the
+    route takes it through `database.immediate`, not hr's wrapper, so the
+    probe patches `database.begin_immediate` — same shape as
     tests/test_hr_payroll.py's test_reopen_and_post_cannot_interleave: the
     window that matters is AFTER it returns and before the next statement,
     lock held. Probing BEFORE calling through to the real _begin_immediate
     would merely race a still-unlocked connection and prove nothing about
     serialization (caught in this exact test: it silently passed with
     seen['blocked'] required True but produced False before this fix)."""
-    import hr as hr_mod
     account_id = _active_account(clean_migrated_db)
     eid = _mk_route_employee(clean_migrated_db, 'T_R_RACE', 'route-race', '2027-01-01', 15000.0)
 
     seen = {}
-    real = hr_mod._begin_immediate
+    real = database.begin_immediate
 
     def probe(c):
         out = real(c)  # take the lock for real FIRST
@@ -551,7 +552,7 @@ def test_advance_post_holds_the_write_lock_across_the_cap_check(clean_migrated_d
             clean_migrated_db, eid, '2027-12-10', 500.0)
         return out
 
-    monkeypatch.setattr(hr_mod, '_begin_immediate', probe)
+    monkeypatch.setattr(database, 'begin_immediate', probe)
 
     cl = _client_as_user(1, "admin")
     form = {

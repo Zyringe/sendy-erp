@@ -4,8 +4,9 @@ exact hit count (plan §5 PR-1).
 Scans the raw source of every `inventory_app/**/*.py` (minus __pycache__,
 instance, static) and `scripts/**/*.py` through the shared `tests/_census.py`
 walker, whitespace runs collapsed, against one case-insensitive pattern. An allowed file with one hit more than its count goes
-red, as does any file not in the map. PR-2 removes `blueprints/cashbook.py`,
-PR-3 leaves only the ledger and the one-off scripts.
+red, as does any file not in the map. PR-2 removed `blueprints/cashbook.py`
+(its writes go through the ledger); PR-3 leaves only the ledger and the
+one-off scripts.
 
 What this cannot see (stated, not caught): a table name built at runtime
 (`f"DELETE FROM {tbl}"`, concatenation, `.format()`). The reviewer's
@@ -29,8 +30,6 @@ WRITE_RE = re.compile(
 
 # {repo-relative path: (exact hit count, reason)}
 ALLOWED = {
-    'blueprints/cashbook.py': (
-        4, "manual/advance INSERT x2, edit UPDATE, delete DELETE; moves to the ledger in PR-2"),
     'hr.py': (
         2, "salary pay-event INSERT + void DELETE; moves to the ledger in PR-3"),
     'commission.py': (
@@ -66,8 +65,16 @@ def census():
 
 def test_every_cashbook_writer_is_in_the_count_map():
     found = census()
-    assert 'blueprints/cashbook.py' in found, "control: the census saw nothing"
+    assert 'cashbook_ledger.py' in found, "control: the census saw nothing"
     assert found == {path: n for path, (n, _) in ALLOWED.items()}
+
+
+def test_the_cashbook_blueprint_writes_nothing_itself():
+    """Card F PR-2 done-condition: no write SQL left in blueprints/cashbook.py.
+    A CLEAN site, pinned by name (a file-level allowlist cannot say this)."""
+    assert 'blueprints/cashbook.py' not in census()
+    src = _census.read(os.path.join(REPO, 'inventory_app', 'blueprints', 'cashbook.py'))
+    assert 'cashbook_ledger.post_manual' in src, "control: the blueprint was read"
 
 
 def test_the_census_scans_the_places_it_claims():
