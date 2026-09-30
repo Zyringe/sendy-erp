@@ -51,7 +51,7 @@ LAZADA_BUCKET = {
 
 # TikTok income file (sheet รายละเอียดคำสั่งซื้อ): every LEAF fee column → bucket.
 # SOURCE OF TRUTH for parse_tiktok_income. Leaf only: ค่าธรรมเนียมทั้งหมด is the row
-# total, and the two subtotal columns below stand in for their sub-columns
+# total, and the three subtotal columns below stand in for their sub-columns
 # (parse_tiktok_income.TIKTOK_SUBTOTAL_PARTS), which must never be added in again.
 # Every fee column is listed, including the fee_platform ones: a column missing
 # from here is refused by the parser, not guessed into a bucket.
@@ -102,6 +102,7 @@ GRANULAR_LABEL = {
     'รางวัลรีวิวสำหรับผู้ซื้อ': 'รางวัลรีวิวผู้ซื้อ',
     'Lost Claim': 'ค่าชดเชยพัสดุหาย',
     # TikTok
+    'ค่าธรรมเนียมคำสั่งซื้อ': 'ค่าธรรมเนียมคำสั่งซื้อ',
     'ค่าคอมมิชชั่นแอฟฟิลิเอต': 'ค่าคอมแอฟฟิลิเอต',
     'ค่าธรรมเนียมสนับสนุนการเติบโตของร้านค้า': 'ค่าสนับสนุนการเติบโตร้านค้า',
     'ค่าธรรมเนียมโครงสร้างพื้นฐาน': 'ค่าโครงสร้างพื้นฐาน',

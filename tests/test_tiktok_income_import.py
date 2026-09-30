@@ -205,7 +205,7 @@ def test_order_modal_shows_tiktok_fee_lines_with_real_names(conn):
     lines = {x['label']: x['amount'] for x in d['fee_lines']}
     assert lines == {'มูลค่าสินค้า': 435.0, 'ค่าคอมมิชชั่น': -41.89,
                      'ค่าคอมแอฟฟิลิเอต': -36.45, 'ค่าสนับสนุนการเติบโตร้านค้า': -32.58,
-                     'ค่าธุรกรรมการชำระเงิน': -13.96, 'ค่าโครงสร้างพื้นฐาน': -1.07}
+                     'ค่าธรรมเนียมคำสั่งซื้อ': -13.96, 'ค่าโครงสร้างพื้นฐาน': -1.07}
     assert round(sum(lines.values()), 2) == 309.05
     assert 'fee_raw_json' not in d['fees']
 
