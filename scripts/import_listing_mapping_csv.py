@@ -31,6 +31,13 @@ import sqlite3
 import sys
 from pathlib import Path
 
+# scripts/ is already sys.path[0] under `python scripts/<name>.py`; append it
+# explicitly (never insert(0) — that shadows app modules) so the shared
+# legacy_sku helper also imports when this module is loaded from a test.
+sys.path.append(str(Path(__file__).resolve().parent))
+
+import legacy_sku  # noqa: E402
+
 _INPUT_DIR = os.environ.get('SENDY_INPUT_DIR', os.path.expanduser('~/Downloads'))
 DEFAULT_CSV = os.path.join(_INPUT_DIR,
                            'listing_mapping_cleaned_20260427 - '
@@ -71,20 +78,23 @@ def parse_same_as(token):
     return int(m.group(1)) if m else None
 
 
-def resolve_legacy_sku(conn, sku_int, active_only=False):
-    """Translate an OLD integer products.sku (the CSV key) to a product_id via
-    the forensic legacy_product_sku_map (products.sku was dropped in mig 097)."""
-    if active_only:
-        return conn.execute(
-            'SELECT m.product_id FROM legacy_product_sku_map m '
-            'JOIN products p ON p.id = m.product_id '
-            'WHERE m.sku = ? AND p.is_active = 1',
-            (sku_int,)
-        ).fetchone()
-    return conn.execute(
-        'SELECT product_id FROM legacy_product_sku_map WHERE sku = ?',
-        (sku_int,)
-    ).fetchone()
+def resolve_legacy_sku(conn, sku_int):
+    """Translate an OLD integer products.sku (the CSV key) to a live product.
+
+    Returns a usable `LegacySku`, or None — and PRINTS why when the sku
+    resolves to a product that is gone. The previous version asked for the
+    active product first and then deliberately fell back to an unrestricted
+    lookup, so a deactivated or merged-away product won on the second try and
+    this importer attached a listing to a dead record (B22; 57 of 1,995 legacy
+    skus point at an inactive product on PROD, 11 of them merged away).
+    """
+    hit = legacy_sku.resolve_legacy_sku(conn, sku_int)
+    if hit is None:
+        return None
+    if not hit.usable:
+        print(f'  REFUSED: {hit.explain()}')
+        return None
+    return hit
 
 
 def norm_token(value):
@@ -232,16 +242,14 @@ def main():
             if sku_int in SKU_FIXUPS:
                 sku_int = SKU_FIXUPS[sku_int]
             # CSV is keyed by the OLD integer sku — translate to product_id.
-            row = resolve_legacy_sku(conn, sku_int, active_only=True)
-            if not row:
-                row = resolve_legacy_sku(conn, sku_int)
+            row = resolve_legacy_sku(conn, sku_int)
             if not row:
                 print(f'  not found: listing_id={lid} internal_sku={sku_int}')
                 stats['sku_not_found'] += 1
                 sku_not_found_list.append((lid, listing['platform'],
                                           listing['item_name'], sku_int))
                 continue
-            product_id = row['product_id']
+            product_id = row.product_id
 
         conn.execute(
             'UPDATE ecommerce_listings SET product_id = ?, qty_per_sale = ? WHERE id = ?',
@@ -258,7 +266,7 @@ def main():
                         '''INSERT OR REPLACE INTO listing_bundles
                            (listing_id, component_product_id, qty_per_sale)
                            VALUES (?, ?, 1)''',
-                        (lid, row['product_id'])
+                        (lid, row.product_id)
                     )
                     stats['bundles'] += 1
                     print(f'  bundle: listing_id={lid} + component_sku={bsku}')
@@ -306,7 +314,7 @@ def main():
                         '''INSERT OR REPLACE INTO listing_bundles
                            (listing_id, component_product_id, qty_per_sale)
                            VALUES (?, ?, 1)''',
-                        (lid, row['product_id'])
+                        (lid, row.product_id)
                     )
                     stats['bundles'] += 1
         print(f'  resolved deferred: listing_id={lid} -> {same_as} -> product_id={pid}')

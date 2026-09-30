@@ -50,6 +50,8 @@ _INPUT_DIR = Path(os.environ.get("SENDY_INPUT_DIR", os.path.expanduser("~/Downlo
 DEFAULT_CSV = _INPUT_DIR / "Inventory Management - Opening_Stock (1).csv"
 
 sys.path.insert(0, str(ROOT / "inventory_app"))
+sys.path.append(str(Path(__file__).resolve().parent))  # scripts/, for legacy_sku
+import legacy_sku  # noqa: E402
 import sqlite3  # noqa: E402
 
 CUTOFF = "2026-03-03 23:59:59"          # 3/3/2569 BSN cutoff
@@ -114,12 +116,29 @@ def main(argv=None):
     # forensic legacy map (products.sku was dropped in mig 097).
     sku2pid = {r["sku"]: r["product_id"] for r in conn.execute(
         "SELECT product_id, sku FROM legacy_product_sku_map")}
+    # B22: 57 of 1,995 legacy skus point at a product that has since been
+    # deactivated or merged away. This rebuild deliberately keeps whatever the
+    # forensic map says — an opening balance is a historical fact and re-pointing
+    # it is a judgment call for a human — but it must NOT stay silent about it,
+    # because an opening balance parked on a dead product is invisible stock.
+    _dead = {r["id"]: r["product_name"] for r in conn.execute(
+        "SELECT id, product_name FROM products WHERE is_active = 0")}
     all_pids = [r["id"] for r in conn.execute("SELECT id FROM products")]
     csv_pid = {}
     unmatched = []
+    dead_targets = []
     for sku, pieces in csv_sku.items():
         pid = sku2pid.get(sku)
         (csv_pid.__setitem__(pid, pieces) if pid else unmatched.append(sku))
+        if pid in _dead:
+            dead_targets.append((sku, pid, _dead[pid], legacy_sku.merged_into(_dead[pid])))
+    if dead_targets:
+        print(f"\n⚠ {len(dead_targets)} CSV sku(s) resolve to an INACTIVE product — "
+              f"their opening balance would land somewhere nobody can sell from:")
+        for sku, pid, name, survivor in dead_targets:
+            where = f"MERGED into product {survivor}" if survivor else "deactivated, no successor"
+            print(f"    sku {sku} -> product {pid} ({name!r}) — {where}")
+        print("  Re-key those CSV rows by hand before trusting this rebuild.\n")
 
     def count_47(pid):
         return conn.execute(
