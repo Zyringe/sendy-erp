@@ -155,3 +155,49 @@ def test_rendered_last_buy_cell_shows_the_invoice_month(card_conn):
     assert m, 'CONTROL: the product row did not render'
     assert m.group(1) == '13 ตัว'
     assert m.group(2) == '2026-02', 'ล่าสุด shows the credit-note month (2026-03)'
+
+
+class _Seam:
+    """A connection proxy that runs `hook()` once, right after the first per-product
+    read has been fetched (before any second read): an import committing a removal
+    on another connection between two statements."""
+
+    def __init__(self, conn, hook):
+        self._c, self._hook, self._done = conn, hook, False
+
+    def execute(self, sql, params=()):
+        cur = self._c.execute(sql, params)
+        if self._done or 'times_bought' not in sql:
+            return cur
+        outer = self
+
+        class _Cur:
+            def fetchall(_self):
+                rows = cur.fetchall()
+                outer._done = True
+                outer._hook()
+                return rows
+
+        return _Cur()
+
+
+def test_products_counted_survives_an_import_removing_lines_mid_read(card_conn, empty_db):
+    """W2 (#699 review): the counted totals used to be a SECOND statement, indexed by the
+    first one's (product, unit); lines removed between the two raised KeyError and 500'd
+    the call card. One statement has no seam."""
+    import sqlite3
+    import purchase_history
+
+    def remove_pa_lines():
+        w = sqlite3.connect(empty_db)
+        w.execute("DELETE FROM sales_transactions WHERE product_id = ?",
+                  (_pid(card_conn, 'A'),))
+        w.commit()
+        w.close()
+
+    rows = purchase_history.products(_Seam(card_conn, remove_pa_lines), CODE, counted=True)
+    assert {r['product_id'] for r in rows} == {_pid(card_conn, 'A'), _pid(card_conn, 'D')}, \
+        'CONTROL: the read saw both products before the removal'
+    assert card_conn.execute("SELECT COUNT(*) FROM sales_transactions WHERE product_id = ?",
+                             (_pid(card_conn, 'A'),)).fetchone()[0] == 0, \
+        'CONTROL: the removal really was committed mid-read'
