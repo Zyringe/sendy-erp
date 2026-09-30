@@ -106,7 +106,7 @@ def test_check_a_refuses_when_buckets_miss_the_total():
     def edit(wb):
         _set(wb[DETAIL], 2, 'ค่าธรรมเนียมโครงสร้างพื้นฐาน', '-2.07')
         _set(wb[DETAIL], 2, 'ค่าธรรมเนียมทั้งหมด', '-125.95')   # total not moved
-    with pytest.raises(TikTokIncomeError, match=O379):
+    with pytest.raises(TikTokIncomeError, match=f'{O379}: ค่าธรรมเนียมแยกรายการรวม -126.95'):
         _parse(_bytes(edit))
 
 
@@ -115,7 +115,7 @@ def test_check_a_refuses_when_buckets_miss_the_total():
 def test_check_b_refuses_when_the_row_identity_breaks():
     def edit(wb):
         _set(wb[DETAIL], 3, 'รายได้ทั้งหมด', '120')
-    with pytest.raises(TikTokIncomeError, match=O543):
+    with pytest.raises(TikTokIncomeError, match=f'{O543}: รายได้ทั้งหมด 120.00 .* ≠ ยอดการชำระเงินทั้งหมด'):
         _parse(_bytes(edit))
 
 
