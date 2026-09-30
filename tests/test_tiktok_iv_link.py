@@ -236,3 +236,27 @@ def test_order_upload_does_not_run_automatch_like_shopee(conn, monkeypatch):
     monkeypatch.setattr(marketplace_match, 'run_automatch', lambda c, p: calls.append(p))
     _upload(ORDERS_CSV, 'orders.csv')
     assert calls == []
+
+
+# ── review fixes (Fable, PR-3) ───────────────────────────────────────────────
+
+def _unsettle(c, sn, platform='tiktok'):
+    c.execute("UPDATE marketplace_orders SET actual_payout=NULL, settled_at=NULL "
+              "WHERE platform=? AND order_sn=?", (platform, sn))
+    c.commit()
+
+
+def test_worklist_counts_an_unsettled_completed_tiktok_order_in_bucket_a(conn):
+    _unsettle(conn, O379)
+    w = models.get_iv_match_worklist(conn, platform='tiktok')
+    assert w['total_a'] == 1
+
+
+def test_worklist_bucket_a_unchanged_for_shopee(conn):
+    """Control: Shopee's gate is still 'สำเร็จแล้ว' only — จัดส่งสำเร็จแล้ว (also in
+    _STATUS_COMPLETED) stays out of bucket A, and TikTok's word does nothing there."""
+    for sn, status in (('SPA1', 'สำเร็จแล้ว'), ('SPA2', 'จัดส่งสำเร็จแล้ว'), ('SPA3', 'เสร็จสมบูรณ์')):
+        conn.execute("INSERT INTO marketplace_orders (platform, order_sn, status, order_date) "
+                     "VALUES ('shopee', ?, ?, '2026-09-01 10:00')", (sn, status))
+    conn.commit()
+    assert models.get_iv_match_worklist(conn, platform='shopee')['total_a'] == 1

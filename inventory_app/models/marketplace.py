@@ -1724,6 +1724,12 @@ def unassign_batch(batch_id, conn=None):
             conn.close()
 
 
+# Bucket A's "completed, just not settled yet" word per platform. Deliberately
+# NOT marketplace_match._STATUS_COMPLETED: that set also holds จัดส่งสำเร็จแล้ว /
+# delivered / confirmed, and using it would change Shopee/Lazada bucket A.
+_BUCKET_A_COMPLETED = {'tiktok': 'เสร็จสมบูรณ์'}
+
+
 def get_iv_match_worklist(conn, platform='shopee'):
     """Read-only diagnostic (build-phase 1 of marketplace-iv-matching): classify
     every non-cancelled/returned ``platform`` order into ONE of four
@@ -1843,7 +1849,7 @@ def get_iv_match_worklist(conn, platform='shopee'):
         op = item['product_ids']
 
         if not has_settlement:
-            if in_deposit or status == 'สำเร็จแล้ว':
+            if in_deposit or status == _BUCKET_A_COMPLETED.get(platform, 'สำเร็จแล้ว'):
                 period = (o['settled_at'] or o['order_date'] or '')[:7]
                 bucket = a_by_period.setdefault(
                     period, {'period': period, 'count': 0, 'wallet_income': 0.0})
