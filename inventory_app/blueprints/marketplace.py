@@ -213,8 +213,9 @@ def settlement():
                   Was the standalone /marketplace/reconciliation page.
     """
     platform = request.args.get('platform', 'shopee')
-    # tiktok joins in PR-2/PR-3 (settlement + IV linking); until then
-    # _RECON_CUSTOMER.get would reconcile its orders against Shopee IVs.
+    # Shopee/Lazada only, on purpose: both tabs are built on bank deposits, and
+    # TikTok has none yet (its money stays in TikTok, Q1). TikTok's IV links live
+    # on /marketplace/review.
     if platform not in ('shopee', 'lazada'):
         platform = 'shopee'
     tab = request.args.get('tab', 'deposits')
@@ -257,8 +258,7 @@ def review():
     with a suggested action per group. Writes NOTHING; B/C/D rows reuse the
     existing IV picker (iv-candidates + link-iv) for the pick action."""
     platform = request.args.get('platform', 'shopee')
-    # tiktok joins in PR-3 (IV linking); until then its worklist would read Shopee codes.
-    if platform not in ('shopee', 'lazada'):
+    if platform not in PLATFORMS:
         platform = 'shopee'
     conn = get_connection()
     try:
@@ -594,9 +594,10 @@ def upload():
                             f'⚠️ {name}: ค่าธรรมเนียมชื่อใหม่ที่ยังไม่รู้จัก: '
                             + ', '.join(parsed['unmapped_fee_names'])))
                 elif kind == 'tt_income':
-                    # Payout + fee breakdown only (Put, 2026-09-30): no wallet rows, no
-                    # cashbook, no automatch/reconcile — the money is still in TikTok,
-                    # and run_automatch has no tiktok _CUST_CODE until PR-3.
+                    # Payout + fee breakdown (Put, 2026-09-30): no wallet rows, no
+                    # cashbook, no reconcile — the money is still in TikTok. Automatch
+                    # runs after it, as after Shopee's and Lazada's income files (their
+                    # order files don't trigger it either).
                     parsed = parse_tiktok_income.parse_tiktok_income(
                         *parse_tiktok_income.load_tiktok_income(io.BytesIO(data)))
                     if not parsed['settlements'] and not parsed['adjustments']:
@@ -613,6 +614,7 @@ def upload():
                     fn = models.upsert_marketplace_fees(
                         conn, [f for f in parsed['fee_rows'] if f['order_sn'] in known],
                         name, platform='tiktok')
+                    automatch_platforms.add('tiktok')
                     done.append(f'💰 {name}: TikTok ยอดโอน {ss["updated"]} · ค่าธรรมเนียม {fn} ออเดอร์')
                     _log_import(conn, name, rows=ss['updated'], skipped=ss['not_found'],
                                 notes='marketplace:tt_income:tiktok')

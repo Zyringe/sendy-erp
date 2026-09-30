@@ -20,13 +20,10 @@ settlement/IV functions default to 'shopee' on purpose (PR-2/PR-3 scope) and
 are not matched here. The DB CHECK is the enforcement; this only moves the
 failure into CI.
 
-PR-3 backlog: two-platform maps shaped as a dict or a SQL CASE, which neither
-regex sees. Each must learn tiktok before settlement/IV linking opens to it:
-  - marketplace_match._CUST_CODE            {'shopee': ..., 'lazada': ...}
-  - models.marketplace._RECON_CUSTOMER      .get(platform, 'หน้าร้านS') falls back silently
-  - models.marketplace._BILLED_BASIS_SQL    CASE WHEN mo.platform='lazada' ... ELSE (shopee)
-  - models.marketplace.get_marketplace_order  the same billed-basis CASE, a second copy
-  (and marketplace_match's own billed-basis CASE, the third copy)
+Dict- and CASE-shaped platform maps, which neither regex sees, learned tiktok in
+PR-3: marketplace_match._CUST_CODE, models.marketplace._RECON_CUSTOMER (now a hard
+lookup), and the 3 billed-basis CASE copies, which tests/test_tiktok_iv_link.py
+sweeps for a tiktok branch.
 """
 import os
 import re
@@ -53,10 +50,6 @@ PAIR = re.compile(r"""['"]shopee['"]\s*,\s*['"]lazada['"](?!\s*,\s*['"]tiktok)""
 BINARY = re.compile(r"""==\s*'shopee'\s*(%\}[^{]*\{%-?\s*else\s*-?%\}|else\b)""")
 
 EXEMPT = {
-    ('blueprints/marketplace.py', "def review():"):
-        'IV worklist (/marketplace/review) is IV linking: PR-3 adds tiktok with '
-        '_CUST_CODE and the billed basis. Until then a tiktok worklist would read '
-        'Shopee customer codes.',
     ('blueprints/ecommerce.py', "def ecommerce_export"):
         'Mass-update listing export: TikTok has no mass-update writer. Listing files, '
         'not orders.',
@@ -65,13 +58,13 @@ EXEMPT = {
         'hand-picked platform). Not the order import; TikTok listings arrive via '
         'platform_skus.',
     ('blueprints/marketplace.py', "def settlement():"):
-        'Settlement page whitelist: TikTok settlement and IV reconcile are PR-2/PR-3. '
-        "Without it ?platform=tiktok reconciled TikTok orders against Shopee IVs "
-        "(_RECON_CUSTOMER.get falls back to 'หน้าร้านS').",
+        'Settlement page whitelist, deliberate: both tabs are built on bank deposits '
+        'and TikTok has none yet (its money stays in TikTok, Q1). TikTok IV links live '
+        'on /marketplace/review.',
     ('templates/marketplace/settlement.html', "หน้าร้าน{{ 'S' if platform"):
         "Express customer code for the รับชำระหนี้ worksheet. Only reachable for "
         "shopee/lazada: settlement() whitelists the platform (exempt above) until "
-        "PR-2/PR-3 opens it to tiktok.",
+        "TikTok has bank deposits.",
 }
 
 

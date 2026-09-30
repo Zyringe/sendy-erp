@@ -1,20 +1,23 @@
 {% extends 'base.html' %}
-{% block title %}ต้องตรวจการจับคู่ใบกำกับ — {{ platform | capitalize }}{% endblock %}
+{% from 'macros.html' import PLAT_LABEL %}
+{% block title %}ต้องตรวจการจับคู่ใบกำกับ — {{ PLAT_LABEL[platform] }}{% endblock %}
 {% block content %}
 <div class="container-fluid py-3">
   <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-    <h4 class="mb-0">ต้องตรวจการจับคู่ใบกำกับ — {{ platform | capitalize }}</h4>
+    <h4 class="mb-0">ต้องตรวจการจับคู่ใบกำกับ — {{ PLAT_LABEL[platform] }}</h4>
     <a href="{{ url_for('marketplace.settlement', platform=platform) }}" class="btn btn-sm btn-outline-secondary">
       <i class="bi bi-arrow-left"></i> กลับ Settlement
     </a>
   </div>
 
-  {# ── Platform switcher (Shopee / Lazada) — worklist is per-platform ── #}
+  {# ── Platform switcher (Shopee / Lazada / TikTok) — worklist is per-platform ── #}
   <div class="btn-group btn-group-sm mb-3" role="group" aria-label="เลือกแพลตฟอร์ม">
     <a href="{{ url_for('marketplace.review', platform='shopee') }}"
        class="btn btn-outline-danger {% if platform == 'shopee' %}active{% endif %}">Shopee</a>
     <a href="{{ url_for('marketplace.review', platform='lazada') }}"
        class="btn btn-outline-primary {% if platform == 'lazada' %}active{% endif %}">Lazada</a>
+    <a href="{{ url_for('marketplace.review', platform='tiktok') }}"
+       class="btn btn-outline-dark {% if platform == 'tiktok' %}active{% endif %}">TikTok</a>
   </div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
