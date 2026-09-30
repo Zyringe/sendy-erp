@@ -229,3 +229,18 @@ def test_a_subtotal_part_is_never_added_again():
         _shift(wb, 3, 'ค่าคอมมิชชั่นแอฟฟิลิเอต', -1.0)
     r = {x['order_sn']: x for x in _parse(_bytes(edit))['fee_rows']}[O543]
     assert r['fee_ads_escrow'] == -6.36
+
+
+def test_check_b_skips_adjustment_rows():
+    """Adjustment rows are not imported and their money is pinned by (c); the
+    sample has none, so (b) must not refuse a file over a shape never seen."""
+    def edit(wb):
+        ws = wb[DETAIL]
+        _set(ws, 4, 'ประเภทธุรกรรม', 'การปรับยอด')
+        _set(ws, 4, 'ยอดการชำระเงินทั้งหมด', '5')      # revenue/fees/adjustment stay 0
+        for row in wb[REPORT].iter_rows():
+            if row[1].value == 'ยอดการชำระเงินทั้งหมด':
+                row[5].value = '402.43'
+    p = _parse(_bytes(edit))
+    assert p['adjustments'] == [{'id': O817, 'type': 'การปรับยอด', 'amount': 5.0}]
+    assert p['total'] == 402.43

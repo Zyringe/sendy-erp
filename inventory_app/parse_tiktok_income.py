@@ -15,8 +15,10 @@ Returns {'settlements', 'fee_rows', 'adjustments', 'total'}:
 
 Three checks refuse the whole file (TikTokIncomeError), so nothing is written:
   (a) per row, Σ leaf fee buckets == ค่าธรรมเนียมทั้งหมด, to the satang;
-  (b) per row, รายได้ทั้งหมด + ค่าธรรมเนียมทั้งหมด + จำนวนการปรับยอด ==
-      ยอดการชำระเงินทั้งหมด (TikTok's own identity, true on every sample row);
+  (b) per ORDER row, รายได้ทั้งหมด + ค่าธรรมเนียมทั้งหมด + จำนวนการปรับยอด ==
+      ยอดการชำระเงินทั้งหมด (TikTok's own identity, true on every sample row).
+      Adjustment rows are exempt: they are not imported, (c) already pins their
+      money, and the sample has none, so their shape is unknown;
   (c) Σ ยอดการชำระเงินทั้งหมด over ALL rows == the รายงาน sheet's total.
 A column this module does not know, holding any non-zero value, is refused by
 name rather than guessed into a bucket.
@@ -174,12 +176,12 @@ def parse_tiktok_income(detail, report):
         if round(sum(buckets.values()), 2) != round(fees, 2):                           # (a)
             raise TikTokIncomeError(f'{rid}: ค่าธรรมเนียมแยกรายการรวม {sum(buckets.values()):.2f} '
                                     f'≠ {_FEES} {fees:.2f}')
-        if round(revenue + fees + adjust, 2) != round(payout, 2):                        # (b)
+        kind = _cell(row[_TYPE])
+        if kind == _ORDER_TYPE and round(revenue + fees + adjust, 2) != round(payout, 2):  # (b)
             raise TikTokIncomeError(f'{rid}: {_REVENUE} {revenue:.2f} + {_FEES} {fees:.2f} + '
                                     f'{_ADJUST} {adjust:.2f} ≠ {_PAYOUT} {payout:.2f}')
         total += payout
 
-        kind = _cell(row[_TYPE])
         if kind != _ORDER_TYPE:
             adjustments.append({'id': rid, 'type': kind, 'amount': round(payout, 2)})
             continue
