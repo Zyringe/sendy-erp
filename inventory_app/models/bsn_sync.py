@@ -242,6 +242,11 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, product_ids=None):
     picks up EVERY unsynced mapped row in the table, which a replay must not
     do — an unrelated product's pending row would first-sync under the
     caller's intent to replay only the products it named.
+
+    Returns the number of rows it POSTED a ledger movement for (Card E PR-2).
+    A non-stock line, a missing product, a missing ratio and a zero quantity
+    all count 0: the caller reports this as "rows first-synced", and a row that
+    stays pending or was only marked must not read as stock that moved.
     """
     txn_type = 'IN' if file_type == 'purchase' else 'OUT'
 
@@ -257,11 +262,12 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, product_ids=None):
     if product_ids is not None:
         ids = list(product_ids)
         if not ids:
-            return
+            return 0
         sql += f" AND product_id IN ({','.join('?' * len(ids))})"
         params = ids
     rows = conn.execute(sql + " ORDER BY id", params).fetchall()
 
+    posted = 0
     for row in rows:
         if is_non_stock_code(row['bsn_code']):
             # A billable service/discount line: real money, no goods. Skip the
@@ -378,8 +384,10 @@ def _sync_bsn_to_stock(conn, table: str, file_type: str, product_ids=None):
                     f'ประวัติขาย (ไม่นับสต็อค): {row["product_name_raw"]}',
                     row['date_iso'] + ' 00:00:00',
                 ))
+            posted += 1
 
         conn.execute(f"UPDATE {table} SET synced_to_stock=1 WHERE id=?", (row['id'],))
+    return posted
 
 
 def get_pending_unit_conversions(search=None):
