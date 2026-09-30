@@ -114,6 +114,12 @@ def _field(source, key):
     return source[key].strip() if key in source else None
 
 
+def _acting_admin():
+    """Who is really writing: an admin simulating another role (ADR 0003)
+    still reaches these routes, and the record must name the admin."""
+    return session.get('_real_username') or session.get('username')
+
+
 def _unit_correction_page(conn, doc_no, bsn_code, *, chosen_unit=None,
                           effect=None, refused=None):
     line = luc.line_view(conn, doc_no, bsn_code)
@@ -183,7 +189,7 @@ def unit_correction_apply():
         line = luc.line_view(conn, doc_no, bsn_code)
         error = _refusal_of(lambda: luc.apply(
             conn, doc_no, bsn_code, unit, _field(request.form, 'stock_mode'),
-            _field(request.form, 'reason'), session.get('username')))
+            _field(request.form, 'reason'), _acting_admin()))
     finally:
         conn.close()
     if error:
@@ -201,7 +207,7 @@ def unit_correction_cancel():
     try:
         c = luc.correction(conn, correction_id)
         error = _refusal_of(lambda: luc.cancel(
-            conn, correction_id, _field(request.form, 'reason'), session.get('username')))
+            conn, correction_id, _field(request.form, 'reason'), _acting_admin()))
     finally:
         conn.close()
     if error:
