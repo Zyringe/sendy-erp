@@ -383,7 +383,7 @@ def cancel(conn, correction_id, reason, actor):
             # would sit unsynced with no ledger row.
             restored = _signed_base_qty(
                 conn, pid, unit_type, c['express_unit_raw'], row['qty'], doc_no)
-            if restored is None:
+            if not restored:
                 raise Refused('express_unit_no_ratio',
                               f'หน่วยเดิม "{c["express_unit_raw"]}" ไม่มีอัตราแปลงของสินค้านี้แล้ว')
             ledger = _ledger_row(conn, doc_no, pid)
