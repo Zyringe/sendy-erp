@@ -116,19 +116,48 @@ def test_n2_new_reports_every_error_and_saves_nothing(result):
         'รูปแบบวันที่ไม่ถูกต้อง',
         'จำนวนเงินต้องมากกว่า 0',
     ]
-    assert not [r for r in result['cashbook_transactions'] if r['amount'] in (5.0,)]
+    # row 1 of that form was the only ฿5 manual row ever submitted (the
+    # edges' parentless ฿5 row is an advance, seeded directly)
+    assert not [r for r in result['cashbook_transactions']
+                if r['amount'] == 5.0 and r['category'] == scn.MANUAL_CATEGORY]
+    assert [r for r in result['cashbook_transactions']
+            if r['amount'] == 5.0 and r['category'] == scn.ADVANCE_CATEGORY], \
+        "control: the ฿5 filter can match a stored row"
 
 
 def test_n2_edit_reports_every_error_and_changes_nothing(result):
-    hits = [s for s in result['steps'] if s['step'].startswith('edit ')
+    hits = {s['step']: s for s in result['steps'] if s['step'].startswith('edit ')
             and s.get('flashes') and all(c == 'danger' for _, c in s['flashes'])
-            and len(s['flashes']) > 1]
-    assert len(hits) == 1, "control: exactly one multi-error edit step"
-    assert hits[0]['status'] == 302
-    assert hits[0]['flashes'] == [['รูปแบบวันที่ไม่ถูกต้อง', 'danger'],
-                                  ['จำนวนเงินต้องมากกว่า 0', 'danger']]
+            and len(s['flashes']) > 1}
+    assert len(hits) == 2, f"control: the two multi-error edit steps, got {sorted(hits)}"
+    first = next(s for name, s in hits.items() if name.endswith("['amount', 'txn_date']"))
+    assert first['status'] == 302
+    assert first['flashes'] == [['รูปแบบวันที่ไม่ถูกต้อง', 'danger'],
+                                ['จำนวนเงินต้องมากกว่า 0', 'danger']]
+    edge = hits['edit bad account blank date']
+    assert edge['status'] == 302
+    assert edge['flashes'] == [['กรุณาเลือกบัญชีที่ถูกต้องและยังใช้งานอยู่', 'danger'],
+                               ['กรุณาระบุวันที่', 'danger']]
 
 
 def test_locked_kinds_are_refused_on_edit_and_delete(result):
+    # edit + delete of salary, commission, payout (6), the advance edit, the
+    # deducted-advance delete; the edges' manager edit + delete and admin edit
+    # of a commission row, and the parentless advance delete.
     refused = [s for s in result['steps'] if s.get('status') == 403]
-    assert len(refused) == 8, [s['step'] for s in refused]
+    assert len(refused) == 12, [s['step'] for s in refused]
+
+
+def test_g8_double_submits_are_refused_in_both_modes(result):
+    """D-4 A (+ D-4.1 A): the second of each identical commission form is
+    refused, naming the payout it repeats; the first is recorded."""
+    payouts = {(p['invoice_no'], p['paid_date'], p['amount_paid']): p['id']
+               for p in result['commission_payouts'] if p['paid_date'] == '2026-09-04'}
+    assert len(payouts) == 2, f"control: both G8 forms recorded once, got {payouts}"
+    for mode, key, ok in (('G8 mode 1', ('IV6902', '2026-09-04', 275.5), '1 ใบ'),
+                          ('G8 mode 2', (None, '2026-09-04', 180.0), '1 รายการ')):
+        assert _step(result, mode)['flashes'] == [[f'บันทึกการจ่าย commission แล้ว {ok}', 'success']]
+        assert _step(result, f'{mode} double-submit')['flashes'] == [[
+            f'จ่ายค่าคอมรายการนี้ด้วยยอดและวันที่เดียวกันไปแล้ว (payout #{payouts[key]}): '
+            'ถ้าตั้งใจจ่ายอีกครั้งในวันเดียวกันจริง ให้รวมเป็นยอดเดียว '
+            'หรือระบุวันที่จ่ายจริงของครั้งที่สอง', 'danger']]

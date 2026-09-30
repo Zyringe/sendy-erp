@@ -30,13 +30,6 @@ WRITE_RE = re.compile(
 
 # {repo-relative path: (exact hit count, reason)}
 ALLOWED = {
-    'hr.py': (
-        2, "salary pay-event INSERT + void DELETE; moves to the ledger in PR-3"),
-    'commission.py': (
-        2, "commission payout INSERT + cancel DELETE; moves to the ledger in PR-3"),
-    'cashbook_payout_mirror.py': (
-        4, "mirror INSERT, DELETE, UPDATE description + the module docstring's "
-           "'Insert/delete/update cashbook_transactions' prose; PR-3 rewords it"),
     'cashbook_ledger.py': (
         11, "the seam: post_manual, post_advance, post_salary, post_commission, post_payout "
             "INSERT; amend_manual, set_payout_description UPDATE; cancel_manual, "
@@ -120,9 +113,9 @@ def test_each_shape_is_caught_in_a_new_file(mini, shape, rel):
 
 
 def test_an_extra_write_in_an_allowed_file_is_caught(mini):
-    src = _census.read(os.path.join(REPO, 'inventory_app', 'hr.py'))
-    mini('inventory_app/hr.py', src + '\n' + _SHAPES['lowercase'])
-    assert census()['hr.py'] == ALLOWED['hr.py'][0] + 1
+    src = _census.read(os.path.join(REPO, 'inventory_app', 'cashbook_ledger.py'))
+    mini('inventory_app/cashbook_ledger.py', src + '\n' + _SHAPES['lowercase'])
+    assert census()['cashbook_ledger.py'] == ALLOWED['cashbook_ledger.py'][0] + 1
 
 
 def test_skipped_directories_really_are_skipped(mini):

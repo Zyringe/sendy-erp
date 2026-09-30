@@ -113,20 +113,16 @@ ALLOWED = {
         1, PAYABLE, ('commission_record_payout',),
         'the commission payout write path itself (is_active checked in Python '
         'just above the flag).'),
-    'hr.py::post_salary_payment': (
-        1, PAYABLE, ('salary_pay_event',),
-        "the salary pay-event ('จ่ายแล้ว') write path (is_active checked in "
-        'Python just above the flag).'),
     'cashbook_ledger.py::post_salary': (
-        1, PAYABLE, ('ledger_post_salary',),
-        "card F's seam for the salary pay-event: hr.post_salary_payment's "
-        'account rule moved verbatim (is_active checked in Python just above '
-        'the flag). Nothing calls it until PR-3.'),
+        1, PAYABLE, ('ledger_post_salary', 'salary_pay_event'),
+        "the salary pay-event ('จ่ายแล้ว') write path: hr.post_salary_payment "
+        "calls it since card F PR-3, which moved hr's account rule here verbatim "
+        '(is_active checked in Python just above the flag).'),
     'cashbook_ledger.py::post_commission': (
         1, PAYABLE, ('ledger_post_commission',),
         "card F's seam for the commission cashbook row: record_payout's "
-        'account rule as a backstop (record_payout keeps the up-front check). '
-        'Nothing calls it until PR-3.'),
+        'account rule as a backstop (record_payout keeps the up-front check, '
+        'and calls this since PR-3).'),
     'hr_queries.py::get_active_cashbook_accounts': (
         1, PAYABLE, ('pay_from_picker',),
         'the pay-from pickers (salary pay-event, commission payout, employee '
@@ -263,7 +259,8 @@ def test_the_census_is_not_empty():
     """CONTROL: a sweep that found nothing would satisfy the census above
     only if ALLOWED were emptied with it — pin the size so it cannot."""
     found = _census()
-    assert len(found) == len(ALLOWED) == 23, sorted(found)
+    # 22 since card F PR-3: hr.post_salary_payment's read moved into the ledger
+    assert len(found) == len(ALLOWED) == 22, sorted(found)
 
 
 @pytest.mark.parametrize('site', sorted(ALLOWED))

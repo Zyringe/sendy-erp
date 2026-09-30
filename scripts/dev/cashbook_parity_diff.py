@@ -12,6 +12,10 @@ exits 0 only when it is empty.
 
 Nothing here touches either tree's instance/ DB: `main` points DATA_DIR at a
 throwaway directory before `import app`.
+
+The base worktree is always unregistered on exit (`git worktree remove`), with
+or without `--keep`: a stale registration shows up in every tab's
+`git worktree list`. `--keep` keeps the dumps, DBs and stderr logs only.
 """
 import argparse
 import difflib
@@ -45,7 +49,8 @@ def _run_tree(tree, out_dir, label):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('base')
-    ap.add_argument('--keep', action='store_true', help='keep the base worktree and outputs')
+    ap.add_argument('--keep', action='store_true',
+                    help='keep the dumps, DBs and logs (the base worktree is removed either way)')
     args = ap.parse_args()
 
     out_dir = tempfile.mkdtemp(prefix='cashbook-parity-')
@@ -77,11 +82,11 @@ def main():
         print('RESULT: IDENTICAL' if not diff else 'RESULT: DIFFERENT')
         return 0 if not diff else 1
     finally:
+        subprocess.run(['git', '-C', REPO, 'worktree', 'remove', '--force', base_tree],
+                       capture_output=True)
         if args.keep:
-            print(f'kept: {out_dir}')
+            print(f'kept: {out_dir} (dumps, DBs, logs; base worktree removed)')
         else:
-            subprocess.run(['git', '-C', REPO, 'worktree', 'remove', '--force', base_tree],
-                           capture_output=True)
             shutil.rmtree(out_dir, ignore_errors=True)
 
 
