@@ -101,6 +101,31 @@ def test_hold_on_a_return_measures_the_opposite_sign(db, monkeypatch):
     assert sc.stock(db, pid) == before
 
 
+def test_hold_on_a_return_reweights_a_same_day_purchase_posted_after_it(db, monkeypatch):
+    """The one case where hold moves cost: the return is an IN, its offset an
+    ADJUST, and the WACC walk puts a same-timestamp purchase with a higher id
+    between them. preview says so; apply still does what was asked."""
+    day = datetime.date(2026, 5, 1)
+    pid = sc.seed_product(db)
+    sc.run_zip(monkeypatch, sc.Book()
+               .purchase('RR6900001', [(1, sc.CODE, 100.0, 'หลอด', 10.0)],
+                         datetime.date(2026, 3, 10))
+               .sale('SR6900001', [(1, sc.CODE, 2.0, 'โหล', 49.0)], day)
+               .purchase('RR6900002', [(1, sc.CODE, 100.0, 'หลอด', 20.0)], day))
+    (sr_id, _qty), = sc.sale_ledger(db, 'SR6900001-1', pid)
+    purchase_id = [r['id'] for r in sc.ledger_rows(db, pid)
+                   if r['reference_no'] == 'RR6900002'][0]
+    assert purchase_id > sr_id
+    assert sc.cost_ledger(db, pid)[-1][5] == pytest.approx((124 * 10 + 100 * 20) / 224)
+
+    effect = _preview(db, doc_no='SR6900001-1')
+    _apply(db, 'hold', doc_no='SR6900001-1')
+
+    assert effect.hold_reweights_purchases == 1
+    assert sc.stock(db, pid) == 224
+    assert sc.cost_ledger(db, pid)[-1][5] == pytest.approx((102 * 10 + 100 * 20) / 202)
+
+
 def test_move_posts_no_offset_and_shifts_the_later_purchase_cost(line):
     path, pid = line
     wacc_before = sc.cost_ledger(path, pid)[-1][5]
@@ -125,6 +150,7 @@ def test_preview_measures_both_modes_and_proposes_move_without_a_later_adjust(li
     assert (effect.stock_now, effect.stock_after_hold, effect.stock_after_move) == \
         (176, 176, 198)
     assert effect.proposed_mode == 'move' and effect.adjust_seen is None
+    assert effect.hold_reweights_purchases == 0
     assert sc.written_state(path) == before
 
 
