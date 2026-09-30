@@ -375,7 +375,8 @@ def test_apply_move_is_what_the_radio_said(line):
 @pytest.mark.parametrize('change, says', [
     ({'reason': 'สั้นไป'}, 'ต้องระบุเหตุผลอย่างน้อย 12 ตัวอักษร'),
     ({'corrected_unit': 'ลัง'}, 'ไม่ใช่หน่วยหลักและไม่มีอัตราแปลงของสินค้านี้'),
-    ({'stock_mode': None}, 'ไม่รู้จักวิธีปรับสต็อก'),
+    ({'stock_mode': None}, 'ต้องเลือกว่าจะคงหรือขยับยอดคงเหลือ'),
+    ({'stock_mode': 'guess'}, 'ไม่รู้จักวิธีปรับสต็อก "guess"'),
     ({'reason': None}, 'ต้องระบุเหตุผลอย่างน้อย 12 ตัวอักษร'),
 ])
 def test_a_refused_apply_writes_nothing_and_says_why(line, change, says):

@@ -492,3 +492,21 @@ def test_badges_return_the_latest_correction_of_each_line(line):
     assert list(badges) == [(LINE, sc.CODE)]
     assert badges[(LINE, sc.CODE)]['id'] == second
     assert badges[(LINE, sc.CODE)]['reason'] == sc.REASON
+
+
+@pytest.mark.parametrize('mode, says', [
+    (None, 'ต้องเลือกว่าจะคงหรือขยับยอดคงเหลือ'),
+    ('', 'ต้องเลือกว่าจะคงหรือขยับยอดคงเหลือ'),
+    ('guess', 'ไม่รู้จักวิธีปรับสต็อก "guess"'),
+])
+def test_a_missing_stock_mode_is_asked_for_and_an_unknown_one_is_named(line, mode, says):
+    import line_unit_correction as luc
+    path, _pid = line
+    before = sc.written_state(path)
+
+    with pytest.raises(luc.Refused) as refused:
+        _apply(path, mode)
+
+    assert refused.value.code == 'bad_mode'
+    assert str(refused.value) == says
+    assert sc.written_state(path) == before
