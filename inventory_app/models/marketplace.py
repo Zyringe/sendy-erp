@@ -842,6 +842,7 @@ def get_marketplace_order(conn, order_id):
         """SELECT mo.*,
                   CASE WHEN mo.platform='lazada'
                        THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                       WHEN mo.platform='tiktok' THEN mo.item_total
                        ELSE mo.actual_payout END AS billed_basis
            FROM marketplace_orders mo
            LEFT JOIN marketplace_order_fees f
@@ -1017,8 +1018,9 @@ def get_order_margin(conn, order_id):
             'lines': out_lines}
 
 
-# Customer NAME (not code) per platform, for the payments-received lookup.
-_RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้าร้านL'}
+# Customer NAME (not code) per platform, for the payments-received lookup. A hard
+# lookup: an unknown platform raises instead of silently reading Shopee's payments.
+_RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้าร้านL', 'tiktok': 'หน้าร้านT'}
 
 
 # ONE definition of "what the IV should equal", shared by the reconciliation that
@@ -1038,6 +1040,7 @@ _RECON_CUSTOMER = {'shopee': 'หน้าร้านS', 'lazada': 'หน้�
 # Requires the query to expose `mo` and to LEFT JOIN marketplace_order_fees AS f.
 _BILLED_BASIS_SQL = """CASE WHEN mo.platform='lazada'
                             THEN COALESCE(f.item_value, mo.item_total, mo.actual_payout)
+                            WHEN mo.platform='tiktok' THEN mo.item_total
                             ELSE mo.actual_payout END"""
 
 
@@ -1056,7 +1059,7 @@ def get_marketplace_reconciliation(conn, platform='shopee'):
     import payments_alloc
     from collections import OrderedDict
 
-    cust_name = _RECON_CUSTOMER.get(platform, 'หน้าร้านS')
+    cust_name = _RECON_CUSTOMER[platform]
     settle = {r['doc_base']: r
               for r in payments_alloc.invoice_settlement(customer=cust_name, conn=conn)}
     # Manager acknowledgements of billed≠payout discrepancies (survive re-matching).

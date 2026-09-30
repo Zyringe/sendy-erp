@@ -1,7 +1,7 @@
-"""Link marketplace orders (Shopee/Lazada) to their Express invoice (IV).
+"""Link marketplace orders (Shopee/Lazada/TikTok) to their Express invoice (IV).
 
 The team books each marketplace order as ONE Express invoice under customer codes
-``Zหน้าร้าน`` (Shopee) / ``Lหน้าร้าน`` (Lazada), keyed in Express shortly AFTER the
+``Zหน้าร้าน`` (Shopee) / ``Lหน้าร้าน`` (Lazada) / ``Tหน้าร้าน`` (TikTok), keyed in Express shortly AFTER the
 order is placed on the platform. There is no stored order_sn↔IV key, so we match
 on three signals:
 
@@ -47,7 +47,7 @@ import document_kind
 import vat_math
 
 # Customer code per platform (sales_transactions.customer_code).
-_CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร้าน'}
+_CUST_CODE = {'shopee': 'Zหน้าร้าน', 'lazada': 'Lหน้าร้าน', 'tiktok': 'Tหน้าร้าน'}
 
 # The Express doc kinds a person might type into the picker that are not an IV.
 _DOC_KIND_TH = {'HS': 'บิลเงินสด', 'SR': 'ใบลดหนี้'}
@@ -390,7 +390,11 @@ def iv_candidates(conn, order, window_days=PICKER_WINDOW_DAYS, max_results=20):
 # nothing here is speculative.
 _STATUS_COMPLETED = {
     'สำเร็จแล้ว', 'จัดส่งสำเร็จแล้ว', 'delivered', 'confirmed',
+    'เสร็จสมบูรณ์',                      # TikTok (order export, 2026-09-30)
 }
+# Every other TikTok status (only เสร็จสมบูรณ์ and ยกเลิกแล้ว seen so far) goes
+# through _is_matchable_status's unknown-status path: matched once settled,
+# otherwise skipped and logged.
 # Shopee appends a dynamic return-window deadline to this one
 # ("...จนถึง 2026-07-04") — prefix match, not exact string equality.
 _STATUS_COMPLETED_PREFIX = 'ผู้ซื้อได้รับสินค้าแล้ว'
@@ -442,12 +446,16 @@ def _matchable_orders(conn, platform):
     subtotal, populated at order-import time, never settlement time — so it's
     always available even when nothing has settled yet). Lazada's existing
     gross-first COALESCE is untouched (the team keys Lazada IVs at gross, not
-    net payout, whenever a fee row exists)."""
+    net payout, whenever a fee row exists). TikTok's basis is always
+    item_total, what the buyer paid: the team keys the IV at that (Put Q2,
+    2026-09-30). One of 3 basis copies, deliberately not unified (see
+    tests/test_tiktok_iv_link.py)."""
     rows = conn.execute(
         """SELECT o.id, o.order_sn, o.platform, o.status, o.actual_payout, o.settled_at,
                   o.order_date,
                   CASE WHEN o.platform='lazada'
                        THEN COALESCE(f.item_value, o.item_total, o.actual_payout)
+                       WHEN o.platform='tiktok' THEN o.item_total
                        ELSE COALESCE(o.actual_payout, o.item_total) END AS billed_basis
            FROM marketplace_orders o
            LEFT JOIN marketplace_order_fees f
