@@ -169,6 +169,7 @@ TARGET_COLUMNS = {
     'supplier_catalogue_items': ['unit'],
     'supplier_catalogue_price_history': ['unit'],
     'supplier_product_mapping': ['supplier_unit', 'erp_unit'],
+    'sales_line_unit_corrections': ['express_unit_raw', 'express_unit', 'corrected_unit'],
 }
 
 # `\b` on BOTH sides of UPDATE/INSERT matters: without it "UPDATE" matches
@@ -1623,6 +1624,7 @@ _EXCLUDED_LOOKALIKE_COLUMNS = {
     ('products', 'units_per_carton'),             # pack-size count
     ('purchase_order_lines', 'unit_price'),       # money
     ('purchase_transactions', 'unit_price'),      # money
+    ('sales_line_unit_corrections', 'unit_price'),  # money
     ('sales_transactions', 'unit_price'),         # money
     ('transactions', 'unit_mode'),   # CHECK-enum unit/box/carton, not an Express code
 }

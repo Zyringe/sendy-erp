@@ -1561,6 +1561,36 @@ CREATE TABLE "salary_advances" (
     created_at         TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 , from_account_id INTEGER REFERENCES cashbook_accounts(id));
 
+CREATE TABLE sales_line_unit_corrections (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_no            TEXT    NOT NULL,
+    bsn_code          TEXT    NOT NULL,
+    doc_base          TEXT    NOT NULL,
+    product_id        INTEGER NOT NULL,
+    express_unit_raw  TEXT    NOT NULL,   -- sales_transactions.unit verbatim; cancel restores this
+    express_unit      TEXT    NOT NULL,   -- the same, normalised
+    qty               REAL    NOT NULL,
+    unit_price        REAL,
+    net               REAL,
+    corrected_unit    TEXT    NOT NULL,
+    stock_mode        TEXT    NOT NULL CHECK (stock_mode IN ('hold', 'move')),
+    offset_txn_id     INTEGER,            -- transactions.id of the offset ADJUST; NULL in 'move'
+    reason            TEXT    NOT NULL CHECK (length(trim(reason)) >= 12),
+    created_by        TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+    status            TEXT    NOT NULL DEFAULT 'active'
+                      CHECK (status IN ('active', 'cancelled', 'retired')),
+    ended_at          TEXT,
+    ended_by          TEXT,
+    end_cause         TEXT,
+    end_reason        TEXT,               -- the admin's reason on cancel
+    CHECK ((status = 'active') = (ended_at IS NULL)),
+    CHECK ((status = 'active') = (end_cause IS NULL)),
+    CHECK ((status = 'cancelled') = (end_cause IS 'cancelled')),
+    CHECK (status <> 'retired'
+           OR end_cause IN ('express_changed', 'express_removed', 'express_agrees'))
+);
+
 CREATE TABLE sales_transactions (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id            INTEGER REFERENCES import_log(id),
@@ -2151,6 +2181,9 @@ CREATE INDEX idx_salary_advances_emp ON salary_advances(employee_id);
 CREATE INDEX idx_salary_advances_run ON salary_advances(deducted_in_run_id);
 
 CREATE INDEX idx_salary_hist_emp ON employee_salary_history(employee_id);
+
+CREATE UNIQUE INDEX idx_sales_line_unit_corrections_active
+    ON sales_line_unit_corrections (doc_no, bsn_code) WHERE status = 'active';
 
 CREATE INDEX idx_sales_order_lines_remaining
     ON express_sales_order_lines(entity, remaining_qty);
