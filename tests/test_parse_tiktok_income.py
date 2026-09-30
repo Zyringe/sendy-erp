@@ -167,8 +167,10 @@ def test_unknown_nonzero_column_is_refused_by_name():
         c = ws.max_column + 1
         ws.cell(row=1, column=c, value='ค่าธรรมเนียมใหม่')
         ws.cell(row=2, column=c, value='-3')
-    with pytest.raises(TikTokIncomeError, match='ค่าธรรมเนียมใหม่'):
+    with pytest.raises(TikTokIncomeError, match='ค่าธรรมเนียมใหม่') as e:
         _parse(_bytes(edit))
+    # The message names both homes a new column can have.
+    assert 'TIKTOK_BUCKET' in str(e.value) and '_OTHER_COLUMNS' in str(e.value)
 
 
 def test_unknown_all_zero_column_is_accepted():

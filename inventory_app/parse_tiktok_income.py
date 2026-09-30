@@ -154,8 +154,9 @@ def parse_tiktok_income(detail, report):
                 unknown.append(str(col))
                 break
     if unknown:
-        raise TikTokIncomeError('คอลัมน์ที่ยังไม่รู้จักมีค่า (ต้องเพิ่มใน TIKTOK_BUCKET ก่อน): '
-                                + ', '.join(unknown))
+        raise TikTokIncomeError('คอลัมน์ที่ยังไม่รู้จักมีค่า: ' + ', '.join(unknown)
+                                + ' — ถ้าเป็นค่าธรรมเนียม เพิ่มใน marketplace_fee_buckets.TIKTOK_BUCKET;'
+                                ' ถ้าไม่ใช่ เพิ่มใน parse_tiktok_income._OTHER_COLUMNS')
 
     settlements, fee_rows, adjustments = [], [], []
     total = 0.0
