@@ -285,6 +285,16 @@ def _require_reason(reason):
                       f'ต้องระบุเหตุผลอย่างน้อย {MIN_REASON} ตัวอักษร')
 
 
+def _require_stock_held(conn, product_id, stock_before, doc_no):
+    """Raised inside the transaction, so everything written so far rolls back."""
+    stock_after = _stock(conn, product_id)
+    if round(stock_after, 4) != round(stock_before, 4):
+        raise Refused('stock_moved',
+                      f'บรรทัด {doc_no}: ยอดคงเหลือจะขยับจาก {stock_before:g} เป็น '
+                      f'{stock_after:g} ทั้งที่เลือกคงยอดคงเหลือ ระบบจึงไม่บันทึก '
+                      f'(อัตราแปลงหรือรายการสต็อกของสินค้านี้ถูกแก้หลังการแก้หน่วย)')
+
+
 def apply(conn, doc_no, bsn_code, corrected_unit, stock_mode, reason, actor):
     """Correct one line's unit. ONE transaction on `conn`, which must not have
     one open. Returns the correction id."""
@@ -320,10 +330,7 @@ def apply(conn, doc_no, bsn_code, corrected_unit, stock_mode, reason, actor):
                          f'{OFFSET_NOTE_PREFIX}{doc_no}: {effect.express_unit_raw}'
                          f' → {corrected_unit} (คงยอดคงเหลือ)',
                          effect.date_iso + ' 00:00:00')).lastrowid
-                if round(_stock(conn, pid), 4) != round(stock_before, 4):
-                    raise RuntimeError(
-                        f'unit correction {doc_no}: stock moved in hold mode '
-                        f'({stock_before} -> {_stock(conn, pid)})')
+                _require_stock_held(conn, pid, stock_before, doc_no)
             correction_id = conn.execute(
                 "INSERT INTO sales_line_unit_corrections"
                 " (doc_no, bsn_code, doc_base, product_id, express_unit_raw,"
@@ -396,11 +403,8 @@ def cancel(conn, correction_id, reason, actor):
                          (restored, ledger['id']))
             if c['offset_txn_id'] is not None:
                 conn.execute("DELETE FROM transactions WHERE id=?", (c['offset_txn_id'],))
-            if c['stock_mode'] == 'hold' and \
-                    round(_stock(conn, pid), 4) != round(stock_before, 4):
-                raise RuntimeError(
-                    f'unit correction {doc_no}: cancelling a hold moved stock '
-                    f'({stock_before} -> {_stock(conn, pid)})')
+            if c['stock_mode'] == 'hold':
+                _require_stock_held(conn, pid, stock_before, doc_no)
             conn.execute(
                 "UPDATE sales_line_unit_corrections SET status='cancelled',"
                 " end_cause='cancelled', ended_at=datetime('now','localtime'),"
@@ -506,6 +510,16 @@ def blocking(conn, *, product_id=None, doc_base=None, bsn_code=None):
     return _dicts(conn.execute(
         "SELECT * FROM sales_line_unit_corrections WHERE status='active'"
         f" AND ({' OR '.join(clauses)}) ORDER BY id", params))
+
+
+def ratio_change_blockers(conn, product_id, bsn_unit, ratio):
+    """Active corrections that a ratio write would strand: non-empty only when
+    (product, unit) already has a DIFFERENT ratio. A new spelling moves no
+    posted line and stays allowed."""
+    current = unit_conversion.exact_ratios(conn, [product_id]).get((product_id, bsn_unit))
+    if current is None or abs(current - float(ratio)) < EPSILON:
+        return []
+    return blocking(conn, product_id=product_id)
 
 
 def refusal(corrections):

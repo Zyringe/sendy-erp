@@ -163,6 +163,8 @@ def unit_conversions_save():
             flash(msg, 'success')
         for b in result['blocked']:
             _flash_unit_hazard(b)
+        for message in result['refused']:
+            flash(message, 'danger')
     return redirect(url_for('bsn.unit_conversions'))
 
 
@@ -446,8 +448,11 @@ def mapping_save():
                 if r > 0:
                     # bsn_code too: on a first map the code's ledger rows are
                     # not linked to `pid` yet (review of #631, should-fix 2)
-                    models.upsert_unit_conversion(pid, bsn_unit, r,
-                                                  bsn_code=bsn_code)
+                    try:
+                        models.upsert_unit_conversion(pid, bsn_unit, r,
+                                                      bsn_code=bsn_code)
+                    except line_unit_correction.Refused as refused:
+                        return jsonify({'ok': False, 'error': str(refused)}), 409
         elif action == 'stage':
             # Smart-suggest flow: stage new SKU for manager/admin review
             payload = _build_suggestion_payload(bsn_code, item)

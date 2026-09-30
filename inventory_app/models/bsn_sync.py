@@ -543,6 +543,7 @@ def save_unit_conversions(items: list):
     conn = get_connection()
     saved = 0
     blocked = []
+    refused = []
     for item in items:
         # ADR 0018: what gets STORED is the หน่วย word, not whatever
         # spelling the pending row happened to be posted under — the hazard
@@ -562,6 +563,13 @@ def save_unit_conversions(items: list):
                                  bsn_unit=item['bsn_unit'],
                                  product_name=_product_name(conn, item['product_id'])))
             continue
+        blockers = line_unit_correction.ratio_change_blockers(
+            conn, item['product_id'], item['bsn_unit'], item['ratio'])
+        if blockers:
+            message = line_unit_correction.refusal(blockers)
+            if message not in refused:
+                refused.append(message)
+            continue
         conn.execute("""
             INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
             VALUES (?, ?, ?)
@@ -574,7 +582,7 @@ def save_unit_conversions(items: list):
         _sync_bsn_to_stock(conn, 'purchase_transactions', 'purchase')
     conn.commit()
     conn.close()
-    return {'saved': saved, 'blocked': blocked}
+    return {'saved': saved, 'blocked': blocked, 'refused': refused}
 
 
 def dismiss_pending_unit_conversion(product_id: int, bsn_unit: str,
@@ -870,6 +878,12 @@ def upsert_unit_conversion(product_id: int, bsn_unit: str, ratio: float,
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(ratio) != 1):
         conn.close()
         return False
+    blockers = line_unit_correction.ratio_change_blockers(
+        conn, product_id, bsn_unit, ratio)
+    if blockers:
+        conn.close()
+        raise line_unit_correction.Refused(
+            'active_correction', line_unit_correction.refusal(blockers))
     conn.execute("""
         INSERT INTO unit_conversions (product_id, bsn_unit, ratio)
         VALUES (?, ?, ?)

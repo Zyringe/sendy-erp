@@ -9,6 +9,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 import book_registry
 import config
 import form_options
+import line_unit_correction
 import models
 import name_builder
 import sku_code_utils
@@ -704,7 +705,11 @@ def product_edit(product_id):
             return render_template('products/form.html', product=resubmit, action='edit', product_id=product_id)
 
         _who = session.get('username') or session.get('display_name') or '?'
-        models.update_product(product_id, data, source=f'manual:{_who}')
+        try:
+            models.update_product(product_id, data, source=f'manual:{_who}')
+        except line_unit_correction.Refused as refused:
+            flash(str(refused), 'danger')
+            return redirect(url_for('products.product_edit', product_id=product_id))
         locations = request.form.getlist('floor_no')
         models.save_product_locations(product_id, locations)
         if _basis_moved:
