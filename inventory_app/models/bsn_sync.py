@@ -732,19 +732,23 @@ def update_unit_conversion_ratio(product_id, bsn_unit, new_ratio):
     # #590 A2: the ratio and the re-synced stock commit before the WACC replay.
     require_actor_or_alert(conn, 'ratio_change', extra={'product_id': product_id})
 
-    # A new ratio re-posts the corrected line but not its offset, which was
-    # measured under the old one.
-    blockers = line_unit_correction.blocking(conn, product_id=product_id)
-    if blockers:
-        conn.close()
-        return {'error': line_unit_correction.refusal(blockers)}
-
     hazard = cross_unit_hazard(conn, product_id, bsn_unit)
     if hazard is not None and (hazard['kind'] in _UNCONDITIONAL_BLOCK_KINDS or float(new_ratio) != 1):
         blocked = dict(hazard, product_id=product_id, bsn_unit=bsn_unit,
                        product_name=_product_name(conn, product_id))
         conn.close()
         return {'blocked': blocked}
+
+    # A new ratio re-posts the corrected line but not its offset, which was
+    # measured under the old one. The write lock is taken BEFORE the read, so
+    # no correction can be applied between this check and the commit below.
+    # After the hazard check on purpose: that one may file its alert on a
+    # fresh connection, which must not find this one holding the lock.
+    conn.execute("BEGIN IMMEDIATE")
+    blockers = line_unit_correction.blocking(conn, product_id=product_id)
+    if blockers:
+        conn.close()
+        return {'error': line_unit_correction.refusal(blockers)}
 
     # Update ratio
     conn.execute("""
