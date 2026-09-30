@@ -696,13 +696,18 @@ def _review(client):
 
 def test_the_review_page_links_an_admin_from_a_flagged_line_to_its_page(invoice):
     _flag(invoice, LINE, sc.sales_row(invoice, LINE)['id'], 'ธงของบรรทัดหนึ่ง')
-    # A flag whose sales row is gone names no line any more.
+    # A flag whose sales row is gone names no line any more, and neither does
+    # one whose row id now belongs to another line.
     _flag(invoice, DOC + '-7', 999999, 'ธงของบรรทัดที่หายไป')
+    _flag(invoice, DOC + '-8', sc.sales_row(invoice, DOC + '-2', CODE2)['id'],
+          'ธงที่เลขแถวกลายเป็นของบรรทัดอื่น')
 
     page = _review(_client('admin'))
 
     flags = page.text['review-doc-' + DOC]
-    assert 'ธงของบรรทัดหนึ่ง' in flags and 'ธงของบรรทัดที่หายไป' in flags
+    for message in ('ธงของบรรทัดหนึ่ง', 'ธงของบรรทัดที่หายไป',
+                    'ธงที่เลขแถวกลายเป็นของบรรทัดอื่น'):
+        assert message in flags, message
     targets = [_target(href) for href, _t, text in page.links['review-doc-' + DOC]
                if text == 'แก้หน่วย']
     assert targets == [(PAGE, KEY)]
