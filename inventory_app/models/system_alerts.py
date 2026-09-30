@@ -226,6 +226,11 @@ def record_express_doc_drift_alerts(findings, *, dataset_label=None, conn=None):
                        'fields': sorted({x for f in group
                                          for x in (f.get('fields') or [])}),
                        'docstat': docstat, 'fingerprint': fingerprint}
+            correction_ids = sorted({i for f in group
+                                     for i in (f.get('unit_correction_ids') or [])})
+            if correction_ids:
+                message += ' · เอกสารนี้มีการแก้หน่วยบรรทัดค้างอยู่'
+                context['unit_correction_ids'] = correction_ids
             aid = create_system_alert(
                 KIND_EXPRESS_DOC_DRIFT, message,
                 dedupe_key=_dedupe_key([doc]),

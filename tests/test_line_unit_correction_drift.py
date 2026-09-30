@@ -13,7 +13,10 @@ LINE = 'IV6900001-1'
 
 
 def _book(*, corrected_qty=2.0, control_qty=1.0, other_price=5.0):
-    return (sc.standard_book()
+    book = sc.standard_book()
+    book.stcrd[1]['TRNQTY'] = corrected_qty
+    book.stcrd[1]['TRNVAL'] = book.stcrd[1]['NETVAL'] = corrected_qty * 49.0
+    return (book
             .sale('IV6900002', [(1, sc.CODE, control_qty, 'โหล', 49.0)],
                   datetime.date(2026, 4, 2))
             .sale('IV6900003', [(1, sc.CODE, 1.0, 'โหล', 49.0),
@@ -61,6 +64,19 @@ def test_a_corrected_document_is_not_drift_while_a_drifting_one_still_is(importe
 
     assert [(f['doc_no'], f['kind']) for f in findings] == [('IV6900002', 'content')]
     assert 'unit_correction_ids' not in findings[0]
+
+
+def test_a_line_that_no_longer_holds_its_corrected_unit_is_compared_as_stored(imported):
+    _correct(imported)
+    c = sc.raw(imported)
+    c.execute("UPDATE sales_transactions SET unit='กล่อง', change_source='import',"
+              " change_actor='hand', change_token='hand-1' WHERE doc_no=?", (LINE,))
+    c.commit()
+    c.close()
+
+    finding, = _findings(imported, _book())
+
+    assert (finding['doc_no'], finding['fields']) == ('IV6900001', ['line:unit'])
 
 
 def test_an_express_edit_of_a_corrected_document_names_the_correction(imported):

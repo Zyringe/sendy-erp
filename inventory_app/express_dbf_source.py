@@ -1279,23 +1279,35 @@ def _c_line(code, qty, unit, price, total, net, disc, _norm):
             _c_num(total), _c_num(net), _c_txt(disc))
 
 
-def _drift_sendy_side(conn, era_start, _norm):
-    """Every document Sendy holds from `era_start`, in canonical form."""
+def _drift_sendy_side(conn, era_start, _norm, corrections=None):
+    """Every document Sendy holds from `era_start`, in canonical form.
+
+    `corrections` (line_unit_correction.active_by_line_key): a sales line that
+    still holds its corrected unit is read with Express's unit instead (#692).
+    The override sits on THIS side so the Express side, and with it the
+    fingerprint of a baselined or acknowledged document, stays what it was.
+    """
+    import line_unit_correction
     out = {}
     for table, doc_col, party_col in (
             ('sales_transactions', 'doc_base', 'customer_code'),
             ('purchase_transactions', 'doc_no', 'supplier_code')):
+        corrected = corrections if table == 'sales_transactions' else None
         rows = conn.execute(
             f"SELECT {doc_col}, date_iso, vat_type, {party_col}, bsn_code, qty,"
-            f" unit, unit_price, total, net, discount"
-            f"  FROM {table} WHERE date_iso >= ?", (era_start,))
+            f" unit, unit_price, total, net, discount, doc_no"
+            f"  FROM {table} WHERE date_iso >= ?", (era_start,)).fetchall()
         for r in rows:
             doc = r[0]
             if doc is None:
                 continue
+            unit = r[6]
+            if corrected:
+                unit = line_unit_correction.sendy_side_unit(
+                    conn, r[11], r[4], unit, active=corrected)
             d = out.setdefault(doc, {'hdr': (r[1], str(r[2]), _c_txt(r[3])),
                                      'lines': []})
-            d['lines'].append(_c_line(r[4], r[5], r[6], r[7], r[8], r[9], r[10],
+            d['lines'].append(_c_line(r[4], r[5], unit, r[7], r[8], r[9], r[10],
                                       _norm))
     return out
 
@@ -1443,7 +1455,9 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
     def _norm(u):
         return unit_map.get(u, u) if u else u
 
-    sendy = _drift_sendy_side(conn, era_start, _norm)
+    import line_unit_correction
+    corrections = line_unit_correction.active_by_line_key(conn)
+    sendy = _drift_sendy_side(conn, era_start, _norm, corrections)
     held = set(sendy)
     express, dropped_by_ignore = _drift_express_side(
         artrn_rows, aptrn_rows, stcrd_rows, armas_rows, apmas_rows, held, conn,
@@ -1524,6 +1538,15 @@ def detect_document_drift(artrn_rows, aptrn_rows, stcrd_rows, armas_rows,
                             f'แต่ไม่มีใน Express ที่ export เมื่อ {cut} — '
                             f'อาจถูกลบที่ต้นทาง'),
             })
+
+    # A finding on a document with an active unit correction is the prompt to
+    # cancel it by hand: outside the zip's window nothing retires it (#692).
+    corrected_docs = {}
+    for c in corrections.values():
+        corrected_docs.setdefault(c['doc_base'], []).append(c['id'])
+    for f in findings:
+        if f['doc_no'] in corrected_docs:
+            f['unit_correction_ids'] = sorted(corrected_docs[f['doc_no']])
 
     counters = {
         'freshness': freshness,

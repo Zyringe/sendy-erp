@@ -514,6 +514,19 @@ def refusal(corrections):
     return f'ยกเลิกการแก้หน่วยบรรทัดก่อน ({docs})'
 
 
+def sendy_side_unit(conn, doc_no, bsn_code, stored_unit, *, active=None):
+    """The unit the drift scan compares for a stored sales line: Express's own
+    unit while the line still holds its active correction, so a corrected
+    document stays equal to Express until Express really changes.
+    `active` is a preloaded `active_by_line_key` map for a caller in a loop."""
+    if active is None:
+        active = active_by_line_key(conn)
+    c = active.get((doc_no, bsn_code))
+    if c is not None and _norm(conn, stored_unit) == c['corrected_unit_norm']:
+        return c['express_unit']
+    return stored_unit
+
+
 def badges_for_doc(conn, doc_base):
     """{(doc_no, bsn_code): the line's latest correction, any status}."""
     out = {}
