@@ -3,8 +3,8 @@
 An admin corrects the หน่วย of ONE sales line. Express keeps its own value, so
 the daily zip must read that line as unchanged for as long as Express still
 says what it said when the correction was made. Every rule about that lives
-here: the importer, the drift scan, the guarded writers and (PR-2) the routes
-only call in.
+here: the importer, the drift scan, the guarded writers and the routes only
+call in.
 
 A correction is keyed on the line key (doc_no, bsn_code), never the row id: a
 changed line is DELETE + INSERT with a new id (models/imports.py).
@@ -36,7 +36,6 @@ EPSILON = 1e-9
 # Must not start with `BSN` or `ประวัติขาย`: the orphan sweep alerts on those,
 # and pass 2 of the importer owns the exact `BSN ขาย` notes.
 OFFSET_NOTE_PREFIX = 'แก้หน่วยบรรทัด '
-ADJUST_UNKNOWN_TH = 'ระบบไม่รู้ว่ารายการนี้เป็นการตั้งยอดหรือไม่'
 
 _SALES_LEDGER_NOTES = ('BSN ขาย', 'BSN ขาย-คืน')
 

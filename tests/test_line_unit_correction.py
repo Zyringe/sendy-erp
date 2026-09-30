@@ -13,7 +13,7 @@ LINE = 'IV6900001-1'
 
 
 @pytest.fixture
-def db(empty_db, monkeypatch):
+def db(empty_db):
     sc.seed_company(empty_db)
     return empty_db
 
@@ -142,7 +142,7 @@ def test_preview_proposes_hold_and_names_the_adjust_it_saw(line):
 
 
 def test_preview_counts_purchases_costed_under_water_when_the_sale_grows(db, monkeypatch):
-    pid = sc.seed_product(db)
+    sc.seed_product(db)
     sc.run_zip(monkeypatch, sc.Book()
                .purchase('RR6900001', [(1, sc.CODE, 10.0, 'หลอด', 10.0)],
                          datetime.date(2026, 3, 10))
@@ -324,7 +324,27 @@ def _already_active(path, pid, monkeypatch):
     return {'unit': 'กล่อง'}
 
 
+def _sql(path, statement, *params):
+    c = sc.raw(path)
+    c.execute(statement, params)
+    c.commit()
+    c.close()
+    return {}
+
+
+_DECLARED = "change_source='import', change_actor='hand', change_token='hand-1'"
+
 REFUSALS = [
+    ('unmapped', lambda path, pid, mp: _sql(
+        path, f"UPDATE sales_transactions SET product_id=NULL, {_DECLARED}"
+              " WHERE doc_no=?", LINE)),
+    ('history_import', lambda path, pid, mp: _sql(
+        path, "UPDATE sales_transactions SET batch_id='history_import' WHERE doc_no=?",
+        LINE)),
+    ('ledger_mismatch', lambda path, pid, mp: _sql(
+        path, "UPDATE transactions SET quantity_change=-23 WHERE reference_no=?", LINE)),
+    ('bad_mode', lambda path, pid, mp: {'mode': 'guess'}),
+
     ('twin_doc_no', _twin_doc_no),
     ('duplicate_key', _duplicate_key),
     ('ledger_rows', _no_ledger_row),
@@ -349,10 +369,44 @@ def test_apply_refuses_and_writes_nothing(line, monkeypatch, code, arrange):
     assert before['sales'] and before['ledger']
 
     with pytest.raises(luc.Refused) as exc:
-        _apply(path, 'hold', **overrides)
+        _apply(path, overrides.pop('mode', 'hold'), **overrides)
 
     assert exc.value.code == code
     assert sc.written_state(path) == before
+
+
+CANCEL_REFUSALS = [
+    ('line_missing', lambda path, pid, offset_id: _sql(
+        path, "DELETE FROM sales_transactions WHERE doc_no=?", LINE)),
+    ('line_changed', lambda path, pid, offset_id: _sql(
+        path, f"UPDATE sales_transactions SET unit='โหล', {_DECLARED} WHERE doc_no=?",
+        LINE)),
+    ('product_changed', lambda path, pid, offset_id: _sql(
+        path, f"UPDATE sales_transactions SET product_id=?, {_DECLARED} WHERE doc_no=?",
+        sc.seed_product(path, 'OTHER', name='อื่น'), LINE)),
+    ('ledger_rows', lambda path, pid, offset_id: _sql(
+        path, "DELETE FROM transactions WHERE reference_no=?", LINE)),
+    ('offset_missing', lambda path, pid, offset_id: _sql(
+        path, "DELETE FROM transactions WHERE id=?", offset_id)),
+    ('reason_too_short', lambda path, pid, offset_id: {'reason': 'สั้นไป'}),
+]
+
+
+@pytest.mark.parametrize('code,arrange', CANCEL_REFUSALS,
+                         ids=[c for c, _a in CANCEL_REFUSALS])
+def test_cancel_refuses_and_writes_nothing(line, code, arrange):
+    import line_unit_correction as luc
+    path, pid = line
+    cid = _apply(path, 'hold')
+    overrides = arrange(path, pid, sc.offsets(path, pid)[0]['id'])
+    before = sc.written_state(path)
+
+    with pytest.raises(luc.Refused) as exc:
+        _cancel(path, cid, **overrides)
+
+    assert exc.value.code == code
+    assert sc.written_state(path) == before
+    assert sc.corrections(path)[0]['status'] == 'active'
 
 
 def test_a_cost_failure_rolls_the_whole_correction_back(line, monkeypatch):
