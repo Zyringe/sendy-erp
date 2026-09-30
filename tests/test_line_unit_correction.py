@@ -389,6 +389,9 @@ CANCEL_REFUSALS = [
     ('offset_missing', lambda path, pid, offset_id: _sql(
         path, "DELETE FROM transactions WHERE id=?", offset_id)),
     ('reason_too_short', lambda path, pid, offset_id: {'reason': 'สั้นไป'}),
+    ('express_unit_no_ratio', lambda path, pid, offset_id: _sql(
+        path, "UPDATE unit_conversions SET ratio=0 WHERE product_id=? AND bsn_unit='โหล'",
+        pid)),
 ]
 
 
