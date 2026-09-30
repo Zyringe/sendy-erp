@@ -1,7 +1,8 @@
 """Card C, P1: randomized differential, `purchase_history` vs the code it replaces.
 
-`models.customers` still holds the per-surface queries (P1 wires nothing), so
-they ARE the old side. For a fixed list of seeds, build a tie-dense synthetic
+The OLD side is `tests/_card_c_oracle.py`, the per-surface SQL frozen at c9ef583.
+It must not be the live `models.customers`: P2 rewires that onto the module, and
+a comparison against it would be module-vs-itself (P1 review W3). For a fixed list of seeds, build a tie-dense synthetic
 shop (several docs on the same date, an SR on the same day as an IV, freebie-only
 bills, flagged and unflagged write-offs, a หน้าร้าน line, a NULL-code SR under a
 coded name, two units of one product) and assert OLD == NEW for every field the
@@ -48,18 +49,18 @@ def _build_shop(conn, rng, code, pids):
 
 def _old(conn, code, date_from, date_to):
     import winback
-    from models import customers as c
-    where, params = c._customer_sales_scope('customer_code', code, date_from, date_to)
-    summary, top, monthly, docs = c._customer_sales_aggregates(conn, where, params)
-    cards = c._customer_product_cards(conn, where, params)
-    wb_where, wb_params = c._customer_sales_scope('customer_code', code, None, None)
+    from tests import _card_c_oracle as c
+    where, params = c.customer_sales_scope('customer_code', code, date_from, date_to)
+    summary, top, monthly, docs = c.customer_sales_aggregates(conn, where, params)
+    cards = c.product_rows(conn, where, params)
+    wb_where, wb_params = c.customer_sales_scope('customer_code', code, None, None)
     return {
         'summary': dict(summary),
         'top': [dict(r) for r in top],
         'monthly': [dict(r) for r in monthly],
         'docs': docs,
         'cards': cards,
-        'returned_net_total': c._returns_off_cards(conn, where, params, []),
+        'returned_net_total': c.returns_off_cards(conn, where, params, []),
         'winback': winback.compute_winback(conn, wb_where, wb_params, today=TODAY),
     }
 
@@ -88,7 +89,9 @@ def _same_top(old, new, msg):
 
 
 def test_history_equals_the_code_it_replaces_on_random_shops(empty_db_conn):
+    import price_lookup
     import purchase_history
+    from tests import _card_c_oracle as c_oracle
     conn = empty_db_conn
     pids = [mk_product(conn, 'สินค้า%d' % i) for i in range(4)]
     for seed in SEEDS:
@@ -111,6 +114,14 @@ def test_history_equals_the_code_it_replaces_on_random_shops(empty_db_conn):
             assert t['first_activity'] == s['first_date'], msg
             assert t['last_activity'] == s['last_date'], msg
             assert t['purchase_count'] == s['purchase_doc_count'], msg
+            # first_purchase has no page-side oracle: an independent MIN over the
+            # same population (P1 review W2)
+            where, params = c_oracle.customer_sales_scope(
+                'customer_code', code, date_from, date_to)
+            first = conn.execute(
+                'SELECT MIN(date_iso) FROM sales_transactions WHERE %s AND %s'
+                % (where, price_lookup.purchase_population_filter('')), params).fetchone()[0]
+            assert t['first_purchase'] == first, msg
             assert t['last_purchase'] == s['last_purchase_date'], msg
 
             _same_rows(old['monthly'], new['monthly'], msg + ' monthly')
@@ -160,3 +171,27 @@ def test_histories_equals_history_totals_for_every_key(empty_db_conn):
         assert hs[code]['last_purchase'] == t['last_purchase'], code
         w = purchase_history.history(conn, code, date_from='2026-03-01', today=TODAY)
         assert _close(hs_since[code]['purchase_total'], w['totals']['purchase_total']), code
+
+
+def test_histories_survives_a_key_committed_between_its_two_reads(empty_db_conn):
+    """P1 review W4: the aggregate and the bill-name scan are two reads. A first-ever
+    row for a new key landing between them used to raise KeyError."""
+    import purchase_history
+    conn = empty_db_conn
+    pid = mk_product(conn, 'x')
+    add_line(conn, doc_base='IV1', date_iso='2026-01-01', pid=pid, qty=1, net=10,
+             customer='ก', code='K1')
+    conn.commit()
+
+    class Seam:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, sql, *args):
+            if 'ORDER BY s.date_iso, s.id' in sql:      # the second read
+                add_line(self.inner, doc_base='IV2', date_iso='2026-01-02', pid=pid,
+                         qty=1, net=5, customer='ใหม่', code='NEW1')
+            return self.inner.execute(sql, *args)
+
+    hs = purchase_history.histories(Seam(conn))
+    assert set(hs) == {'K1'} and hs['K1']['bill_name'] == 'ก'

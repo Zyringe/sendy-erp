@@ -5,7 +5,7 @@ rationale. No behavior changes.
 """
 import json
 import customer_geo
-import document_kind
+import purchase_history
 import sales_filters
 import unit_conversion
 import vat_math
@@ -31,54 +31,13 @@ def _customer_sales_scope(key_col, key_value, date_from, date_to):
     return ' AND '.join(conds), params
 
 
-def _customer_documents(conn, where, params, limit=None):
-    """One row per DOCUMENT (doc_base), never per line — the shared grouping
-    #493 introduced. `sales_transactions.doc_no` carries a per-line '-N'
-    suffix, so grouping by it (the pre-#493 code) produced one "document" per
-    LINE: 247 lines on customer 23ท06 read as 247 documents when the real
-    count is 66. `_customer_sales_aggregates`'s docs list and the mobile quick
-    page (models.get_customer_documents) both call this now, so they cannot
-    drift apart again.
-
-    Each row: doc_base, date_iso (latest line date on the doc), item_count
-    ('รายการ' — the line count, not a quantity summed across units),
-    vat_type (of the doc's lines; ยกเว้น/ไม่บวก VAT are never mixed with แยก
-    VAT on one document in practice), total (ยอดรวมเอกสาร — VAT added through
-    vat_math for แยก VAT documents, summed; NEGATIVE for a credit note),
-    is_credit_note, ref_invoice (the invoice an SR credits, NULL otherwise).
-    """
-    limit_sql = f'LIMIT {int(limit)}' if limit is not None else ''
-    rows = conn.execute(f"""
-        SELECT doc_base,
-               MAX(date_iso) AS date_iso,
-               COUNT(*) AS item_count,
-               MAX(vat_type) AS vat_type,
-               SUM({vat_math.cash_sql()}) AS raw_total,
-               ({document_kind.is_return_sql('', 'sales')}) AS is_credit_note,
-               MAX(ref_invoice) AS ref_invoice
-        FROM sales_transactions
-        WHERE {where}
-        GROUP BY doc_base
-        ORDER BY date_iso DESC, doc_base
-        {limit_sql}
-    """, params).fetchall()
-    docs = []
-    for r in rows:
-        d = dict(r)
-        total = d.pop('raw_total') or 0
-        d['is_credit_note'] = bool(d['is_credit_note'])
-        d['total'] = -total if d['is_credit_note'] else total
-        docs.append(d)
-    return docs
-
-
 def get_customer_documents(key_col, key_value, date_from=None, date_to=None, limit=None):
-    """Public wrapper around `_customer_documents` — used directly by the
+    """Public wrapper around `purchase_history.customer_documents` — used directly by the
     mobile quick page (code-keyed), so its document list can never drift from
     the desktop customer page's (#493)."""
     conn = get_connection()
     where, params = _customer_sales_scope(key_col, key_value, date_from, date_to)
-    docs = _customer_documents(conn, where, params, limit=limit)
+    docs = purchase_history.customer_documents(conn, where, params, limit=limit)
     conn.close()
     return docs
 
@@ -162,7 +121,7 @@ def _customer_sales_aggregates(conn, where, params):
 
     # Every document (#493 — no 200-LINE cap cutting off old invoices; the old
     # cap was on `doc_no`, i.e. lines, so it silently dropped whole invoices).
-    docs = _customer_documents(conn, where, params)
+    docs = purchase_history.customer_documents(conn, where, params)
 
     return summary, top_products, monthly, docs
 

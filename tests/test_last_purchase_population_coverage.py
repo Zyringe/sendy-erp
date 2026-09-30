@@ -169,10 +169,24 @@ ALLOWED = {
         "customer's buying history — and BOTH #554 populations exclude "
         'หน้าร้าน outright, so filtering it would answer NULL forever.'),
     # ── a document, or a search hint ──
-    'models/customers.py::_customer_documents': (1, 0,
+    'purchase_history.py::customer_documents': (1, 0,
         'one row per DOCUMENT, and the date shown against it — for a credit '
         'note, the credit note\'s own date. A document list must show returns; '
-        'the customer page renders them with a negative total.'),
+        'the customer page renders them with a negative total. Moved from '
+        'models/customers.py in card C P2.'),
+    'purchase_history.py::history': (6, 4,
+        'card C: the one customer-history reader. The raw six are the questions '
+        'that are NOT ซื้อ: doc_count and first/last activity (a credit note IS a '
+        'document and IS activity), the monthly and top-products document counts, '
+        'and the documents\' own dates. purchase_count / first_purchase / '
+        'last_purchase come from ONE query over purchase_population_filter, and '
+        'the per-product times_bought / last_purchase are two more CASEs over it '
+        '(4 population sites). Pinned by test_purchase_history.py, which has a '
+        'leading freebie so first_purchase differs from first_activity.'),
+    'purchase_history.py::histories': (1, 1,
+        "every customer's raw last_activity (feeds no ซื้อ label) beside the "
+        'one purchase-population last_purchase that /call, the sales trip and '
+        '/customers render.'),
     'blueprints/mobile.py::customer_detail': (2, 0,
         "/m/customer's เอกสารทั้งหมด and the activity dates behind it: the "
         'mobile mirror of the desktop จำนวนเอกสาร card, labelled documents. '
@@ -195,6 +209,8 @@ MUST_USE_HELPER = (
     'blueprints/mobile.py::sales_trip',
     'models/customers.py::_customer_sales_aggregates',
     'models/customers.py::get_customers',
+    'purchase_history.py::history',
+    'purchase_history.py::histories',
 )
 
 
@@ -234,14 +250,22 @@ def _queries(src):
     return out
 
 
-def _per_function(src, pattern):
+# A module whose whole job is one customer's history. Its key arrives through a
+# `{where}` / `{key}` hole in functions named `history`/`histories`, so neither
+# signal below fires and the sweep would report {} for the file (P1 review W1:
+# a clean result because the check never ran). Every sales_transactions query
+# in these files counts as per-customer.
+CUSTOMER_MODULES = ('purchase_history.py',)
+
+
+def _per_function(src, pattern, whole_file=False):
     """{function: hits of `pattern` in its per-customer sales_transactions
     queries}, SQL comments stripped first."""
     counts = {}
     for func, sql in _queries(src):
         if 'sales_transactions' not in sql:
             continue
-        if not (_CUSTOMER_KEY.search(sql) or 'customer' in func.lower()):
+        if not (whole_file or _CUSTOMER_KEY.search(sql) or 'customer' in func.lower()):
             continue
         n = len(pattern.findall(_code_only(sql)))
         if n:
@@ -265,7 +289,8 @@ def _app_counts(pattern):
     for rel, path in _py_files():
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        for func, n in _per_function(src, pattern).items():
+        for func, n in _per_function(src, pattern,
+                                     whole_file=rel in CUSTOMER_MODULES).items():
             out[f'{rel}::{func}'] = n
     return out
 

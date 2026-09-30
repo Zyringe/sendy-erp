@@ -22,6 +22,7 @@ one string, the SUM in another), files outside inventory_app/ (scripts/), and
 any figure computed in Python from fetched rows. The cross-surface test in
 test_494_purchase_total.py is the behavioural half; this is the census.
 """
+import os
 import re
 
 import pytest
@@ -44,9 +45,17 @@ _CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b', re.IGNORECASE)
 # ยอดซื้อรวม, so it keeps its own definition on purpose.
 ALLOWED = {
     # ── per-document and per-product figures on the customer pages ──
-    'models/customers.py::_customer_documents': (1,
+    'purchase_history.py::customer_documents': (1,
         'ยอดรวมเอกสาร: one row per DOCUMENT, VAT added on แยก VAT documents, a '
-        'credit note negated in Python. A document total, VAT-inclusive by design.'),
+        'credit note negated in Python. A document total, VAT-inclusive by design. '
+        'Moved here from models/customers.py in card C P2 (the owner module holds '
+        'the document list, so consumers point at it).'),
+    'purchase_history.py::history': (3,
+        'the per-(product, unit) rows of the customer page, moved from '
+        '_customer_product_cards: qty and money NET of credit notes (#646) as '
+        'CASE expressions over price_lookup.returned_lines_filter, plus '
+        'returned_net. Per-product figures, never the customer\'s total, which '
+        'is the two purchase_net_sql calls in this same function (MUST_USE_HELPER).'),
     'models/customers.py::_customer_product_cards': (2,
         'one row per (product, unit), used to order the product cards by money '
         'and to decide which reach the top-20 union. A per-product figure, '
@@ -103,10 +112,20 @@ ALLOWED = {
 # models.get_customer_summary.
 MUST_USE_HELPER = {
     'models/customers.py::_customer_sales_aggregates': 2,   # header + monthly
+    'purchase_history.py::history': 2,                      # card C: header + monthly
+    'purchase_history.py::histories': 1,                    # card C: every customer's ยอดซื้อรวม
     'models/customers.py::get_customers': 1,                # /customers list
     'blueprints/mobile.py::customer_detail': 1,             # /m/customer ยอดสะสม
     'call_card.py::get_call_list': 1,                       # /call spend
 }
+
+
+# A module whose whole job is one customer's history. Its key arrives through a
+# `{where}` / `{key}` hole in functions named `history`/`histories`, so neither
+# signal below fires and the gate would report {} for the file (P1 review W1:
+# a clean result because the check never ran). Every sales_transactions query
+# in these files counts as per-customer.
+CUSTOMER_MODULES = ('purchase_history.py',)
 
 
 def _customer_scoped(func, sql):
@@ -119,7 +138,14 @@ def _per_function(src, pattern):
 
 
 def _app_counts(pattern):
-    return _census.app_counts(pattern, 'sales_transactions', _customer_scoped)
+    out = {site: n for site, n in
+           _census.app_counts(pattern, 'sales_transactions', _customer_scoped).items()
+           if site.split('::')[0] not in CUSTOMER_MODULES}
+    for rel in CUSTOMER_MODULES:
+        src = _census.read(os.path.join(_census.APP, rel))
+        for func, n in _census.per_function(src, pattern, 'sales_transactions').items():
+            out[f'{rel}::{func}'] = n
+    return out
 
 
 # ── The census ───────────────────────────────────────────────────────────────

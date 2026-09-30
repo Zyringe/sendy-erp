@@ -109,7 +109,7 @@ ALLOWED = {
         'in a CASE (the #646 shape, mirror of _customer_product_cards), plus '
         'returned_qty, returned_net and returned_net_total, which are the '
         'credit notes THEMSELVES. Not un-netted sales.'),
-    'models/customers.py::_customer_documents': (1,
+    'purchase_history.py::customer_documents': (1,
         'one row per DOCUMENT, a credit note already negated in Python. A document list.'),
     'models/customers.py::_returns_off_cards': (1,
         'the ฿ of this customer\'s credit notes that the RENDERED cards do not '

@@ -32,7 +32,9 @@ returned here.
 
 Plain dicts, like winback.py. No module-level caches (gunicorn -w 2).
 """
+import document_kind
 import sales_filters
+import vat_math
 
 
 def customer_key_sql(alias='s'):
@@ -57,6 +59,47 @@ def _scope(key, date_from=None, date_to=None):
     return ' AND '.join(conds), params
 
 
+def customer_documents(conn, where, params, limit=None):
+    """One row per DOCUMENT (doc_base), never per line — the shared grouping
+    #493 introduced. `sales_transactions.doc_no` carries a per-line '-N'
+    suffix, so grouping by it (the pre-#493 code) produced one "document" per
+    LINE: 247 lines on customer 23ท06 read as 247 documents when the real
+    count is 66. `history()`'s documents list and the mobile quick
+    page (models.get_customer_documents) both call this now, so they cannot
+    drift apart again.
+
+    Each row: doc_base, date_iso (latest line date on the doc), item_count
+    ('รายการ' — the line count, not a quantity summed across units),
+    vat_type (of the doc's lines; ยกเว้น/ไม่บวก VAT are never mixed with แยก
+    VAT on one document in practice), total (ยอดรวมเอกสาร — VAT added through
+    vat_math for แยก VAT documents, summed; NEGATIVE for a credit note),
+    is_credit_note, ref_invoice (the invoice an SR credits, NULL otherwise).
+    """
+    limit_sql = f'LIMIT {int(limit)}' if limit is not None else ''
+    rows = conn.execute(f"""
+        SELECT doc_base,
+               MAX(date_iso) AS date_iso,
+               COUNT(*) AS item_count,
+               MAX(vat_type) AS vat_type,
+               SUM({vat_math.cash_sql()}) AS raw_total,
+               ({document_kind.is_return_sql('', 'sales')}) AS is_credit_note,
+               MAX(ref_invoice) AS ref_invoice
+        FROM sales_transactions
+        WHERE {where}
+        GROUP BY doc_base
+        ORDER BY date_iso DESC, doc_base
+        {limit_sql}
+    """, params).fetchall()
+    docs = []
+    for r in rows:
+        d = dict(r)
+        total = d.pop('raw_total') or 0
+        d['is_credit_note'] = bool(d['is_credit_note'])
+        d['total'] = -total if d['is_credit_note'] else total
+        docs.append(d)
+    return docs
+
+
 def history(conn, key, date_from=None, date_to=None, today=None):
     """Everything one customer page / call card needs. The window applies to
     every field EXCEPT 'winback' (always all-time). `today` pins win-back's clock.
@@ -77,7 +120,6 @@ def history(conn, key, date_from=None, date_to=None, today=None):
     """
     import price_lookup
     import winback
-    from models.customers import _customer_documents   # lazy: customers will import us
 
     where, params = _scope(key, date_from, date_to)
 
@@ -109,7 +151,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         ORDER BY month
     """, params).fetchall()]
 
-    documents = _customer_documents(conn, where, params)
+    documents = customer_documents(conn, where, params)
 
     # A MAPPED line groups on product_id alone (a credit note prints
     # product_name_raw differently from the invoice it reverses); an UNMAPPED
@@ -214,11 +256,14 @@ def histories(conn, total_since=None):
            for r in rows}
 
     # Newest row wins; ties on the date fall to the higher id.
+    # A key can commit between the two reads (separate snapshots): skip it, the
+    # next call sees it whole.
     for r in conn.execute(f"""
         SELECT {key} AS k, s.customer
         FROM sales_transactions s
         WHERE {key} IS NOT NULL AND s.customer IS NOT NULL
         ORDER BY s.date_iso, s.id
     """):
-        out[r['k']]['bill_name'] = r['customer']
+        if r['k'] in out:
+            out[r['k']]['bill_name'] = r['customer']
     return out
