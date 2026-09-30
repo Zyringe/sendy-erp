@@ -56,6 +56,8 @@ DB_PATH = ROOT / 'inventory_app' / 'instance' / 'inventory.db'
 EXPORTS = ROOT / 'data' / 'exports'
 
 sys.path.insert(0, str(ROOT / 'inventory_app'))
+sys.path.append(str(Path(__file__).resolve().parent))  # scripts/, for legacy_sku
+import legacy_sku  # noqa: E402
 from parse_platform import export_shopee, export_lazada  # noqa: E402
 
 _INPUT_DIR = os.environ.get('SENDY_INPUT_DIR', os.path.expanduser('~/Downloads'))
@@ -109,12 +111,23 @@ def parse_qty(value, default=1.0):
 
 
 def resolve_legacy_sku(conn, sku_int):
-    """Translate an OLD integer products.sku (the xlsx key column) to a
-    product_id via the forensic legacy_product_sku_map (products.sku dropped
-    in mig 097)."""
-    return conn.execute(
-        'SELECT product_id FROM legacy_product_sku_map WHERE sku = ?', (sku_int,)
-    ).fetchone()
+    """Translate an OLD integer products.sku (the xlsx key column) to a live
+    product.
+
+    Returns a usable `LegacySku`, or None — and PRINTS why when the sku
+    resolves to a product that is gone. This used to return whatever the
+    forensic map held, with no check that the product still exists as a live
+    record, so a deactivated or merged-away product quietly won a platform-sku
+    mapping (B22; 57 of 1,995 legacy skus point at an inactive product on
+    PROD, 11 of them merged away).
+    """
+    hit = legacy_sku.resolve_legacy_sku(conn, sku_int)
+    if hit is None:
+        return None
+    if not hit.usable:
+        print(f'  REFUSED: {hit.explain()}')
+        return None
+    return hit
 
 
 def create_stub_product(conn, name):
@@ -257,7 +270,7 @@ def main():
                 sku_not_found_list.append((platform_sku_id, sku_int))
                 print(f'  skip: pid={platform_sku_id} internal_sku={sku_int} not in products')
                 continue
-            internal_pid = row['product_id']
+            internal_pid = row.product_id
 
         qty_per_sale = parse_qty(r[COL_QTY_PER_SALE], default=1.0)
 
@@ -282,7 +295,7 @@ def main():
             # freebie_sku is the OLD integer sku — translate to product_id.
             crow = resolve_legacy_sku(conn, freebie_sku)
             if crow:
-                component_pid = crow['product_id']
+                component_pid = crow.product_id
                 component_qty = parse_qty(r[COL_FREEBIE_QTY], default=1.0)
                 stats['bundles_applied'] += 1
             else:
