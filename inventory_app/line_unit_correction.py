@@ -434,12 +434,27 @@ def _num_same(a, b):
     return abs((a or 0) - (b or 0)) < EPSILON
 
 
-def decide(correction, entry, product_id):
+def verdict(conn, correction, entry, product_id, stored):
+    """`decide` for the importer: `stored` is the sales row it found for the
+    line key, or None when the row is gone."""
+    if stored is None:
+        return EXPRESS_REMOVED
+    return decide(correction, entry, product_id,
+                  _norm(conn, stored['unit']), stored['product_id'])
+
+
+def decide(correction, entry, product_id, stored_unit, stored_product_id):
     """What an incoming Express line means for its active correction. Pure.
 
     `entry['unit']` is the importer's already-normalised Express unit and
-    `product_id` the product the mapping resolved on that unit.
+    `product_id` the product the mapping resolved on that unit. `stored_unit`
+    (normalised) and `stored_product_id` are what the sales row holds now: a
+    row that no longer carries the correction cannot be kept as it is, however
+    unchanged Express looks, so it is handed back to Express.
     """
+    if stored_unit != correction['corrected_unit_norm'] \
+            or stored_product_id != correction['product_id']:
+        return EXPRESS_CHANGED
     unit = entry['unit'] or ''
     same_line = (
         _num_same(entry['qty'], correction['qty'])

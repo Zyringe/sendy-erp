@@ -304,8 +304,8 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
 
             correction = corrections.get((doc_no, e['product_code_raw']))
             if correction is not None:
-                verdict = (line_unit_correction.EXPRESS_REMOVED if old is None
-                           else line_unit_correction.decide(correction, e, product_id))
+                verdict = line_unit_correction.verdict(
+                    conn, correction, e, product_id, old)
                 if verdict == line_unit_correction.KEEP:
                     unchanged += 1
                     continue

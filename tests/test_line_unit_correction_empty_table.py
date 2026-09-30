@@ -50,7 +50,7 @@ def _observe(path, monkeypatch, *, hooks):
             def unreachable(*args, **kwargs):
                 raise AssertionError('a unit-correction hook ran on an empty table')
             m.setattr(luc, 'active_by_line_key', lambda conn: {})
-            for name in ('decide', 'retire', 'sendy_side_unit'):
+            for name in ('verdict', 'decide', 'retire', 'sendy_side_unit'):
                 m.setattr(luc, name, unreachable)
         sc.seed_company(path)
         pids = [sc.seed_product(path), sc.seed_product(path, 'OTHER', ratios=(), name='อื่น')]
