@@ -224,6 +224,32 @@ def test_retiring_rebuilds_the_ledger_even_when_the_stored_row_already_equals_ex
     assert sc.stock(path, pid) == 164
 
 
+@pytest.mark.parametrize('column,value', [('unit', 'โหล'), ('product_id', None)],
+                         ids=['unit', 'product'])
+def test_a_stored_row_that_lost_its_correction_is_not_kept(
+        corrected, monkeypatch, column, value):
+    path, pid, cid = corrected
+    other = sc.seed_product(path, 'OTHER', name='อื่น')
+    c = sc.raw(path)
+    c.execute(f"UPDATE sales_transactions SET {column}=?, change_source='import',"
+              " change_actor='hand', change_token='hand-1' WHERE doc_no=?",
+              (value if column == 'unit' else other, LINE))
+    c.commit()
+    c.close()
+
+    result = sc.run_zip(monkeypatch, sc.standard_book())
+
+    assert result['sales']['unit_corrections_retired'] == 1
+    correction, = sc.corrections(path)
+    assert (correction['status'], correction['end_cause']) == ('retired', 'express_changed')
+    assert sc.offsets(path, pid) == []
+    row = sc.sales_row(path, LINE)
+    assert (row['unit'], row['product_id']) == ('โหล', pid)
+    assert sc.sale_ledger(path, LINE, pid)[0][1] == -24
+    assert sc.stock(path, pid) == 176
+    assert sc.stock(path, other) == 0
+
+
 def test_a_retired_line_can_be_corrected_again(corrected, monkeypatch):
     path, pid, cid = corrected
     changed = sc.standard_book()
@@ -339,3 +365,15 @@ def test_the_vat_book_import_ignores_corrections(corrected):
     assert xp5['unit_corrections_retired'] == 0
     assert sc.sales_row(path, LINE)['unit'] == 'โหล'
     assert sc.corrections(path)[0]['status'] == 'active'
+
+    # Two books into ONE database happens only here (the VAT book is built in
+    # its own file), and it leaves a correction whose line no longer holds it.
+    # The main book's next zip ends that state instead of keeping it.
+    entries = build_sales_entries(tables['ARTRN'], tables['STCRD'], tables['ARMAS'])
+    healed = models.import_weekly(entries, 'sales', 'f', apply_removals=True)
+
+    assert healed['unit_corrections_retired'] == 1
+    assert sc.corrections(path)[0]['end_cause'] == 'express_changed'
+    assert sc.offsets(path, pid) == []
+    assert sc.sale_ledger(path, LINE, pid)[0][1] == -24
+    assert sc.stock(path, pid) == 176
