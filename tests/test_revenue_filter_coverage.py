@@ -46,11 +46,8 @@ ALLOWED = {
         'Mobile view of the same document ledger as models/sales.py — same call.',
     'payments_alloc.py':
         'Sums SR (credit-note) rows for AR allocation, not revenue.',
-    'call_card.py':
-        'Sales-rep call card shows a customer purchase history, not a revenue '
-        'report. Its /call spend is ยอดซื้อรวม (#494: credit notes subtracted, '
-        'HS kept, only the not-a-sale guard); the product lists are net of '
-        'returns and keep every document, like /sales (#627).',
+    # 'call_card.py' left this list in card C P3: it no longer sums net off
+    # sales_transactions itself (purchase_history does, behind not_a_sale_clause).
     'models/payments.py':
         'AR-balance surfaces, not revenue reports. get_payment_status and '
         'get_payment_summary are the document ledger behind /ar?tab=รายบิล — '
