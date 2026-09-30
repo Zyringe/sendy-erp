@@ -61,7 +61,9 @@ and each posted one ordinary `BSN ขาย` ledger row. Only the first is insid
 7. **The daily zip, sales of the main book only.** The active corrections are loaded after the importer's
    first write, inside its write transaction. Mapping is resolved on Express's unit as before, so a
    correction never changes the product.
-   - Express still says the signature → the line is `unchanged`. Nothing is written.
+   - Express still says the signature AND the stored row still holds the corrected unit on the same
+     product → the line is `unchanged`. Nothing is written. A stored row that lost the correction
+     (changed behind the module) is retired `express_changed` and handed back to Express.
    - Express now says the corrected unit → retired `express_agrees`, the offset is KEPT (nothing physical
      changed) and the line reads unchanged.
    - Anything else, or the line is removed from its document → retired `express_changed` /
@@ -77,9 +79,13 @@ and each posted one ordinary `BSN ขาย` ledger row. Only the first is insid
    document with an active correction carries the correction ids into its alert.
 10. **Writers that would strand a correction refuse while one is active**, through one function,
     `blocking()`: `repoint_bsn_code` (by code and every affected product),
-    `update_unit_conversion_ratio`, `dismiss_pending_unit_conversion`, `apply_reconcile_flag` (by
-    document) and `scripts/merge_product.py` (both products). The message is
-    `ยกเลิกการแก้หน่วยบรรทัดก่อน (<doc_no>)`.
+    `update_unit_conversion_ratio` (under `BEGIN IMMEDIATE`, lock before the read),
+    `dismiss_pending_unit_conversion`, `apply_reconcile_flag` (by document),
+    `scripts/merge_product.py` (both products), a ratio upsert that CHANGES an existing ratio
+    (`save_unit_conversions`, `upsert_unit_conversion`; a new spelling stays allowed) and a change of the
+    product's base unit (`update_product`). The message is `ยกเลิกการแก้หน่วยบรรทัดก่อน (<doc_no>)`.
+    If a writer outside this list still moves the numbers, a `hold` that would move stock on apply or
+    cancel is refused (`stock_moved`) and rolled back.
 11. **The VAT book keeps copying Express.** The importer gate is explicit (`book == DEFAULT_BOOK`), not
     a side effect of the build DB's table being empty: one document number can exist in both books.
 
@@ -113,9 +119,12 @@ and each posted one ordinary `BSN ขาย` ledger row. Only the first is insid
   door means teaching it the same `decide()`.
 - The table CHECKs fix each state's shape but no trigger forbids moving a row back to `active`. Only
   this module writes the table.
-- Not guarded: the ratio upserts on `/unit-conversions` (`save_unit_conversions`,
-  `upsert_unit_conversion`) and the dated rebase scripts. A future rebase or merge script must call
-  `line_unit_correction.blocking` before it writes.
+- Not guarded: `add_catalogue_unit_conversion` (it only adds a unit no bill carries) and the dated
+  rebase scripts. A future rebase or merge script must call `line_unit_correction.blocking` before it
+  writes. The ratio upserts and the base-unit edit read the guard without taking the write lock first,
+  unlike `update_unit_conversion_ratio`.
+- Every insert, update and delete of a correction row is written to `audit_log` by mig 198's three
+  triggers, with the row's own `created_by` / `ended_by` as the user.
 - `hold` on an SR return re-weights any purchase or conversion lot dated the same day and posted after
   it (decision 5). Pinned by `test_hold_on_a_return_reweights_a_same_day_purchase_posted_after_it`.
 - No page yet. The routes, the confirm panel and the invoice badge are PR-2; `badges_for_doc` and
