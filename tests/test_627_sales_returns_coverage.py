@@ -56,7 +56,8 @@ MUST_USE_HELPER = {
     'models/sales.py::get_product_trade_summary': 8,  # card (2) + customers (2) + monthly (2) + docs (1) + doc units (1)
     'call_card.py::_assemble_products': 2,            # ซื้อประจำ ordering + its ซื้อรวม qty
     'models/customers.py::_customer_sales_aggregates': 3,  # จำนวนชิ้น + top_products (the call card's แบรนด์เด่น)
-    'purchase_history.py::history': 3,                # card C: จำนวนชิ้น + top_products (qty, net)
+    'purchase_history.py::history': 2,                # card C: top_products (qty, net)
+    'purchase_history.py::_totals': 1,                # card C: จำนวนชิ้น (history() and totals() share it)
 }
 
 # file::function -> (raw aggregates it holds, why a return is not subtracted there).

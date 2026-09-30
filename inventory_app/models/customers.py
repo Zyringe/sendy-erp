@@ -1003,7 +1003,7 @@ def get_customers(search=None, region=None, page=1, per_page=50,
 
     union_sql = "\nUNION ALL\n".join(union_parts)
     rows = [dict(r) for r in conn.execute(union_sql, params).fetchall()]
-    hist = purchase_history.histories(conn)
+    hist = purchase_history.histories(conn, with_bill_name=True)
     if any(r['is_billing'] and r['customer_code'] is None for r in rows):
         # Names of the matching NULL-code lines, and every code that exists.
         null_names = [r[0] for r in conn.execute(

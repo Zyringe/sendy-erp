@@ -105,6 +105,10 @@ EXPECTED = {
         'THIS shop ever did. All THREE sites in this function must agree, or '
         'the self-exclusion stops matching the counting and a shop gets its '
         'own product suggested back to it.'),
+    'purchase_history.py::_totals': ('purchase',
+        'card C: ครั้งที่ซื้อ / ซื้อครั้งแรก / ซื้อล่าสุด in ONE query, shared by '
+        'history() and totals() (/m/customer). A written-off bill is still a '
+        'purchase.'),
     'purchase_history.py::history': ('purchase',
         'card C: the one customer-history module the customer page, the mobile '
         'page, /customers, /call and the sales trip read (P2). ครั้งที่ซื้อ / '

@@ -183,15 +183,19 @@ def test_histories_survives_a_key_committed_between_its_two_reads(empty_db_conn)
              customer='ก', code='K1')
     conn.commit()
 
+    fired = []
+
     class Seam:
         def __init__(self, inner):
             self.inner = inner
 
         def execute(self, sql, *args):
             if 'ORDER BY s.date_iso, s.id' in sql:      # the second read
+                fired.append(1)
                 add_line(self.inner, doc_base='IV2', date_iso='2026-01-02', pid=pid,
                          qty=1, net=5, customer='ใหม่', code='NEW1')
             return self.inner.execute(sql, *args)
 
-    hs = purchase_history.histories(Seam(conn))
+    hs = purchase_history.histories(Seam(conn), with_bill_name=True)
+    assert fired, 'the seam never fired: this test proves nothing'   # P2 review N5
     assert set(hs) == {'K1'} and hs['K1']['bill_name'] == 'ก'

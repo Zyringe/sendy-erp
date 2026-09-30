@@ -107,6 +107,36 @@ def customer_documents(conn, where, params, limit=None):
     return docs
 
 
+def _totals(conn, where, params):
+    """The eight `totals` fields for an already-built scope (two statements)."""
+    import price_lookup
+
+    raw = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS doc_count,
+               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS purchase_total,
+               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS qty_total,
+               MIN(date_iso) AS first_activity,
+               MAX(date_iso) AS last_activity
+        FROM sales_transactions
+        WHERE {where}
+    """, params).fetchone()
+    bought = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS purchase_count,
+               MIN(date_iso)            AS first_purchase,
+               MAX(date_iso)            AS last_purchase
+        FROM sales_transactions
+        WHERE {where} AND {price_lookup.purchase_population_filter('')}
+    """, params).fetchone()
+    return {**dict(raw), **dict(bought)}
+
+
+def totals(conn, key, date_from=None, date_to=None):
+    """Just `history()['totals']`: two statements instead of eight. For a surface
+    that renders a count and a sum (/m/customer) and needs nothing else."""
+    where, params = _scope(key, date_from, date_to)
+    return _totals(conn, where, params)
+
+
 def history(conn, key, date_from=None, date_to=None, today=None):
     """Everything one customer page / call card needs. The window applies to
     every field EXCEPT 'winback' (always all-time). `today` pins win-back's clock.
@@ -130,23 +160,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
 
     where, params = _scope(key, date_from, date_to)
 
-    raw = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS purchase_total,
-               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS qty_total,
-               MIN(date_iso) AS first_activity,
-               MAX(date_iso) AS last_activity
-        FROM sales_transactions
-        WHERE {where}
-    """, params).fetchone()
-    bought = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_base) AS purchase_count,
-               MIN(date_iso)            AS first_purchase,
-               MAX(date_iso)            AS last_purchase
-        FROM sales_transactions
-        WHERE {where} AND {price_lookup.purchase_population_filter('')}
-    """, params).fetchone()
-    totals = {**dict(raw), **dict(bought)}
+    totals = _totals(conn, where, params)
 
     monthly = [dict(r) for r in conn.execute(f"""
         SELECT strftime('%Y-%m', date_iso) AS month,
@@ -227,11 +241,13 @@ def history(conn, key, date_from=None, date_to=None, today=None):
     }
 
 
-def histories(conn, total_since=None):
+def histories(conn, total_since=None, with_bill_name=False):
     """{key: {'purchase_total', 'doc_count', 'last_activity', 'last_purchase',
     'bill_name'}} for every key with at least one sales row. `purchase_total`
     honours `total_since` (ISO date, inclusive); every other field is all-time.
-    `bill_name` is the name on the key's newest row.
+    `bill_name` is the name on the key's newest row, but only when
+    `with_bill_name` is set: it costs a second full scan (~12 ms), and only
+    /customers reads it; otherwise it is None.
 
     Universe is every key, marketplace `หน้าร้าน` accounts included: a caller
     that must not list them filters the keys itself. A key whose every row is
@@ -261,6 +277,9 @@ def histories(conn, total_since=None):
                     'last_purchase': r['last_purchase'],
                     'bill_name': None}
            for r in rows}
+
+    if not with_bill_name:
+        return out
 
     # Newest row wins; ties on the date fall to the higher id.
     # A key can commit between the two reads (separate snapshots): skip it, the

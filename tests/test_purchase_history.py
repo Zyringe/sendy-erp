@@ -148,8 +148,9 @@ def test_monthly_and_documents(shop):
 def test_histories_total_since_only_bounds_purchase_total(shop):
     conn, _ = shop
     import purchase_history
-    all_time = purchase_history.histories(conn)[CODE]
-    since = purchase_history.histories(conn, total_since='2026-04-01')[CODE]
+    all_time = purchase_history.histories(conn, with_bill_name=True)[CODE]
+    since = purchase_history.histories(conn, total_since='2026-04-01',
+                                       with_bill_name=True)[CODE]
     assert all_time['purchase_total'] == 1950.0
     assert since['purchase_total'] == -150.0        # HS1 100 - SR1 300 + IV7 50
     for f in ('doc_count', 'last_activity', 'last_purchase', 'bill_name'):
@@ -196,3 +197,21 @@ def test_module_never_reads_price_evidence_or_ar_writeoffs():
     assert 'purchase_population_filter' in code           # control: the strip kept code
     assert 'price_evidence_filter' not in code
     assert 'ar_writeoffs' not in code
+
+
+def test_bill_name_pass_is_opt_in(shop):
+    """It costs a second full scan and only /customers reads it."""
+    import purchase_history
+    conn, _ = shop
+    assert purchase_history.histories(conn)[CODE]['bill_name'] is None
+    assert purchase_history.histories(conn, with_bill_name=True)[CODE]['bill_name'] \
+        == 'หน้าร้านS'
+
+
+def test_totals_is_exactly_the_history_totals(shop):
+    import purchase_history
+    conn, _ = shop
+    for kw in ({}, {'date_from': '2026-02-01'}, {'date_to': '2026-03-31'},
+               {'date_from': '2026-02-01', 'date_to': '2026-05-01'}):
+        assert purchase_history.totals(conn, CODE, **kw) == _hist(conn, **kw)['totals']
+    assert purchase_history.totals(conn, 'NOPE')['doc_count'] == 0

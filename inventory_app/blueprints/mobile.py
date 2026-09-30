@@ -145,12 +145,12 @@ def customer_detail(customer_code):
     aging = cashflow.ar_aging()
     conn = get_connection()
 
-    # Aggregate stats, from the same purchase_history.history() the desktop
+    # Aggregate stats, from the same purchase_history definitions (totals()) the desktop
     # customer page reads (card C P2), so the two can never disagree: total_net
     # is ยอดซื้อรวม (before VAT, credit notes subtracted, #494), doc_count counts
     # documents (#493), and a document invoiced in error is out of both the
     # figures and the `last_sales` list above.
-    totals = purchase_history.history(conn, customer_code)['totals']
+    totals = purchase_history.totals(conn, customer_code)
     stats = {
         'doc_count': totals['doc_count'],
         'total_net': round(totals['purchase_total'], 2),

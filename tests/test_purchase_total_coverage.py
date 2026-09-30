@@ -55,8 +55,11 @@ ALLOWED = {
         'the per-(product, unit) rows of the customer page, moved from '
         '_customer_product_cards: qty and money NET of credit notes (#646) as '
         'CASE expressions over price_lookup.returned_lines_filter, plus '
-        'returned_net. Per-product figures, never the customer\'s total, which '
-        'is the two purchase_net_sql calls in this same function (MUST_USE_HELPER).'),
+        'returned_net. The first two are per-product figures, never the '
+        'customer\'s total (that is purchase_net_sql, MUST_USE_HELPER). The third '
+        'is returned_net_total, the CUSTOMER-level sum of credit notes in the '
+        'window behind the page\'s "returns not shown on a card" footnote: the '
+        'credit notes themselves, deliberately not un-netted sales.'),
     # ── money owed (AR), not money spent ──
     'blueprints/mobile.py::sales_trip': (1,
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '
@@ -104,7 +107,8 @@ ALLOWED = {
 # models.get_customer_summary.
 MUST_USE_HELPER = {
     'models/customers.py::_customer_sales_aggregates': 2,   # header + monthly
-    'purchase_history.py::history': 2,                      # card C: header + monthly
+    'purchase_history.py::history': 1,                      # card C: monthly
+    'purchase_history.py::_totals': 1,                      # card C: header (history() and totals())
     'purchase_history.py::histories': 1,                    # card C: every customer's ยอดซื้อรวม
 }
 
@@ -163,7 +167,7 @@ def test_every_exemption_carries_a_reason(site):
 SURFACES_ON_THE_MODULE = {
     ('models/customers.py', 'get_customer_summary_by_code'): 'history',
     ('models/customers.py', 'get_customers'): 'histories',
-    ('blueprints/mobile.py', 'customer_detail'): 'history',
+    ('blueprints/mobile.py', 'customer_detail'): 'totals',
     ('blueprints/mobile.py', 'sales_trip'): 'histories',
     ('call_card.py', 'get_call_list'): 'histories',
 }

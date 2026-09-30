@@ -152,14 +152,18 @@ ALLOWED = {
         'note, the credit note\'s own date. A document list must show returns; '
         'the customer page renders them with a negative total. Moved from '
         'models/customers.py in card C P2.'),
-    'purchase_history.py::history': (6, 4,
-        'card C: the one customer-history reader. The raw six are the questions '
-        'that are NOT ซื้อ: doc_count and first/last activity (a credit note IS a '
-        'document and IS activity), the monthly and top-products document counts, '
-        'and the documents\' own dates. purchase_count / first_purchase / '
-        'last_purchase come from ONE query over purchase_population_filter, and '
-        'the per-product times_bought / last_purchase are two more CASEs over it '
-        '(4 population sites). Pinned by test_purchase_history.py, which has a '
+    'purchase_history.py::_totals': (4, 1,
+        'card C: the customer-level totals shared by history() and totals(). The '
+        'raw four are the NOT-ซื้อ questions (doc_count, first/last activity, the '
+        'purchase-count query\'s own COUNT and dates); the ONE purchase-population '
+        'query yields purchase_count / first_purchase / last_purchase, so the newest '
+        'document counted IS the last purchase.'),
+    'purchase_history.py::history': (2, 3,
+        'card C: the one customer-history reader. The raw two are the monthly and '
+        'top-products document counts (per period / per product, not ซื้อ). The '
+        'customer-level totals moved to _totals (below); the per-product '
+        'times_bought / last_purchase are CASEs over the purchase population '
+        '(3 population sites). Pinned by test_purchase_history.py, which has a '
         'leading freebie so first_purchase differs from first_activity.'),
     'purchase_history.py::histories': (1, 1,
         "every customer's raw last_activity (feeds no ซื้อ label) beside the "
