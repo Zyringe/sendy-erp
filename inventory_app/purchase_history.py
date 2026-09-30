@@ -4,7 +4,14 @@ keyed on the canonical customer key. One definition, imported by every surface
 
 KEY. The customer code, or, only for a true orphan (a row with no code), the
 bill name: `customer_key_sql`. It is what /call, cross-sell and win-back already
-key on, and it equals `customer_code = ?` for every code on prod.
+key on, and it equals `customer_code = ?` for every code on prod (0 padded, 0
+blank, 0 bill names equal to a code; measured on the 2026-09-29 snapshot).
+
+COST. `history()` filters on the key EXPRESSION, which no index serves, so each
+call scans sales_transactions (19-28 ms on 20.6k rows, whatever the customer's
+size) and grows with the table. One key per request is fine; any loop over
+keys MUST use `histories()`, one pass for all of them. Upgrade path if a
+single call ever matters: an expression index on `customer_key_sql('')`.
 
 WINDOWS. `history(date_from, date_to)` bounds every field EXCEPT `winback`, which
 is always all-time. `histories(total_since)` bounds `purchase_total` only. A
