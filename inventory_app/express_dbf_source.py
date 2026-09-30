@@ -1296,7 +1296,7 @@ def _drift_sendy_side(conn, era_start, _norm, corrections=None):
         rows = conn.execute(
             f"SELECT {doc_col}, date_iso, vat_type, {party_col}, bsn_code, qty,"
             f" unit, unit_price, total, net, discount, doc_no"
-            f"  FROM {table} WHERE date_iso >= ?", (era_start,)).fetchall()
+            f"  FROM {table} WHERE date_iso >= ?", (era_start,))
         for r in rows:
             doc = r[0]
             if doc is None:

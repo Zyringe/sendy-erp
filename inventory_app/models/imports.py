@@ -309,6 +309,7 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
                 if verdict == line_unit_correction.KEEP:
                     unchanged += 1
                     continue
+                del corrections[(doc_no, e['product_code_raw'])]
                 # Express moved, so Express wins. `express_agrees` keeps the
                 # offset and the line then reads unchanged below; any other
                 # verdict takes the ordinary insert/replace path, and pass 2
@@ -423,7 +424,7 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
             for r in to_remove:
                 if r['product_id']:
                     affected_pids.add(r['product_id'])
-                correction = corrections.get((r['doc_no'], r['bsn_code']))
+                correction = corrections.pop((r['doc_no'], r['bsn_code']), None)
                 if correction is not None:
                     affected_pids.update(line_unit_correction.retire(
                         conn, correction, line_unit_correction.EXPRESS_REMOVED,
