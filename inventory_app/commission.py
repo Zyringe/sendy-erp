@@ -650,8 +650,10 @@ def record_payout(year_month, salesperson_code, amount_paid,
     decisions C1/C4/C7), ALSO auto-posts one linked, LOCKED `จ่ายค่าคอมมิชชั่น`
     cashbook_transactions row in the SAME commit (mirrors hr.post_salary_payment
     — atomic 2-row write-back, finding #2). Rejects (raises ValueError, Thai
-    message) when the account is missing / inactive / is_transfer=1 — nothing
-    is written in that case, not even the payout row.
+    message) when the account is missing / inactive / is_transfer=1, or when
+    a payout with the same (salesperson, invoice or none, year_month, amount,
+    paid_date) already exists (D-4 A, a double-submit). Nothing is written
+    in either case, not even the payout row.
 
     `account_id=None` (default) skips the cashbook auto-post entirely and just
     inserts the payout row (the pre-existing behavior). Used by the
@@ -684,6 +686,28 @@ def record_payout(year_month, salesperson_code, amount_paid,
             raise ValueError("บัญชีที่เลือกไม่ถูกต้องหรือถูกปิดใช้งานแล้ว")
         if account["is_transfer"] == 1:
             raise ValueError("ไม่สามารถจ่ายค่าคอมมิชชั่นเข้าบัญชีประเภทเงินโอนได้")
+
+        # D-4 A (Put, 2026-09-30): an identical payout is a double-submit, so
+        # it is refused. AFTER the account check on purpose: a refused account
+        # must keep its own message (tests/test_594_account_populations.py,
+        # tests/test_mig188_unflag_904.py). `invoice_no IS ?` is NULL-safe, so
+        # the per-salesperson form (no invoice) is covered too (D-4.1 A), and
+        # year_month keeps two months paid alike on one day apart. Raw
+        # amount_paid: the route stores float(amt_raw), so a repeat is exact.
+        # Scans every payout, the account_id=None backfill rows included.
+        same = c.execute(
+            """SELECT id FROM commission_payouts
+                WHERE salesperson_code = ? AND invoice_no IS ? AND year_month = ?
+                  AND amount_paid = ? AND paid_date = ?
+                ORDER BY id LIMIT 1""",
+            (salesperson_code, invoice_no, year_month, amount_paid, paid_date),
+        ).fetchone()
+        if same is not None:
+            raise ValueError(
+                f"จ่ายค่าคอมรายการนี้ด้วยยอดและวันที่เดียวกันไปแล้ว (payout #{same['id']}): "
+                "ถ้าตั้งใจจ่ายอีกครั้งในวันเดียวกันจริง ให้รวมเป็นยอดเดียว "
+                "หรือระบุวันที่จ่ายจริงของครั้งที่สอง"
+            )
 
         cur = c.execute("""
             INSERT INTO commission_payouts

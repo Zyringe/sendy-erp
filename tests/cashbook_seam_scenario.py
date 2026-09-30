@@ -128,21 +128,22 @@ SCENARIO_VERSION = 2
 # retired-category row, the inf amount; the manager's row is deleted again),
 # advance 3 (the bulk one, the income-direction one, the seeded orphan whose
 # delete is refused) and commission 1 (the seeded link the manager cannot
-# touch). The G8 block adds commission 4: two forms, each sent twice.
-EXPECTED_COUNTS = {"manual": 11, "advance": 5, "salary": 1, "commission": 6, "payout": 1}
+# touch). The G8 block adds commission 2: two forms, each sent twice, the
+# second of each refused (D-4 A; before it, 4).
+EXPECTED_COUNTS = {"manual": 11, "advance": 5, "salary": 1, "commission": 4, "payout": 1}
 # commission_payouts: mode 2 + the backfill (mode 1 is cancelled), the seeded
-# link, and the G8 block's 4. salary_advances: the seeded deducted one, E1's,
+# link, and the G8 block's 2. salary_advances: the seeded deducted one, E1's,
 # the bulk one, the income-direction one (E2's first is deleted).
 # cashbook_categories: 5 seeded + ค่าทางด่วน both directions + the retired one.
-EXPECTED_TABLE_COUNTS = {"commission_payouts": 7, "salary_advances": 4, "cashbook_categories": 8}
+EXPECTED_TABLE_COUNTS = {"commission_payouts": 5, "salary_advances": 4, "cashbook_categories": 8}
 # Explicit, actor-attributed audit_log rows per table (user NOT NULL; the
 # mig-076 triggers write user NULL). cashbook_transactions: salary post x2 +
 # void x1, commission record x2 + cancel x1, cashbook delete x2 (the manual row
 # and the un-deducted advance), one changed edit; the edges add three changed
-# edits and the manager's delete; G8 adds 4 commission records.
+# edits and the manager's delete; G8 adds 2 commission records.
 # commission_payouts: record x3 (mode 1, mode 2, the account_id=None backfill),
-# the seeded link, G8's 4.
-EXPECTED_ATTRIBUTED_AUDIT = {'cashbook_transactions': 17, 'commission_payouts': 8}
+# the seeded link, G8's 2.
+EXPECTED_ATTRIBUTED_AUDIT = {'cashbook_transactions': 15, 'commission_payouts': 6}
 
 ADMIN_SESSION = {'user_id': 1, 'username': 'admin', 'display_name': 'Administrator',
                  'role': 'admin'}

@@ -146,3 +146,18 @@ def test_locked_kinds_are_refused_on_edit_and_delete(result):
     # of a commission row, and the parentless advance delete.
     refused = [s for s in result['steps'] if s.get('status') == 403]
     assert len(refused) == 12, [s['step'] for s in refused]
+
+
+def test_g8_double_submits_are_refused_in_both_modes(result):
+    """D-4 A (+ D-4.1 A): the second of each identical commission form is
+    refused, naming the payout it repeats; the first is recorded."""
+    payouts = {(p['invoice_no'], p['paid_date'], p['amount_paid']): p['id']
+               for p in result['commission_payouts'] if p['paid_date'] == '2026-09-04'}
+    assert len(payouts) == 2, f"control: both G8 forms recorded once, got {payouts}"
+    for mode, key, ok in (('G8 mode 1', ('IV6902', '2026-09-04', 275.5), '1 ใบ'),
+                          ('G8 mode 2', (None, '2026-09-04', 180.0), '1 รายการ')):
+        assert _step(result, mode)['flashes'] == [[f'บันทึกการจ่าย commission แล้ว {ok}', 'success']]
+        assert _step(result, f'{mode} double-submit')['flashes'] == [[
+            f'จ่ายค่าคอมรายการนี้ด้วยยอดและวันที่เดียวกันไปแล้ว (payout #{payouts[key]}): '
+            'ถ้าตั้งใจจ่ายอีกครั้งในวันเดียวกันจริง ให้รวมเป็นยอดเดียว '
+            'หรือระบุวันที่จ่ายจริงของครั้งที่สอง', 'danger']]
