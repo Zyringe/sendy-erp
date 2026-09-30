@@ -38,6 +38,7 @@ import statistics
 from typing import Optional
 
 import customer_geo as geo
+import purchase_history
 import sales_filters
 import unit_conversion
 import vat_math
@@ -231,8 +232,9 @@ def get_call_list(conn, *, q=None, region=None, call=None,
 
     Design: NO N+1 queries.
       - universe: ALL customers with >=1 sales row (excl. หน้าร้าน marketplace accounts)
-      - spend: one GROUP BY over spend_window (0 for customers outside window)
-      - last_buy: separate all-time MAX query (independent of spend_window)
+      - spend + last_buy: ONE purchase_history.histories() call (spend over
+        spend_window, 0 for customers outside it; last_buy all-time, independent
+        of spend_window)
       - last_called: one GROUP BY over customer_call_log
       - customers master join for name/address/salesperson
       - all assembled in Python
@@ -277,54 +279,21 @@ def get_call_list(conn, *, q=None, region=None, call=None,
                 'phone': row['phone'],
             }
 
-    # ── 2. Spend aggregate — window-filtered (shows ฿0 for quiet customers) ──
-    # ยอดซื้อรวม over the window: the customer page header's definition
-    # (sales_filters.purchase_net_sql, #494: before VAT, credit notes
-    # subtracted) with its population (documents invoiced in error excluded).
-    spend_params = []
-    spend_where = ("WHERE customer NOT LIKE 'หน้าร้าน%' "
-                   f"AND {sales_filters.not_a_sale_clause()}")
-    if cutoff:
-        spend_where += " AND date_iso >= ?"
-        spend_params.append(cutoff)
-
-    spend_rows = conn.execute(f"""
-        SELECT
-            COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
-            SUM({sales_filters.purchase_net_sql()}) AS spend
-        FROM sales_transactions
-        {spend_where}
-        GROUP BY canonical_code
-    """, spend_params).fetchall()
-
-    spend_map = {row['canonical_code']: row['spend'] or 0.0
-                 for row in spend_rows if row['canonical_code']}
-
-    # ── 3. last_buy — all-time MAX (independent of spend_window) ─────────────
-    # ซื้อล่าสุด, and therefore the เงียบ badge below, reads the PURCHASE
-    # population (#513): the customer page's own definition
-    # (price_lookup.purchase_population_filter, imported — never re-typed
-    # here), which drops credit notes, documents invoiced in error and
-    # free/zero-net lines. It KEEPS a written-off-but-unflagged bill: the shop
-    # did buy, we just never got paid (Put, 2026-09-17, #554), and that is the
-    # one difference from price_evidence_filter.
-    # It already excludes the หน้าร้าน marketplace accounts this query used to
-    # filter by hand. A raw MAX(date_iso) let a RETURN read as a recent
-    # purchase, and เงียบ exists to surface exactly the customer a return was
-    # hiding: measured on the prod snapshot 2026-09-14, 15 of 280 rows change
-    # date and 2 regain the badge.
-    import price_lookup as pl
-    last_buy_rows = conn.execute(f"""
-        SELECT
-            COALESCE(NULLIF(TRIM(customer_code),''), customer) AS canonical_code,
-            MAX(date_iso) AS last_buy
-        FROM sales_transactions
-        WHERE {pl.purchase_population_filter('')}
-        GROUP BY canonical_code
-    """).fetchall()
-
-    last_buy_map = {row['canonical_code']: row['last_buy']
-                    for row in last_buy_rows if row['canonical_code']}
+    # ── 2+3. Spend and last_buy — ONE purchase_history.histories() call ─────
+    # Both are the customer page's own definitions (card C P2), so this list
+    # cannot drift from it:
+    #   spend    ยอดซื้อรวม over the window (`total_since=cutoff`): before VAT,
+    #            credit notes subtracted, documents invoiced in error out
+    #            (#494). 0 for a customer with nothing in the window.
+    #   last_buy all-time ซื้อล่าสุด, independent of the window (#513), and
+    #            therefore the เงียบ badge below. The purchase population drops
+    #            credit notes, documents invoiced in error and free/zero-net
+    #            lines, and keeps a written-off-but-unflagged bill (the shop did
+    #            buy, we just never got paid; Put, 2026-09-17, #554). It also
+    #            leaves the หน้าร้าน marketplace accounts out on its own.
+    hist = purchase_history.histories(conn, total_since=cutoff)
+    spend_map = {k: v['purchase_total'] or 0.0 for k, v in hist.items()}
+    last_buy_map = {k: v['last_purchase'] for k, v in hist.items()}
 
     # ── 4. last_called aggregate (one query) ──────────────────────────────────
     last_called_rows = conn.execute("""

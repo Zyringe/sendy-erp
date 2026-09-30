@@ -4,7 +4,14 @@ keyed on the canonical customer key. One definition, imported by every surface
 
 KEY. The customer code, or, only for a true orphan (a row with no code), the
 bill name: `customer_key_sql`. It is what /call, cross-sell and win-back already
-key on, and it equals `customer_code = ?` for every code on prod.
+key on, and it equals `customer_code = ?` for every code on prod (0 padded, 0
+blank, 0 bill names equal to a code; measured on the 2026-09-29 snapshot).
+
+COST. `history()` filters on the key EXPRESSION, which no index serves, so each
+call scans sales_transactions (19-28 ms on 20.6k rows, whatever the customer's
+size) and grows with the table. One key per request is fine; any loop over
+keys MUST use `histories()`, one pass for all of them. Upgrade path if a
+single call ever matters: an expression index on `customer_key_sql('')`.
 
 WINDOWS. `history(date_from, date_to)` bounds every field EXCEPT `winback`, which
 is always all-time. `histories(total_since)` bounds `purchase_total` only. A
@@ -32,7 +39,9 @@ returned here.
 
 Plain dicts, like winback.py. No module-level caches (gunicorn -w 2).
 """
+import document_kind
 import sales_filters
+import vat_math
 
 
 def customer_key_sql(alias='s'):
@@ -57,6 +66,77 @@ def _scope(key, date_from=None, date_to=None):
     return ' AND '.join(conds), params
 
 
+def customer_documents(conn, where, params, limit=None):
+    """One row per DOCUMENT (doc_base), never per line — the shared grouping
+    #493 introduced. `sales_transactions.doc_no` carries a per-line '-N'
+    suffix, so grouping by it (the pre-#493 code) produced one "document" per
+    LINE: 247 lines on customer 23ท06 read as 247 documents when the real
+    count is 66. `history()`'s documents list and the mobile quick
+    page (models.get_customer_documents) both call this now, so they cannot
+    drift apart again.
+
+    Each row: doc_base, date_iso (latest line date on the doc), item_count
+    ('รายการ' — the line count, not a quantity summed across units),
+    vat_type (of the doc's lines; ยกเว้น/ไม่บวก VAT are never mixed with แยก
+    VAT on one document in practice), total (ยอดรวมเอกสาร — VAT added through
+    vat_math for แยก VAT documents, summed; NEGATIVE for a credit note),
+    is_credit_note, ref_invoice (the invoice an SR credits, NULL otherwise).
+    """
+    limit_sql = f'LIMIT {int(limit)}' if limit is not None else ''
+    rows = conn.execute(f"""
+        SELECT doc_base,
+               MAX(date_iso) AS date_iso,
+               COUNT(*) AS item_count,
+               MAX(vat_type) AS vat_type,
+               SUM({vat_math.cash_sql()}) AS raw_total,
+               ({document_kind.is_return_sql('', 'sales')}) AS is_credit_note,
+               MAX(ref_invoice) AS ref_invoice
+        FROM sales_transactions
+        WHERE {where}
+        GROUP BY doc_base
+        ORDER BY date_iso DESC, doc_base
+        {limit_sql}
+    """, params).fetchall()
+    docs = []
+    for r in rows:
+        d = dict(r)
+        total = d.pop('raw_total') or 0
+        d['is_credit_note'] = bool(d['is_credit_note'])
+        d['total'] = -total if d['is_credit_note'] else total
+        docs.append(d)
+    return docs
+
+
+def _totals(conn, where, params):
+    """The eight `totals` fields for an already-built scope (two statements)."""
+    import price_lookup
+
+    raw = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS doc_count,
+               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS purchase_total,
+               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS qty_total,
+               MIN(date_iso) AS first_activity,
+               MAX(date_iso) AS last_activity
+        FROM sales_transactions
+        WHERE {where}
+    """, params).fetchone()
+    bought = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS purchase_count,
+               MIN(date_iso)            AS first_purchase,
+               MAX(date_iso)            AS last_purchase
+        FROM sales_transactions
+        WHERE {where} AND {price_lookup.purchase_population_filter('')}
+    """, params).fetchone()
+    return {**dict(raw), **dict(bought)}
+
+
+def totals(conn, key, date_from=None, date_to=None):
+    """Just `history()['totals']`: two statements instead of eight. For a surface
+    that renders a count and a sum (/m/customer) and needs nothing else."""
+    where, params = _scope(key, date_from, date_to)
+    return _totals(conn, where, params)
+
+
 def history(conn, key, date_from=None, date_to=None, today=None):
     """Everything one customer page / call card needs. The window applies to
     every field EXCEPT 'winback' (always all-time). `today` pins win-back's clock.
@@ -77,27 +157,10 @@ def history(conn, key, date_from=None, date_to=None, today=None):
     """
     import price_lookup
     import winback
-    from models.customers import _customer_documents   # lazy: customers will import us
 
     where, params = _scope(key, date_from, date_to)
 
-    raw = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS purchase_total,
-               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS qty_total,
-               MIN(date_iso) AS first_activity,
-               MAX(date_iso) AS last_activity
-        FROM sales_transactions
-        WHERE {where}
-    """, params).fetchone()
-    bought = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_base) AS purchase_count,
-               MIN(date_iso)            AS first_purchase,
-               MAX(date_iso)            AS last_purchase
-        FROM sales_transactions
-        WHERE {where} AND {price_lookup.purchase_population_filter('')}
-    """, params).fetchone()
-    totals = {**dict(raw), **dict(bought)}
+    totals = _totals(conn, where, params)
 
     monthly = [dict(r) for r in conn.execute(f"""
         SELECT strftime('%Y-%m', date_iso) AS month,
@@ -109,7 +172,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         ORDER BY month
     """, params).fetchall()]
 
-    documents = _customer_documents(conn, where, params)
+    documents = customer_documents(conn, where, params)
 
     # A MAPPED line groups on product_id alone (a credit note prints
     # product_name_raw differently from the invoice it reverses); an UNMAPPED
@@ -178,11 +241,13 @@ def history(conn, key, date_from=None, date_to=None, today=None):
     }
 
 
-def histories(conn, total_since=None):
+def histories(conn, total_since=None, with_bill_name=False):
     """{key: {'purchase_total', 'doc_count', 'last_activity', 'last_purchase',
     'bill_name'}} for every key with at least one sales row. `purchase_total`
     honours `total_since` (ISO date, inclusive); every other field is all-time.
-    `bill_name` is the name on the key's newest row.
+    `bill_name` is the name on the key's newest row, but only when
+    `with_bill_name` is set: it costs a second full scan (~12 ms), and only
+    /customers reads it; otherwise it is None.
 
     Universe is every key, marketplace `หน้าร้าน` accounts included: a caller
     that must not list them filters the keys itself. A key whose every row is
@@ -213,12 +278,18 @@ def histories(conn, total_since=None):
                     'bill_name': None}
            for r in rows}
 
+    if not with_bill_name:
+        return out
+
     # Newest row wins; ties on the date fall to the higher id.
+    # A key can commit between the two reads (separate snapshots): skip it, the
+    # next call sees it whole.
     for r in conn.execute(f"""
         SELECT {key} AS k, s.customer
         FROM sales_transactions s
         WHERE {key} IS NOT NULL AND s.customer IS NOT NULL
         ORDER BY s.date_iso, s.id
     """):
-        out[r['k']]['bill_name'] = r['customer']
+        if r['k'] in out:
+            out[r['k']]['bill_name'] = r['customer']
     return out

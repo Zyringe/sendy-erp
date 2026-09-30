@@ -18,6 +18,7 @@ TODAY = dt.date(2026, 9, 30)
 def _shop(conn):
     """One shop, every document kind. Returns (p1, p2, p3).
 
+    IV0 01-02  P3 3/0              (leading freebie-only bill: first ACTIVITY, not first PURCHASE)
     IV1 01-10  P1 10/1000  P2 5/500
     IV8 02-15  P1 2/200            (written off, NOT flagged: still a purchase)
     IV3 02-01  P3 6/0              (freebie-only bill)
@@ -34,6 +35,7 @@ def _shop(conn):
         add_line(conn, doc_base=doc, date_iso=date, pid=pid, qty=qty, net=net,
                  customer=customer, code=CODE, suffix=suffix)
 
+    line('IV0', '2026-01-02', p3, 3, 0)
     line('IV1', '2026-01-10', p1, 10, 1000)
     line('IV1', '2026-01-10', p2, 5, 500, suffix=2)
     line('IV8', '2026-02-15', p1, 2, 200)
@@ -65,14 +67,17 @@ def test_totals_match_context_definitions(shop):
     t = _hist(conn)['totals']
     # ยอดซื้อรวม: 1500 + 200 + 400 + 100 - 300 + 50 (IV9 flagged out, SR negated)
     assert t['purchase_total'] == 1950.0
-    # จำนวนชิ้น: 15 + 2 + 6(IV3) + 6(IV2) + 1 - 3 + 1
-    assert t['qty_total'] == 28
-    # จำนวนเอกสาร, raw: IV1 IV8 IV3 IV2 HS1 SR1 IV7 (a credit note IS a document)
-    assert t['doc_count'] == 7
-    assert (t['first_activity'], t['last_activity']) == ('2026-01-10', '2026-06-15')
-    # ครั้งที่ซื้อ: IV1 IV8 IV2 HS1. Not IV3 (freebie), SR1, IV9, IV7 (หน้าร้าน)
+    # จำนวนชิ้น: 3(IV0) + 15 + 2 + 6(IV3) + 6(IV2) + 1 - 3 + 1
+    assert t['qty_total'] == 31
+    # จำนวนเอกสาร, raw: IV0 IV1 IV8 IV3 IV2 HS1 SR1 IV7 (a credit note IS a document)
+    assert t['doc_count'] == 8
+    assert (t['first_activity'], t['last_activity']) == ('2026-01-02', '2026-06-15')
+    # ครั้งที่ซื้อ: IV1 IV8 IV2 HS1. Not IV0/IV3 (freebie), SR1, IV9, IV7 (หน้าร้าน)
     assert t['purchase_count'] == 4
-    assert (t['first_purchase'], t['last_purchase']) == ('2026-01-10', '2026-04-01')
+    # the leading freebie IV0 (01-02) is activity but not a purchase: this is what
+    # makes first_purchase differ from first_activity (P1 review W2)
+    assert t['first_purchase'] == '2026-01-10'
+    assert t['last_purchase'] == '2026-04-01'
 
 
 def test_purchase_count_and_last_purchase_come_from_one_population(shop):
@@ -133,23 +138,24 @@ def test_monthly_and_documents(shop):
     conn, _ = shop
     h = _hist(conn)
     assert [(m['month'], m['doc_count'], m['total_net']) for m in h['monthly']] == [
-        ('2026-01', 1, 1500), ('2026-02', 2, 200), ('2026-03', 1, 400),
+        ('2026-01', 2, 1500), ('2026-02', 2, 200), ('2026-03', 1, 400),
         ('2026-04', 1, 100), ('2026-05', 1, -300), ('2026-06', 1, 50)]
     docs = {d['doc_base']: d for d in h['documents']}
-    assert len(docs) == 7 and 'IV9' not in docs
+    assert len(docs) == 8 and 'IV9' not in docs
     assert docs['SR1']['is_credit_note'] and docs['SR1']['total'] < 0
 
 
 def test_histories_total_since_only_bounds_purchase_total(shop):
     conn, _ = shop
     import purchase_history
-    all_time = purchase_history.histories(conn)[CODE]
-    since = purchase_history.histories(conn, total_since='2026-04-01')[CODE]
+    all_time = purchase_history.histories(conn, with_bill_name=True)[CODE]
+    since = purchase_history.histories(conn, total_since='2026-04-01',
+                                       with_bill_name=True)[CODE]
     assert all_time['purchase_total'] == 1950.0
     assert since['purchase_total'] == -150.0        # HS1 100 - SR1 300 + IV7 50
     for f in ('doc_count', 'last_activity', 'last_purchase', 'bill_name'):
         assert since[f] == all_time[f]
-    assert all_time['doc_count'] == 7
+    assert all_time['doc_count'] == 8
     assert all_time['last_activity'] == '2026-06-15'
     assert all_time['last_purchase'] == '2026-04-01'
     assert all_time['bill_name'] == 'หน้าร้านS'    # the newest row's name (IV7)
@@ -191,3 +197,21 @@ def test_module_never_reads_price_evidence_or_ar_writeoffs():
     assert 'purchase_population_filter' in code           # control: the strip kept code
     assert 'price_evidence_filter' not in code
     assert 'ar_writeoffs' not in code
+
+
+def test_bill_name_pass_is_opt_in(shop):
+    """It costs a second full scan and only /customers reads it."""
+    import purchase_history
+    conn, _ = shop
+    assert purchase_history.histories(conn)[CODE]['bill_name'] is None
+    assert purchase_history.histories(conn, with_bill_name=True)[CODE]['bill_name'] \
+        == 'หน้าร้านS'
+
+
+def test_totals_is_exactly_the_history_totals(shop):
+    import purchase_history
+    conn, _ = shop
+    for kw in ({}, {'date_from': '2026-02-01'}, {'date_to': '2026-03-31'},
+               {'date_from': '2026-02-01', 'date_to': '2026-05-01'}):
+        assert purchase_history.totals(conn, CODE, **kw) == _hist(conn, **kw)['totals']
+    assert purchase_history.totals(conn, 'NOPE')['doc_count'] == 0

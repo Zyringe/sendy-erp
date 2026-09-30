@@ -5,7 +5,7 @@ rationale. No behavior changes.
 """
 import json
 import customer_geo
-import document_kind
+import purchase_history
 import sales_filters
 import unit_conversion
 import vat_math
@@ -31,54 +31,13 @@ def _customer_sales_scope(key_col, key_value, date_from, date_to):
     return ' AND '.join(conds), params
 
 
-def _customer_documents(conn, where, params, limit=None):
-    """One row per DOCUMENT (doc_base), never per line — the shared grouping
-    #493 introduced. `sales_transactions.doc_no` carries a per-line '-N'
-    suffix, so grouping by it (the pre-#493 code) produced one "document" per
-    LINE: 247 lines on customer 23ท06 read as 247 documents when the real
-    count is 66. `_customer_sales_aggregates`'s docs list and the mobile quick
-    page (models.get_customer_documents) both call this now, so they cannot
-    drift apart again.
-
-    Each row: doc_base, date_iso (latest line date on the doc), item_count
-    ('รายการ' — the line count, not a quantity summed across units),
-    vat_type (of the doc's lines; ยกเว้น/ไม่บวก VAT are never mixed with แยก
-    VAT on one document in practice), total (ยอดรวมเอกสาร — VAT added through
-    vat_math for แยก VAT documents, summed; NEGATIVE for a credit note),
-    is_credit_note, ref_invoice (the invoice an SR credits, NULL otherwise).
-    """
-    limit_sql = f'LIMIT {int(limit)}' if limit is not None else ''
-    rows = conn.execute(f"""
-        SELECT doc_base,
-               MAX(date_iso) AS date_iso,
-               COUNT(*) AS item_count,
-               MAX(vat_type) AS vat_type,
-               SUM({vat_math.cash_sql()}) AS raw_total,
-               ({document_kind.is_return_sql('', 'sales')}) AS is_credit_note,
-               MAX(ref_invoice) AS ref_invoice
-        FROM sales_transactions
-        WHERE {where}
-        GROUP BY doc_base
-        ORDER BY date_iso DESC, doc_base
-        {limit_sql}
-    """, params).fetchall()
-    docs = []
-    for r in rows:
-        d = dict(r)
-        total = d.pop('raw_total') or 0
-        d['is_credit_note'] = bool(d['is_credit_note'])
-        d['total'] = -total if d['is_credit_note'] else total
-        docs.append(d)
-    return docs
-
-
 def get_customer_documents(key_col, key_value, date_from=None, date_to=None, limit=None):
-    """Public wrapper around `_customer_documents` — used directly by the
+    """Public wrapper around `purchase_history.customer_documents` — used directly by the
     mobile quick page (code-keyed), so its document list can never drift from
     the desktop customer page's (#493)."""
     conn = get_connection()
     where, params = _customer_sales_scope(key_col, key_value, date_from, date_to)
-    docs = _customer_documents(conn, where, params, limit=limit)
+    docs = purchase_history.customer_documents(conn, where, params, limit=limit)
     conn.close()
     return docs
 
@@ -162,7 +121,7 @@ def _customer_sales_aggregates(conn, where, params):
 
     # Every document (#493 — no 200-LINE cap cutting off old invoices; the old
     # cap was on `doc_no`, i.e. lines, so it silently dropped whole invoices).
-    docs = _customer_documents(conn, where, params)
+    docs = purchase_history.customer_documents(conn, where, params)
 
     return summary, top_products, monthly, docs
 
@@ -390,7 +349,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     return out
 
 
-def _returns_off_cards(conn, where, params, cards):
+def _returns_off_cards(returned_net_total, cards):
     """฿ of this customer's credit notes that the RENDERED cards do not show.
 
     #646 nets a return onto its card, but three kinds never reach one: a
@@ -403,16 +362,12 @@ def _returns_off_cards(conn, where, params, cards):
 
     Deliberately the residual against the cards ACTUALLY RENDERED, not against
     the full aggregate: what the footnote promises is "this much is not in the
-    list above", so it has to be computed from that list."""
-    import price_lookup
-    total = conn.execute(f"""
-        SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
-        WHERE {where} AND {price_lookup.returned_lines_filter('s')}
-    """, params).fetchone()[0]
-    return round(total - sum(c['returned_net'] for c in cards), 2)
+    list above", so it has to be computed from that list. `returned_net_total`
+    is `purchase_history.history()`'s, the window's whole credit-note sum."""
+    return round(returned_net_total - sum(c['returned_net'] for c in cards), 2)
 
 
-def _customer_product_cards(conn, where, params, include_cost=False):
+def _customer_product_cards(conn, where, params, product_rows, include_cost=False):
     """สินค้าที่ซื้อบ่อย, enriched (#493 slice 2, trimmed scope B): one row per
     (product, unit), keyed and populated by the price resolver's evidence
     predicate (the one definition of "a bill that counts") restricted to
@@ -467,27 +422,13 @@ def _customer_product_cards(conn, where, params, include_cost=False):
     import vat_math
     import invoice_formula
 
-    rows = [dict(r) for r in conn.execute(f"""
-        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
-               s.unit,
-               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
-                                   THEN s.doc_base END) AS times_bought,
-               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
-               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.net ELSE 0 END), 0) AS returned_net,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.qty ELSE s.qty END) AS total_qty,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.net ELSE s.net END) AS total_net
-        FROM sales_transactions s
-        LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
-                           OR {price_lookup.returned_lines_filter('s')})
-        GROUP BY s.product_id, s.unit
-        HAVING times_bought > 0
-        ORDER BY s.product_id, s.unit
-    """, params).fetchall()]
+    # The (product, unit) aggregate is purchase_history's (card C P2); this
+    # function keeps the price enrichment and the top-20 union. `qty`/`net` are
+    # the page's `total_qty`/`total_net`; `last_purchase` is the call card's.
+    rows = [{'product_id': r['product_id'], 'name': r['name'], 'unit': r['unit'],
+             'times_bought': r['times_bought'], 'returned_qty': r['returned_qty'],
+             'returned_net': r['returned_net'], 'total_qty': r['qty'],
+             'total_net': r['net']} for r in product_rows]
 
     # Two top-20 orderings, unioned (the issue's own decision) — a one-off
     # big-ticket purchase must still be ON the page even when 20 OTHER
@@ -830,24 +771,25 @@ def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
 
     where, params = _customer_sales_scope(
         'customer_code', customer_code, date_from, date_to)
-    summary, top_products, monthly, docs = _customer_sales_aggregates(
-        conn, where, params)
-    product_cards = _customer_product_cards(conn, where, params, include_cost=include_cost)
+    # Header, monthly, documents, top products, the (product, unit) rows and
+    # win-back all come from ONE call (card C P2). Win-back (#497) is ALWAYS over
+    # the customer's FULL history, whatever date window `where` carries: the
+    # module owns that rule, so this caller cannot get it wrong.
+    hist = purchase_history.history(conn, customer_code, date_from, date_to)
+    t = hist['totals']
+    summary = {
+        'doc_count': t['doc_count'], 'total_net': t['purchase_total'],
+        'total_qty': t['qty_total'], 'first_date': t['first_activity'],
+        'last_date': t['last_activity'], 'last_purchase_date': t['last_purchase'],
+        'purchase_doc_count': t['purchase_count'],
+    }
+    top_products, monthly, docs = hist['top_products'], hist['monthly'], hist['documents']
+    product_cards = _customer_product_cards(conn, where, params, hist['products'],
+                                            include_cost=include_cost)
     # Computed HERE, not in the returned dict below: this function closes `conn`
     # before assembling it.
-    returns_off_cards = _returns_off_cards(conn, where, params, product_cards)
-
-    # Win-back (#497): the ONE shared computation (winback.py), ALWAYS over
-    # the customer's FULL history — a fresh, date-INDEPENDENT scope built
-    # here, never the (possibly date-filtered) `where` the product cards
-    # above use. `import winback` is local (not at module top) for the same
-    # reason `_customer_product_cards` imports price_lookup locally: both
-    # pull in `models.promotions` at their own top level, and this file is
-    # itself a submodule `models/__init__.py` is still in the middle of
-    # importing at module-load time.
-    import winback
-    wb_where, wb_params = _customer_sales_scope('customer_code', customer_code, None, None)
-    winback_rows = winback.compute_winback(conn, wb_where, wb_params)
+    returns_off_cards = _returns_off_cards(hist['returned_net_total'], product_cards)
+    winback_rows = hist['winback']
 
     # เสนอเพิ่ม (#498): ALWAYS all-time / trailing-24-months, independent of
     # date_from/date_to — the helper takes no date params at all, so the
@@ -975,8 +917,6 @@ def get_customers(search=None, region=None, page=1, per_page=50,
     — 2,390 of 2,665 customers, invisible here otherwise. Default False keeps
     today's billing-only, 275-row view unchanged.
     """
-    import price_lookup
-
     conn = get_connection()
     conds = []
     billing_params = []
@@ -998,6 +938,14 @@ def get_customers(search=None, region=None, page=1, per_page=50,
     conds.append(sales_filters.not_a_sale_clause('s'))
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
+    # One row per customer code. The figures (จำนวนเอกสาร, ยอดซื้อรวม, ช่วงเวลา,
+    # ซื้อล่าสุด) and the bill name come from purchase_history.histories() below
+    # (card C P2), so this list can never disagree with the detail page; the SQL
+    # only decides WHICH codes are listed (search + not-invoiced-in-error) and
+    # reads the master columns. `is_billing` tells the two halves of the union
+    # apart. `s.customer` is only the FALLBACK name (any bill name of the group):
+    # the template links a nameless row to /customer/<None> and 500s the list.
+    # The placeholders keep the union's column shape.
     billing_sql = f"""
         SELECT s.customer                                AS customer,
                s.customer_code                            AS customer_code,
@@ -1007,23 +955,12 @@ def get_customers(search=None, region=None, page=1, per_page=50,
                (c.salesperson IS NOT NULL
                   AND c.salesperson != ''
                   AND sp.code IS NULL)                    AS salesperson_orphan,
-               COUNT(DISTINCT s.doc_base)                 AS doc_count,
-               -- ยอดซื้อรวม, the detail page header's definition (#494)
-               COALESCE(SUM({sales_filters.purchase_net_sql('s')}), 0) AS total_net,
-               MAX(s.date_iso)                            AS last_date,
+               0                                          AS doc_count,
+               0                                          AS total_net,
+               NULL                                       AS last_date,
                (c.code IS NULL)                           AS missing_master,
-               -- ซื้อล่าสุด (#493): same evidence-filtered definition as the
-               -- customer detail page's header — MAX(s.date_iso) above stays
-               -- a raw activity date (it can land on a credit note) and is
-               -- not shown to Put; this column is what the list renders.
-               -- `IS`, not `=`: ~21 rows carry a NULL customer_code (a real,
-               -- acknowledged population — GROUP BY already collapses them
-               -- into one row); `=` against NULL is never true in SQL, so
-               -- that row's last_purchase_date silently read NULL even with
-               -- real recent activity. `IS` is SQLite's NULL-safe equality.
-               (SELECT MAX(s2.date_iso) FROM sales_transactions s2
-                 WHERE s2.customer_code IS s.customer_code
-                   AND {price_lookup.purchase_population_filter('s2')}) AS last_purchase_date
+               NULL                                       AS last_purchase_date,
+               1                                          AS is_billing
         FROM sales_transactions s
         LEFT JOIN customers     c  ON c.code  = s.customer_code
         LEFT JOIN salespersons  sp ON sp.code = c.salesperson
@@ -1055,7 +992,8 @@ def get_customers(search=None, region=None, page=1, per_page=50,
                    0                                         AS total_net,
                    NULL                                      AS last_date,
                    0                                         AS missing_master,
-                   NULL                                      AS last_purchase_date
+                   NULL                                      AS last_purchase_date,
+                   0                                         AS is_billing
             FROM customers c
             LEFT JOIN salespersons sp ON sp.code = c.salesperson
             {bl_where}
@@ -1065,9 +1003,44 @@ def get_customers(search=None, region=None, page=1, per_page=50,
 
     union_sql = "\nUNION ALL\n".join(union_parts)
     rows = [dict(r) for r in conn.execute(union_sql, params).fetchall()]
+    hist = purchase_history.histories(conn, with_bill_name=True)
+    if any(r['is_billing'] and r['customer_code'] is None for r in rows):
+        # Names of the matching NULL-code lines, and every code that exists.
+        null_names = [r[0] for r in conn.execute(
+            f"SELECT DISTINCT s.customer FROM sales_transactions s "
+            f"LEFT JOIN customers c ON c.code = s.customer_code "
+            f"{where} AND s.customer_code IS NULL", billing_params)]
+        coded = {r[0] for r in conn.execute(
+            "SELECT DISTINCT TRIM(customer_code) FROM sales_transactions "
+            "WHERE TRIM(COALESCE(customer_code,'')) != ''")}
     conn.close()
 
     for r in rows:
+        billing = r.pop('is_billing')
+        code = r['customer_code']
+        if billing and code is None:
+            # The lines with no customer code are ONE row here, as before;
+            # histories() splits them per bill name (P1 review N6). Card C P4
+            # retires this row, so re-sum instead of teaching histories about it.
+            orphans = {k: v for k, v in hist.items() if k not in coded}
+            mine = [orphans[n] for n in null_names if n in orphans]
+            r['doc_count'] = sum(m['doc_count'] for m in mine)
+            r['total_net'] = sum(m['purchase_total'] for m in mine)
+            r['last_date'] = max((m['last_activity'] for m in mine if m['last_activity']),
+                                 default=None)
+            r['last_purchase_date'] = max(
+                (m['last_purchase'] for m in orphans.values() if m['last_purchase']),
+                default=None)
+            newest = max((n for n in null_names if n in orphans),
+                         key=lambda n: orphans[n]['last_activity'] or '', default=None)
+            r['customer'] = newest or r['customer']
+        elif billing and code in hist:
+            h = hist[code]
+            r['customer'] = h['bill_name'] or r['customer']
+            r['doc_count'] = h['doc_count']
+            r['total_net'] = h['purchase_total']
+            r['last_date'] = h['last_activity']
+            r['last_purchase_date'] = h['last_purchase']
         r['region'] = customer_geo.region_of(r.pop('address'))
     if region:
         rows = [r for r in rows if r['region'] == region]

@@ -13,8 +13,7 @@ import document_kind
 import marketplace_match
 import models
 import payments_alloc
-import price_lookup
-import sales_filters
+import purchase_history
 from database import get_connection
 import vat_math
 
@@ -146,25 +145,18 @@ def customer_detail(customer_code):
     aging = cashflow.ar_aging()
     conn = get_connection()
 
-    # Aggregate stats. total_net is ยอดซื้อรวม, the desktop header's own
-    # definition (sales_filters.purchase_net_sql, #494: before VAT, credit notes
-    # subtracted). doc_count counts documents (#493):
-    # doc_no carries a per-line '-N' suffix, so COUNT(DISTINCT doc_no) counted
-    # LINES, not documents. Also applies the same not_a_sale_clause() exclusion
-    # `last_sales` (via get_customer_documents -> _customer_sales_scope)
-    # already carries — without it, a document invoiced in error would count
-    # here but be silently absent from the list right below it.
-    stats = conn.execute(
-        f"""
-        SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               ROUND(SUM({sales_filters.purchase_net_sql()}), 2) AS total_net,
-               MIN(date_iso) AS first_seen,
-               MAX(date_iso) AS last_seen
-          FROM sales_transactions
-         WHERE customer_code = ? AND {sales_filters.not_a_sale_clause()}
-        """,
-        (customer_code,),
-    ).fetchone()
+    # Aggregate stats, from the same purchase_history definitions (totals()) the desktop
+    # customer page reads (card C P2), so the two can never disagree: total_net
+    # is ยอดซื้อรวม (before VAT, credit notes subtracted, #494), doc_count counts
+    # documents (#493), and a document invoiced in error is out of both the
+    # figures and the `last_sales` list above.
+    totals = purchase_history.totals(conn, customer_code)
+    stats = {
+        'doc_count': totals['doc_count'],
+        'total_net': round(totals['purchase_total'], 2),
+        'first_seen': totals['first_activity'],
+        'last_seen': totals['last_activity'],
+    }
 
     conn.close()
     return render_template(
@@ -203,8 +195,10 @@ def sales_trip():
     region = (request.args.get('region') or '').strip() or None
 
     conn = get_connection()
-    # Customers + outstanding total + last sale. Read from customers MASTER +
-    # salespersons; customer_regions/regions no longer touched.
+    # Customers + outstanding total. Read from customers MASTER +
+    # salespersons; customer_regions/regions no longer touched. The last sale
+    # (ล่าสุด, a customer's last PURCHASE, #513) is added below from
+    # purchase_history.histories(), the same reader /customers and /call use.
     sql = f"""
         SELECT c.code, c.name, c.zone, c.phone, COALESCE(c.address, '') AS address,
                COALESCE(sp.name, c.salesperson) AS salesperson,
@@ -212,21 +206,6 @@ def sales_trip():
                (c.salesperson IS NOT NULL
                   AND c.salesperson != ''
                   AND sp.code IS NULL)          AS salesperson_orphan,
-               -- ล่าสุด on the trip row is the customer's last PURCHASE (#513):
-               -- the purchase population, imported from price_lookup, same as
-               -- the customer page's ซื้อล่าสุด and the /call worklist. A raw
-               -- MAX(date_iso) showed a rep a RETURN or other non-purchase row
-               -- as a recent sale — 8 of the 2,661 customers here, measured on
-               -- the prod snapshot 2026-09-16 (none of them loses a date).
-               -- Both subqueries join on the CODE (#569). The bill name drifts
-               -- from the master name, and the name join blanked 195 of 272
-               -- buyers on prod 2026-09-18. A bare `=` rather than the COALESCE(code,
-               -- customer) key other surfaces use: this query starts FROM
-               -- customers, so a blank-code bill would fall back to a bill name,
-               -- which can never equal c.code.
-               (SELECT MAX(date_iso) FROM sales_transactions s
-                 WHERE s.customer_code = c.code
-                   AND {price_lookup.purchase_population_filter('s')}) AS last_sale,
                (SELECT ROUND(SUM({vat_math.cash_sql('s')}), 2)
                   FROM sales_transactions s
                   WHERE s.customer_code = c.code
@@ -274,9 +253,13 @@ def sales_trip():
     # outstanding is platform settlement, not a debt to chase.
     rows = [dict(r) for r in conn.execute(
         sql, tuple(marketplace_match.MARKETPLACE_CODES)).fetchall()]
+    hist = purchase_history.histories(conn)
     conn.close()
 
     for r in rows:
+        # Joined on the CODE (#569): the bill name drifts from the master name and
+        # the name join blanked 195 of 272 buyers on prod 2026-09-18.
+        r['last_sale'] = hist.get(r['code'], {}).get('last_purchase')
         r['region'] = customer_geo.region_of(r.pop('address'))
     if region:
         rows = [r for r in rows if r['region'] == region]

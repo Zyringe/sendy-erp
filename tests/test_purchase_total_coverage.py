@@ -22,6 +22,8 @@ one string, the SUM in another), files outside inventory_app/ (scripts/), and
 any figure computed in Python from fetched rows. The cross-surface test in
 test_494_purchase_total.py is the behavioural half; this is the census.
 """
+import ast
+import os
 import re
 
 import pytest
@@ -44,18 +46,20 @@ _CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b', re.IGNORECASE)
 # ยอดซื้อรวม, so it keeps its own definition on purpose.
 ALLOWED = {
     # ── per-document and per-product figures on the customer pages ──
-    'models/customers.py::_customer_documents': (1,
+    'purchase_history.py::customer_documents': (1,
         'ยอดรวมเอกสาร: one row per DOCUMENT, VAT added on แยก VAT documents, a '
-        'credit note negated in Python. A document total, VAT-inclusive by design.'),
-    'models/customers.py::_customer_product_cards': (2,
-        'one row per (product, unit), used to order the product cards by money '
-        'and to decide which reach the top-20 union. A per-product figure, '
-        'never the customer\'s total. #646 made it net of credit notes, so it '
-        'agrees with the header purchase_net_sql produces; the second '
-        'aggregate is returned_net, the amount the card\'s badge names. Both '
-        'are CASE expressions over price_lookup.returned_lines_filter rather '
-        'than purchase_net_sql, because times_bought in the same GROUP BY must '
-        'keep reading the purchase population alone.'),
+        'credit note negated in Python. A document total, VAT-inclusive by design. '
+        'Moved here from models/customers.py in card C P2 (the owner module holds '
+        'the document list, so consumers point at it).'),
+    'purchase_history.py::history': (3,
+        'the per-(product, unit) rows of the customer page, moved from '
+        '_customer_product_cards: qty and money NET of credit notes (#646) as '
+        'CASE expressions over price_lookup.returned_lines_filter, plus '
+        'returned_net. The first two are per-product figures, never the '
+        'customer\'s total (that is purchase_net_sql, MUST_USE_HELPER). The third '
+        'is returned_net_total, the CUSTOMER-level sum of credit notes in the '
+        'window behind the page\'s "returns not shown on a card" footnote: the '
+        'credit notes themselves, deliberately not un-netted sales.'),
     # ── money owed (AR), not money spent ──
     'blueprints/mobile.py::sales_trip': (1,
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '
@@ -103,10 +107,18 @@ ALLOWED = {
 # models.get_customer_summary.
 MUST_USE_HELPER = {
     'models/customers.py::_customer_sales_aggregates': 2,   # header + monthly
-    'models/customers.py::get_customers': 1,                # /customers list
-    'blueprints/mobile.py::customer_detail': 1,             # /m/customer ยอดสะสม
-    'call_card.py::get_call_list': 1,                       # /call spend
+    'purchase_history.py::history': 1,                      # card C: monthly
+    'purchase_history.py::_totals': 1,                      # card C: header (history() and totals())
+    'purchase_history.py::histories': 1,                    # card C: every customer's ยอดซื้อรวม
 }
+
+
+# A module whose whole job is one customer's history. Its key arrives through a
+# `{where}` / `{key}` hole in functions named `history`/`histories`, so neither
+# signal below fires and the gate would report {} for the file (P1 review W1:
+# a clean result because the check never ran). Every sales_transactions query
+# in these files counts as per-customer.
+CUSTOMER_MODULES = ('purchase_history.py',)
 
 
 def _customer_scoped(func, sql):
@@ -119,7 +131,14 @@ def _per_function(src, pattern):
 
 
 def _app_counts(pattern):
-    return _census.app_counts(pattern, 'sales_transactions', _customer_scoped)
+    out = {site: n for site, n in
+           _census.app_counts(pattern, 'sales_transactions', _customer_scoped).items()
+           if site.split('::')[0] not in CUSTOMER_MODULES}
+    for rel in CUSTOMER_MODULES:
+        src = _census.read(os.path.join(_census.APP, rel))
+        for func, n in _census.per_function(src, pattern, 'sales_transactions').items():
+            out[f'{rel}::{func}'] = n
+    return out
 
 
 # ── The census ───────────────────────────────────────────────────────────────
@@ -139,6 +158,49 @@ def test_every_per_customer_net_aggregate_is_the_helper_or_declared():
 @pytest.mark.parametrize('site', sorted(ALLOWED))
 def test_every_exemption_carries_a_reason(site):
     assert len(ALLOWED[site][1]) > 40, f'{site}: say WHY it keeps its own definition'
+
+
+# Card C P2: the customer surfaces read their history from ONE module instead of
+# holding an aggregate each, so the census above no longer names them. This is the
+# positive control that does: each must still CALL purchase_history, and the
+# census itself proves it holds no raw aggregate of its own (none is in ALLOWED).
+SURFACES_ON_THE_MODULE = {
+    ('models/customers.py', 'get_customer_summary_by_code'): 'history',
+    ('models/customers.py', 'get_customers'): 'histories',
+    ('blueprints/mobile.py', 'customer_detail'): 'totals',
+    ('blueprints/mobile.py', 'sales_trip'): 'histories',
+    ('call_card.py', 'get_call_list'): 'histories',
+}
+
+
+def _calls_module(src, func, name):
+    """True if function `func` in `src` calls purchase_history.<name>(...)."""
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef) and node.name == func:
+            return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                       and n.func.attr == name
+                       and isinstance(n.func.value, ast.Name)
+                       and n.func.value.id == 'purchase_history'
+                       for n in ast.walk(node))
+    raise AssertionError(f'{func} not found')
+
+
+@pytest.mark.parametrize('site', sorted(SURFACES_ON_THE_MODULE))
+def test_the_customer_surfaces_read_purchase_history(site):
+    rel, func = site
+    src = _census.read(os.path.join(_census.APP, rel))
+    assert _calls_module(src, func, SURFACES_ON_THE_MODULE[site]), \
+        f'{rel}::{func} stopped calling purchase_history.{SURFACES_ON_THE_MODULE[site]}'
+
+
+def test_the_module_call_check_can_fail():
+    """CONTROL: a matcher that answered True for anything would pass the above."""
+    src = ('import purchase_history\n'
+           'def a(conn):\n    return purchase_history.histories(conn)\n'
+           'def b(conn):\n    return conn.execute("SELECT 1")\n')
+    assert _calls_module(src, 'a', 'histories')
+    assert not _calls_module(src, 'b', 'histories')
+    assert not _calls_module(src, 'a', 'history')
 
 
 def test_the_purchase_total_surfaces_use_the_helper():
