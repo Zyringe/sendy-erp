@@ -152,10 +152,11 @@ ALLOWED = {
         'top-products document counts (per period / per product, not ซื้อ). The '
         'customer-level totals moved to _totals, the per-product rows to products() '
         '(card C P3), so it holds no population site of its own now.'),
-    'purchase_history.py::products': (0, 3,
+    'purchase_history.py::products': (0, 4,
         'card C: the per-product rows of the customer page and the call card. '
-        'times_bought / last_purchase are CASEs over the purchase population (3 '
-        'population sites), so a credit note or a freebie is never a purchase and a '
+        'times_bought / last_purchase are CASEs over the purchase population (4 '
+        'population sites: those two plus the qty and net CASEs, which since the '
+        'one-statement rewrite of #699 review W2 say WHEN purchase ... ELSE 0), so a credit note or a freebie is never a purchase and a '
         'product only ever returned is dropped (HAVING times_bought > 0). Pinned by '
         'test_purchase_history.py and tests/test_card_c_call_card_history.py. '
         'Moved out of history() in card C P3.'),

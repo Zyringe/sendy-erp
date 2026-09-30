@@ -539,13 +539,18 @@ def get_card(conn, customer_code):
     summary = _summary(conn, hist, master)
 
     # ── 4. Top products: peer pricing + unit-aware base + promo + price tiers ──
-    products = _assemble_products(conn, key, canon_code)
+    rows = _received_rows(conn, key)
+    products = _assemble_products(conn, key, canon_code, rows=rows)
 
     # ── 5. Win-back ───────────────────────────────────────────────────────────
     winback = hist['winback']
 
     # ── 6. Clearance: hard_to_sell=1 products in stock that overlap customer's categories
-    clearance = _compute_clearance(conn, products)
+    # The clearance panel (Put, 2026-09-30, option b) is UNCHANGED by C1: it seeds
+    # from the customer's top 30 rows of everything RECEIVED, free samples and
+    # returned-only products included, exactly as before the call card moved onto
+    # purchase_history (a free sample of a category is a reason to offer its slow stock).
+    clearance = _compute_clearance(conn, _ranked(rows)[:30])
 
     # ── 7. AR detail ─────────────────────────────────────────────────────────
     ar = []
@@ -576,7 +581,20 @@ def get_card(conn, customer_code):
     }
 
 
-def _assemble_products(conn, key, canon_code, today=None):
+def _received_rows(conn, key):
+    """Every (product, unit) the customer received, bought or not, with the counted
+    qty / money: the call card's rows before C1 keeps only the bought ones."""
+    return purchase_history.products(conn, key, counted=True, include_unbought=True)
+
+
+def _ranked(rows):
+    """Mapped rows, biggest money first (net of returns, counted lines). An unmapped
+    line (no product_id) has no price to enrich and no category, so it is not a row."""
+    return sorted((r for r in rows if r['product_id'] is not None),
+                  key=lambda r: (-(r['net_counted'] or 0), r['product_id'], r['unit'] or ''))
+
+
+def _assemble_products(conn, key, canon_code, today=None, rows=None):
     """Build the 'ซื้อประจำ' product list: the customer's top-30 products by net
     revenue, each enriched with unit-aware base price, the full active-promotion
     dict, quantity price-tiers, and peer pricing (the customer's latest line + a
@@ -588,7 +606,8 @@ def _assemble_products(conn, key, canon_code, today=None):
     was. ซื้อรวม qty and the ranking money keep the call card's own figure, over
     every counted line net of credit notes (free units included) but leaving out
     documents invoiced in error (Put D1): the module's `qty_counted` / `net_counted`.
-    `key` is the customer key (code, or bill name for a true orphan).
+    `key` is the customer key (code, or bill name for a true orphan). `rows` are
+    `_received_rows(conn, key)` (get_card passes the ones it already has).
 
     `today` (default: real wall-clock date, ISO string) — positional-or-keyword
     like price_lookup's own `today` params, so every existing call site
@@ -614,12 +633,11 @@ def _assemble_products(conn, key, canon_code, today=None):
 
     today_str = today or dt.date.today().isoformat()
 
-    rows = purchase_history.products(conn, key, counted=True)
-    # Top 30 by money, net of returns (#627). An unmapped line (no product_id)
-    # has no price to enrich, so it is not a row here.
-    mapped = sorted((r for r in rows if r['product_id'] is not None),
-                    key=lambda r: (-(r['net_counted'] or 0), r['product_id'],
-                                   r['unit'] or ''))[:30]
+    if rows is None:
+        rows = _received_rows(conn, key)
+    # Top 30 BOUGHT products by money, net of returns (#627): a product only
+    # returned, given free or invoiced in error is not a ซื้อประจำ row (Put C1).
+    mapped = _ranked([r for r in rows if r['times_bought'] > 0])[:30]
     base_info = {}
     if mapped:
         ph0 = ",".join("?" * len(mapped))

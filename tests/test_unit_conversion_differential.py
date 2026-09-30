@@ -202,11 +202,14 @@ def _new_cli():
     return mod
 
 
-# Card C P3 moved the call card's ROWS onto purchase_history (which rows are listed,
-# and their qty / ล่าสุด / doc_count), so the whole-list equality this test asserted
-# no longer holds. What card A owns in _assemble_products is the unit arithmetic:
-# `base` and `customer_price`, the promo and the tiers. Those still must be identical
-# to the baseline for every (product, unit) the two lists share.
+# Card C P3 moved four fields of the call card's rows onto purchase_history: which rows
+# are listed, and per row `total_qty`, `total_net` (documents invoiced in error out),
+# `doc_count` (purchases, not documents) and `last_buy` (last PAID purchase). Everything
+# else (base, customer_price, promo, tiers, peers, latest price, orders, flag ...) is
+# still card A's arithmetic and must equal the baseline on every row the two lists share.
+CARD_C_FIELDS = {'total_qty', 'total_net', 'doc_count', 'last_buy'}
+
+
 def test_call_card(world):
     conn, _ = world
     old = _old('inventory_app/call_card.py', '_old_call_card')
@@ -217,7 +220,8 @@ def test_call_card(world):
     shared = sorted(set(got_old) & set(got_new), key=repr)
     assert len(shared) >= 10, 'control: the two lists must share rows to compare'
     for k in shared:
-        for f in ('base', 'customer_price', 'promo', 'promo_label', 'price_tiers'):
+        assert got_old[k].keys() == got_new[k].keys(), k
+        for f in sorted(got_old[k].keys() - CARD_C_FIELDS):
             assert repr(got_old[k][f]) == repr(got_new[k][f]), (k, f)
     # A marketplace shop account is never "bought" history (purchase population).
     assert call_card._assemble_products(conn, 'หน้าร้านS', None, today='2026-09-29') == []

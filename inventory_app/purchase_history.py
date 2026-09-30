@@ -175,7 +175,7 @@ def totals(conn, key, date_from=None, date_to=None):
     return _totals(conn, where, params)
 
 
-def products(conn, key, date_from=None, date_to=None, counted=False):
+def products(conn, key, date_from=None, date_to=None, counted=False, include_unbought=False):
     """Just `history()['products']`: one statement. For a surface that renders the
     per-product table and needs nothing else (the call card's rows).
 
@@ -184,14 +184,21 @@ def products(conn, key, date_from=None, date_to=None, counted=False):
     (sales_filters.sales_qty_sql / sales_net_sql, the trade screens' figures), so a
     free (แถม) line and a line the purchase population drops still count. The call
     card's ซื้อรวม has always been that figure; `qty` / `net` are the customer
-    page's stricter ones. One more statement, so only the call card asks."""
+    page's stricter ones. Same statement, so a removal committed by an import can
+    never leave the two figures describing different rows.
+
+    `include_unbought=True` (only with `counted`) also returns the (product, unit)
+    groups with `times_bought = 0` (only returned, given free or invoiced in error):
+    the call card's clearance panel seeds from everything the customer received."""
     import price_lookup
 
     where, params = _scope(key, date_from, date_to)
     # Money and quantity are NET of credit notes (#646); times_bought and
     # last_purchase stay on the purchase half (a credit note is not a purchase,
     # the invoice it reverses still is). HAVING drops a product that was only
-    # ever returned, given away or invoiced in error.
+    # ever returned, given away or invoiced in error. Every CASE says ELSE 0, so
+    # a row outside both halves adds nothing to qty / net (it does to *_counted).
+    having = '' if (counted and include_unbought) else 'HAVING times_bought > 0'
     rows = [dict(r) for r in conn.execute(f"""
         SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
                s.unit,
@@ -199,34 +206,28 @@ def products(conn, key, date_from=None, date_to=None, counted=False):
                                    THEN s.doc_base END) AS times_bought,
                MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
                         THEN s.date_iso END) AS last_purchase,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.qty ELSE s.qty END) AS qty,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.net ELSE s.net END) AS net,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')} THEN -s.qty
+                        WHEN {price_lookup.purchase_population_filter('s')} THEN s.qty
+                        ELSE 0 END) AS qty,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')} THEN -s.net
+                        WHEN {price_lookup.purchase_population_filter('s')} THEN s.net
+                        ELSE 0 END) AS net,
                COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
                                  THEN s.qty ELSE 0 END), 0) AS returned_qty,
                COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.net ELSE 0 END), 0) AS returned_net
+                                 THEN s.net ELSE 0 END), 0) AS returned_net,
+               SUM({sales_filters.sales_qty_sql('s')}) AS qty_counted,
+               SUM({sales_filters.sales_net_sql('s')}) AS net_counted
         FROM sales_transactions s
         LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
-                           OR {price_lookup.returned_lines_filter('s')})
+        WHERE {where}
         GROUP BY s.product_id, s.unit
-        HAVING times_bought > 0
+        {having}
         ORDER BY s.product_id, s.unit
     """, params).fetchall()]
-    if counted:
-        totals = {(r['product_id'], r['unit']): r for r in conn.execute(f"""
-            SELECT s.product_id, s.unit,
-                   SUM({sales_filters.sales_qty_sql('s')}) AS qty_counted,
-                   SUM({sales_filters.sales_net_sql('s')}) AS net_counted
-            FROM sales_transactions s
-            WHERE {where}
-            GROUP BY s.product_id, s.unit
-        """, params).fetchall()}
+    if not counted:
         for r in rows:
-            t = totals[(r['product_id'], r['unit'])]
-            r['qty_counted'], r['net_counted'] = t['qty_counted'], t['net_counted']
+            del r['qty_counted'], r['net_counted']
     return rows
 
 

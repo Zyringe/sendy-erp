@@ -201,3 +201,19 @@ def test_products_counted_survives_an_import_removing_lines_mid_read(card_conn, 
     assert card_conn.execute("SELECT COUNT(*) FROM sales_transactions WHERE product_id = ?",
                              (_pid(card_conn, 'A'),)).fetchone()[0] == 0, \
         'CONTROL: the removal really was committed mid-read'
+
+
+def test_clearance_panel_still_seeds_from_a_freebie_only_product(card_conn):
+    """W1 (Put, option b): C1 drops PC from ซื้อรวม, but the ดันของช้า panel keeps
+    seeding from everything the customer RECEIVED. PC (given free only) is the
+    customer's only product in category ZC; a slow, in-stock product of ZC is offered."""
+    c = card_conn
+    cat = c.execute("INSERT INTO categories (code, name_th) VALUES ('ZC-P3', 'หมวดพีสาม')").lastrowid
+    c.execute("UPDATE products SET category_id = ? WHERE id = ?", (cat, _pid(c, 'C')))
+    slow = mk_product(c, 'สินค้าค้างสต็อกพีสาม')
+    c.execute("UPDATE products SET category_id = ?, hard_to_sell = 1 WHERE id = ?", (cat, slow))
+    c.execute("INSERT OR REPLACE INTO stock_levels (product_id, quantity) VALUES (?, 50)", (slow,))
+    c.commit()
+    card = call_card.get_card(c, CODE)
+    assert _pid(c, 'C') not in _by_pid(card), 'CONTROL: C1 still drops the freebie-only product'
+    assert [x['product_id'] for x in card['clearance']] == [slow]
