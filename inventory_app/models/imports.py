@@ -417,8 +417,18 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
         # ── Pass 2: rebuild the ledger for affected products ONCE ──
         # Delete only this file_type's BSN movements for the affected products (the
         # mig-080 triggers auto-reconcile stock_levels — no manual stock surgery),
-        # reset their source rows, then a SINGLE _sync_bsn_to_stock re-posts. An
-        # all-unchanged re-import touches 0 products → genuine no-op.
+        # reset their source rows, then re-post them (the replay), then sweep the
+        # WHOLE table once more (the heal pass). An all-unchanged re-import
+        # touches 0 products → genuine no-op.
+        #
+        # The heal pass exists because rows can be left pending by writers that
+        # flip a row to syncable without syncing it (a naming action, a
+        # unit_type edit, a migration, a script). It first-syncs them exactly
+        # as the old single table-wide pass did (same rows and values; only the
+        # cross-product transactions.id order differs, plan R4). It is a separate
+        # call only so the number of rows it posts can be COUNTED and shown.
+        # Card E PR-2 (Put, 2026-09-30): no stock behaviour change.
+        healed = 0
         if affected_pids:
             pids = list(affected_pids)
             p_ph = ",".join("?" * len(pids))
@@ -432,7 +442,8 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
                 f"UPDATE {table} SET synced_to_stock=0 WHERE product_id IN ({p_ph})",
                 pids
             )
-            _sync_bsn_to_stock(conn, table, file_type)
+            _sync_bsn_to_stock(conn, table, file_type, product_ids=pids)
+            healed = _sync_bsn_to_stock(conn, table, file_type)
 
         # Register new BSN codes in mapping table (unmapped)
         for code, name in new_bsn_codes.items():
@@ -569,6 +580,7 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
         'removed_skipped': removed_skipped,
         'new_unmapped': len(new_bsn_codes),
         'affected_products': len(affected_pids),
+        'first_synced_pending': healed,
         'lossy_platform_reversals': lossy_reversals,
         'batch_id': batch_id,
         'non_stock': non_stock,
