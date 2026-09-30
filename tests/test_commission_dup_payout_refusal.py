@@ -123,10 +123,13 @@ def test_route_double_submit_is_refused(db, mode):
     first = _q(path, "SELECT MAX(id) FROM commission_payouts")[0][0]
     assert _counts(path) == (1, 1)
     assert _post_flashes(cl, form) == [(refusal(first), 'danger')]
-    # nothing to roll back: the refusal came before the payout INSERT
+    # The refused submit leaves no trace. On this owned connection a refusal
+    # raised AFTER the INSERT would be rolled back and look the same (even
+    # sqlite_sequence); "before the INSERT" is pinned by probe T and by the
+    # in-flight test below, where nothing rolls back for the caller.
     assert _counts(path) == (1, 1)
     assert _q(path, "SELECT seq FROM sqlite_sequence WHERE name = 'commission_payouts'")[0][0] \
-        == first, "no payout id was consumed by the refused submit"
+        == first
 
 
 # ── (1b): account check first, tuple check second ────────────────────────────
