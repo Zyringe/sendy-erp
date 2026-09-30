@@ -466,6 +466,29 @@ def test_a_non_admin_post_is_forbidden_and_writes_nothing(corrected, role):
     assert sc.corrections(path)[0]['status'] == 'cancelled'
 
 
+def test_a_simulating_admin_writes_under_their_own_name(line):
+    """ADR 0003 lets an admin who is simulating another role reach admin-only
+    endpoints. What they write must name them, not the account they view as."""
+    path, _pid = line
+    from app import app
+    sim = app.test_client()
+    with sim.session_transaction() as s:
+        s['user_id'], s['username'], s['role'] = 7, 'sim-staff', 'staff'
+        s['_real_role'], s['_real_user_id'], s['_real_username'] = 'admin', 1, 'put'
+
+    assert sim.post(PAGE + '/apply', data=APPLY).status_code == 302
+    correction, = sc.corrections(path)
+    assert correction['created_by'] == 'put'
+    assert sc.sales_row(path, LINE)['change_actor'] == 'put'
+
+    sim.post(PAGE + '/cancel',
+             data={'correction_id': str(correction['id']), 'reason': CANCEL_REASON})
+    correction, = sc.corrections(path)
+    assert (correction['status'], correction['ended_by']) == ('cancelled', 'put')
+    assert sc.sales_row(path, LINE)['change_actor'] == 'put'
+    assert sc.sales_row(path, LINE)['unit'] == 'โหล'
+
+
 # ── refusals that are not the module's ───────────────────────────────────────
 
 def _hold_import_lock(path):
