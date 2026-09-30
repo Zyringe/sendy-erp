@@ -18,6 +18,7 @@ import models
 import marketplace_match
 import marketplace_reconcile
 import cashbook_payout_mirror
+import parse_tiktok_income
 from database import get_connection
 from parse_balance import parse_shopee_balance, load_balance_sheet, BalanceError
 from marketplace_files import detect_file, load_order_export
@@ -465,7 +466,7 @@ def balance_import():
 # Arrival order can't be trusted — the browser hands files over in the OS file
 # dialog's display order, which is alphabetical, and Shopee's own export names
 # put `Income.*` ahead of `Order.*`.
-_KIND_ORDER = {'order': 0, 'income': 1, 'laz_statement': 1,
+_KIND_ORDER = {'order': 0, 'income': 1, 'laz_statement': 1, 'tt_income': 1,
                'balance': 2, 'laz_wallet': 2}
 
 
@@ -537,7 +538,7 @@ def upload():
         for name, data, kind, platform in staged:
             if kind is None:
                 problems.append(('warning', f'⚠️ {name}: ไม่รู้จักชนิดไฟล์ — ต้องเป็นไฟล์ '
-                                            'Order / Income / Balance จาก Shopee หรือ Lazada หรือ Order จาก TikTok ค่ะ'))
+                                            'Order / Income / Balance จาก Shopee หรือ Lazada หรือ Order / Income จาก TikTok ค่ะ'))
                 _log_import(conn, name, notes='marketplace:UNKNOWN')
                 continue
             try:
@@ -592,6 +593,35 @@ def upload():
                         problems.append(('warning',
                             f'⚠️ {name}: ค่าธรรมเนียมชื่อใหม่ที่ยังไม่รู้จัก: '
                             + ', '.join(parsed['unmapped_fee_names'])))
+                elif kind == 'tt_income':
+                    # Payout + fee breakdown only (Put, 2026-09-30): no wallet rows, no
+                    # cashbook, no automatch/reconcile — the money is still in TikTok,
+                    # and run_automatch has no tiktok _CUST_CODE until PR-3.
+                    parsed = parse_tiktok_income.parse_tiktok_income(
+                        *parse_tiktok_income.load_tiktok_income(io.BytesIO(data)))
+                    # A fee row needs its order: none is written for an order not
+                    # imported yet (the settlement UPDATE already skips those).
+                    known = {r[0] for r in conn.execute(
+                        "SELECT order_sn FROM marketplace_orders WHERE platform = 'tiktok'")}
+                    ss = models.upsert_marketplace_settlements(
+                        conn, parsed['settlements'], name, platform='tiktok')
+                    fn = models.upsert_marketplace_fees(
+                        conn, [f for f in parsed['fee_rows'] if f['order_sn'] in known],
+                        name, platform='tiktok')
+                    done.append(f'💰 {name}: TikTok ยอดโอน {ss["updated"]} · ค่าธรรมเนียม {fn} ออเดอร์')
+                    _log_import(conn, name, rows=ss['updated'], skipped=ss['not_found'],
+                                notes='marketplace:tt_income:tiktok')
+                    if ss['not_found']:
+                        problems.append(('warning',
+                            f'⚠️ {name}: ไม่พบออเดอร์ {ss["not_found"]} รายการ — ยอดโอนของออเดอร์'
+                            ' เหล่านี้ยังไม่ถูกบันทึก กรุณาอัปโหลดไฟล์ Order ของ TikTok ก่อน'
+                            ' แล้วอัปโหลดไฟล์ Income นี้ซ้ำอีกครั้งค่ะ'))
+                    if parsed['adjustments']:
+                        problems.append(('warning',
+                            f'⚠️ {name}: ข้ามรายการปรับยอด {len(parsed["adjustments"])} รายการ'
+                            ' (ยังไม่นำเข้า): ' + ', '.join(
+                                f'{a["id"]} ({a["type"]}) ฿{a["amount"]:,.2f}'
+                                for a in parsed['adjustments'])))
                 elif kind == 'laz_wallet':
                     parsed = parse_lazada_wallet(load_lazada_wallet_csv(io.BytesIO(data)))
                     ins = models.import_wallet_txns(
