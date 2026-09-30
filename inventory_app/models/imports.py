@@ -424,9 +424,10 @@ def _import_weekly(entries, file_type, filename, *, apply_removals, book=None):
         # The heal pass exists because rows can be left pending by writers that
         # flip a row to syncable without syncing it (a naming action, a
         # unit_type edit, a migration, a script). It first-syncs them exactly
-        # as the old single table-wide pass did; it is a separate call only so
-        # the number of rows it posts can be COUNTED and shown. Card E PR-2
-        # (Put, 2026-09-30): no stock behaviour change.
+        # as the old single table-wide pass did (same rows and values; only the
+        # cross-product transactions.id order differs, plan R4). It is a separate
+        # call only so the number of rows it posts can be COUNTED and shown.
+        # Card E PR-2 (Put, 2026-09-30): no stock behaviour change.
         healed = 0
         if affected_pids:
             pids = list(affected_pids)
