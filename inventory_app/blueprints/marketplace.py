@@ -655,6 +655,10 @@ def upload():
             try:
                 marketplace_match.run_automatch(conn, plat)
             except Exception as e:
+                # run_automatch DELETEs the platform's auto rows before rebuilding
+                # them; without this, the next platform's commit would make that
+                # half-done rebuild durable.
+                conn.rollback()
                 problems.append(('warning', f'⚠️ {plat}: จับคู่ใบกำกับอัตโนมัติไม่สำเร็จ: {e}'))
         for plat in sorted(reconcile_platforms):
             try:

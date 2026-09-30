@@ -314,3 +314,32 @@ def test_unknown_status_warning_names_the_platform(caplog):
     with caplog.at_level(logging.WARNING, logger='marketplace_match'):
         marketplace_match._is_matchable_status('Mystery', settled=False, platform='tiktok')
     assert 'Mystery' in caplog.text and 'tiktok' in caplog.text
+
+
+def test_a_failed_automatch_is_rolled_back_not_committed_by_the_next_platform(conn, monkeypatch):
+    """run_automatch DELETEs a platform's auto rows before re-deriving them. If it
+    raises after that DELETE, the next platform's commit must not make the
+    deletion durable: the failed platform's links survive the batch."""
+    from tests.test_marketplace_upload_batch import _income_xlsx
+    conn.execute("INSERT INTO marketplace_orders (platform, order_sn, status, order_date) "
+                 "VALUES ('shopee', 'SPKEEP1', 'สำเร็จแล้ว', '2026-07-10 09:00')")
+    conn.execute("INSERT INTO marketplace_order_invoice (platform, order_sn, doc_base, "
+                 "customer_code, match_method, confidence) "
+                 "VALUES ('shopee', 'SPKEEP1', 'IV6800001', 'Zหน้าร้าน', 'auto', 'confident')")
+    conn.commit()
+    real = marketplace_match._build_edges
+
+    def boom(orders, *a, **kw):
+        if any(o['platform'] == 'shopee' for o in orders):
+            raise RuntimeError('injected after the DELETE')
+        return real(orders, *a, **kw)
+    monkeypatch.setattr(marketplace_match, '_build_edges', boom)
+
+    resp = _client().post('/marketplace/upload', data={'files': [
+        (_income_xlsx(order_sn='SPKEEP1'), 'Income.shopee.xlsx'),
+        (io.BytesIO(_read(INCOME_XLSX)), 'income_tiktok.xlsx')]},
+        content_type='multipart/form-data', follow_redirects=True)
+    html = resp.get_data(as_text=True)
+    assert 'จับคู่ใบกำกับอัตโนมัติไม่สำเร็จ' in html and 'injected' in html
+    assert _links(conn, 'shopee') == [('SPKEEP1', 'IV6800001', 'Zหน้าร้าน', 'auto', 'confident')]
+    assert len(_links(conn)) == 2                      # control: tiktok's automatch ran and committed
