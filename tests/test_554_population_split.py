@@ -118,6 +118,13 @@ EXPECTED = {
     'blueprints/mobile.py::sales_trip': ('purchase',
         "the mobile trip row's ล่าสุด, the same question as its desktop twin "
         '(#513).'),
+    'purchase_history.py::history': ('purchase',
+        'card C: the one customer-history module the surfaces above move onto '
+        '(P2+). The same ครั้งที่ซื้อ / ซื้อล่าสุด / times_bought questions, one '
+        'query each; a written-off bill is still a purchase.'),
+    'purchase_history.py::histories': ('purchase',
+        'card C: /customers, /call and the sales trip read their ซื้อล่าสุด from '
+        'here once P2 lands. Same question as get_customers / get_call_list.'),
     'winback.py::compute_winback': ('purchase',
         'ครั้งที่ซื้อ >= 3 and the median gap between purchase DATES. A bill '
         'that was never paid is still a purchase this shop made.'),

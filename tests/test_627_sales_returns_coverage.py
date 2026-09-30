@@ -56,6 +56,7 @@ MUST_USE_HELPER = {
     'models/sales.py::get_product_trade_summary': 8,  # card (2) + customers (2) + monthly (2) + docs (1) + doc units (1)
     'call_card.py::_assemble_products': 2,            # ซื้อประจำ ordering + its ซื้อรวม qty
     'models/customers.py::_customer_sales_aggregates': 3,  # จำนวนชิ้น + top_products (the call card's แบรนด์เด่น)
+    'purchase_history.py::history': 3,                # card C: จำนวนชิ้น + top_products (qty, net)
 }
 
 # file::function -> (raw aggregates it holds, why a return is not subtracted there).
@@ -103,6 +104,11 @@ ALLOWED = {
     'payments_alloc.py::cash_in_rows': (1,
         'cash received per invoice for /cashflow, over non-SR non-HS bills. Cash, not ยอดขาย.'),
     # ── one document, one product's price, one order, one platform ──
+    'purchase_history.py::history': (5,
+        'card C, per-product rows: qty and net are netted by returned_lines_filter '
+        'in a CASE (the #646 shape, mirror of _customer_product_cards), plus '
+        'returned_qty, returned_net and returned_net_total, which are the '
+        'credit notes THEMSELVES. Not un-netted sales.'),
     'models/customers.py::_customer_documents': (1,
         'one row per DOCUMENT, a credit note already negated in Python. A document list.'),
     'models/customers.py::_returns_off_cards': (1,

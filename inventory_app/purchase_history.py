@@ -1,0 +1,224 @@
+"""A customer's purchase history: the facts CONTEXT.md "Customer page" defines,
+keyed on the canonical customer key. One definition, imported by every surface
+(card C, round-3 architecture review).
+
+KEY. The customer code, or, only for a true orphan (a row with no code), the
+bill name: `customer_key_sql`. It is what /call, cross-sell and win-back already
+key on, and it equals `customer_code = ?` for every code on prod.
+
+WINDOWS. `history(date_from, date_to)` bounds every field EXCEPT `winback`, which
+is always all-time. `histories(total_since)` bounds `purchase_total` only. A
+caller cannot get either wrong: the rule lives here, not at the call site.
+
+DEFINITIONS (each is the CONTEXT.md term, one rule per line):
+  ยอดซื้อรวม / monthly   SUM(sales_filters.purchase_net_sql) over the rows that are
+                         not "invoiced in error" (sales_filters.not_a_sale_clause).
+                         Credit notes subtract; the total can be negative.
+  จำนวนชิ้น              same population, sales_filters.sales_qty_sql.
+  จำนวนเอกสาร / ช่วงเวลา  raw over the same rows: a credit note IS a document.
+  ครั้งที่ซื้อ / ซื้อล่าสุด / ซื้อครั้งแรก
+                         price_lookup.purchase_population_filter, ONE query for the
+                         count and the dates, so the newest document counted IS
+                         the last purchase.
+  per product            one row per (product, unit) with times_bought > 0: qty and
+                         money net of returns, plus what was returned and the last
+                         PAID purchase of that product.
+  win-back               winback.compute_winback over the all-time scope.
+
+This module answers history facts only. It never reads the price-evidence
+predicate or the write-off table by name: price and AR keep their own
+populations (`price_lookup`, `cashflow.BSN_AR_PREDICATE`), and consume the rows
+returned here.
+
+Plain dicts, like winback.py. No module-level caches (gunicorn -w 2).
+"""
+import sales_filters
+
+
+def customer_key_sql(alias='s'):
+    """SQL expression of a sales row's canonical customer key: the trimmed
+    customer code, else the bill name. `alias` '' for an unaliased table."""
+    p = '{}.'.format(alias) if alias else ''
+    return "COALESCE(NULLIF(TRIM({p}customer_code),''), {p}customer)".format(p=p)
+
+
+def _scope(key, date_from=None, date_to=None):
+    """WHERE clause (unaliased columns) + params for one customer's counted rows:
+    the key, the optional date window, and not-invoiced-in-error."""
+    conds = ['{} = ?'.format(customer_key_sql(''))]
+    params = [key]
+    if date_from:
+        conds.append('date_iso >= ?')
+        params.append(date_from)
+    if date_to:
+        conds.append('date_iso <= ?')
+        params.append(date_to)
+    conds.append(sales_filters.not_a_sale_clause())
+    return ' AND '.join(conds), params
+
+
+def history(conn, key, date_from=None, date_to=None, today=None):
+    """Everything one customer page / call card needs. The window applies to
+    every field EXCEPT 'winback' (always all-time). `today` pins win-back's clock.
+
+      {'key': key,
+       'totals': {'purchase_total', 'qty_total', 'doc_count', 'first_activity',
+                  'last_activity', 'purchase_count', 'first_purchase',
+                  'last_purchase'},
+       'monthly':   [{'month', 'doc_count', 'total_net'}],
+       'documents': [...],       # one row per document, newest first
+       'top_products': [...],    # money-ordered net of returns, top 20 (แบรนด์เด่น)
+       'products': [{'product_id', 'name', 'unit', 'times_bought',
+                     'last_purchase', 'qty', 'net', 'returned_qty',
+                     'returned_net'}],   # every (product, unit) bought, ORDER BY
+                                         # product_id, unit
+       'returned_net_total': float,      # all countable credit notes in the window
+       'winback': [...]}                 # all-time
+    """
+    import price_lookup
+    import winback
+    from models.customers import _customer_documents   # lazy: customers will import us
+
+    where, params = _scope(key, date_from, date_to)
+
+    raw = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS doc_count,
+               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS purchase_total,
+               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS qty_total,
+               MIN(date_iso) AS first_activity,
+               MAX(date_iso) AS last_activity
+        FROM sales_transactions
+        WHERE {where}
+    """, params).fetchone()
+    bought = conn.execute(f"""
+        SELECT COUNT(DISTINCT doc_base) AS purchase_count,
+               MIN(date_iso)            AS first_purchase,
+               MAX(date_iso)            AS last_purchase
+        FROM sales_transactions
+        WHERE {where} AND {price_lookup.purchase_population_filter('')}
+    """, params).fetchone()
+    totals = {**dict(raw), **dict(bought)}
+
+    monthly = [dict(r) for r in conn.execute(f"""
+        SELECT strftime('%Y-%m', date_iso) AS month,
+               COUNT(DISTINCT doc_base) AS doc_count,
+               SUM({sales_filters.purchase_net_sql()}) AS total_net
+        FROM sales_transactions
+        WHERE {where}
+        GROUP BY month
+        ORDER BY month
+    """, params).fetchall()]
+
+    documents = _customer_documents(conn, where, params)
+
+    # A MAPPED line groups on product_id alone (a credit note prints
+    # product_name_raw differently from the invoice it reverses); an UNMAPPED
+    # line keeps its raw name.
+    top_products = [dict(r) for r in conn.execute(f"""
+        SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
+               p.id AS product_id,
+               s.unit,
+               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
+               SUM({sales_filters.sales_net_sql('s')}) AS total_net,
+               COUNT(DISTINCT s.doc_base) AS doc_count
+        FROM sales_transactions s
+        LEFT JOIN products p ON p.id = s.product_id
+        WHERE {where}
+        GROUP BY s.product_id,
+                 CASE WHEN s.product_id IS NULL THEN s.product_name_raw END
+        ORDER BY total_net DESC
+        LIMIT 20
+    """, params).fetchall()]
+
+    # Money and quantity are NET of credit notes (#646); times_bought and
+    # last_purchase stay on the purchase half (a credit note is not a purchase,
+    # the invoice it reverses still is). HAVING drops a product that was only
+    # ever returned, given away or invoiced in error.
+    products = [dict(r) for r in conn.execute(f"""
+        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
+               s.unit,
+               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
+                                   THEN s.doc_base END) AS times_bought,
+               MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
+                        THEN s.date_iso END) AS last_purchase,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.qty ELSE s.qty END) AS qty,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                        THEN -s.net ELSE s.net END) AS net,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.net ELSE 0 END), 0) AS returned_net
+        FROM sales_transactions s
+        LEFT JOIN products p ON p.id = s.product_id
+        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
+                           OR {price_lookup.returned_lines_filter('s')})
+        GROUP BY s.product_id, s.unit
+        HAVING times_bought > 0
+        ORDER BY s.product_id, s.unit
+    """, params).fetchall()]
+
+    returned_net_total = conn.execute(f"""
+        SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
+        WHERE {where} AND {price_lookup.returned_lines_filter('s')}
+    """, params).fetchone()[0]
+
+    wb_where, wb_params = _scope(key)
+    winback_rows = winback.compute_winback(conn, wb_where, wb_params, today=today)
+
+    return {
+        'key': key,
+        'totals': totals,
+        'monthly': monthly,
+        'documents': documents,
+        'top_products': top_products,
+        'products': products,
+        'returned_net_total': returned_net_total,
+        'winback': winback_rows,
+    }
+
+
+def histories(conn, total_since=None):
+    """{key: {'purchase_total', 'doc_count', 'last_activity', 'last_purchase',
+    'bill_name'}} for every key with at least one sales row. `purchase_total`
+    honours `total_since` (ISO date, inclusive); every other field is all-time.
+    `bill_name` is the name on the key's newest row.
+
+    Universe is every key, marketplace `หน้าร้าน` accounts included: a caller
+    that must not list them filters the keys itself. A key whose every row is
+    "invoiced in error" is still present, with zeros.
+    """
+    import price_lookup
+
+    key = customer_key_sql('s')
+    since_sql = 'AND s.date_iso >= ?' if total_since else ''
+    counted = sales_filters.not_a_sale_clause('s')
+    rows = conn.execute(f"""
+        SELECT {key} AS k,
+               COALESCE(SUM(CASE WHEN {counted} {since_sql}
+                                 THEN {sales_filters.purchase_net_sql('s')} END), 0)
+                   AS purchase_total,
+               COUNT(DISTINCT CASE WHEN {counted} THEN s.doc_base END) AS doc_count,
+               MAX(CASE WHEN {counted} THEN s.date_iso END) AS last_activity,
+               MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
+                        THEN s.date_iso END) AS last_purchase
+        FROM sales_transactions s
+        WHERE {key} IS NOT NULL
+        GROUP BY k
+    """, [total_since] if total_since else []).fetchall()
+    out = {r['k']: {'purchase_total': r['purchase_total'],
+                    'doc_count': r['doc_count'],
+                    'last_activity': r['last_activity'],
+                    'last_purchase': r['last_purchase'],
+                    'bill_name': None}
+           for r in rows}
+
+    # Newest row wins; ties on the date fall to the higher id.
+    for r in conn.execute(f"""
+        SELECT {key} AS k, s.customer
+        FROM sales_transactions s
+        WHERE {key} IS NOT NULL AND s.customer IS NOT NULL
+        ORDER BY s.date_iso, s.id
+    """):
+        out[r['k']]['bill_name'] = r['customer']
+    return out
