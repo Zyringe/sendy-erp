@@ -3,7 +3,10 @@
 
 Copied from origin/main c9ef583 (`inventory_app/models/customers.py`, whose
 customer-page queries are identical to 4b7b9d3, the pre-card-C tree) and never
-edited. The customer-page functions are byte-for-byte those blocks (renamed
+edited. "Frozen" covers the SQL TEXT only: these functions still call the live
+helpers (sales_filters, price_lookup, document_kind, vat_math) and the win-back
+computation, so a change in one of those moves both sides together. The
+censuses own the helpers; this file owns the query shapes. The customer-page functions are byte-for-byte those blocks (renamed
 without the leading underscore); the last four are the surface queries lifted
 out of get_customers / sales_trip / get_call_list with their SQL text unchanged
 and their comments dropped. The differential
