@@ -66,6 +66,12 @@ ROUTE_GUARDS_BEFORE_PR3A = {
     # ADMIN_MANAGER like leave_approve. Listed so the oracle agrees and the
     # exact-cells sweep moves no cell for it.
     'hr.leave_waive': ('admin', 'manager'),
+    # Not pre-PR3A guards either: แก้หน่วยบรรทัด (#692) was born ADMIN_ONLY, the
+    # page and its three POSTs. Listed for the same reason as leave_waive.
+    'sales.unit_correction': _ADMIN,
+    'sales.unit_correction_preview': _ADMIN,
+    'sales.unit_correction_apply': _ADMIN,
+    'sales.unit_correction_cancel': _ADMIN,
     # hr.py::_require_pay_role — wider than the two above ON PURPOSE, and the
     # same set as the hr blueprint's own default, which is why it needs no row
     # in PAGES and why these two cells do not move.

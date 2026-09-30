@@ -228,7 +228,7 @@ def test_the_page_lists_the_lines_ended_corrections_newest_first(line):
 # ── preview ──────────────────────────────────────────────────────────────────
 
 def _preview(client, **over):
-    return client.post(PAGE + '/preview', data=dict(KEY, corrected_unit='หลอด', **over))
+    return client.post(PAGE + '/preview', data=dict(dict(KEY, corrected_unit='หลอด'), **over))
 
 
 def _radios(page):

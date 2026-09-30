@@ -1,0 +1,226 @@
+{% extends 'base.html' %}
+{#- แก้หน่วยบรรทัด (#692, ADR 0021): one page per sales line, no script.
+    Every number and every refusal on it comes from line_unit_correction; the
+    page only lays them out. Context: line, active, history, chosen_unit,
+    effect (after a successful preview), refused (after a refused one). -#}
+{% block title %}แก้หน่วย {{ line.doc_no }} – ERP{% endblock %}
+{% block page_title %}แก้หน่วยบรรทัด {{ line.doc_no }}{% endblock %}
+
+{% block topbar_actions %}
+<a href="{{ url_for('sales.sales_doc', doc_base=line.doc_base) }}" class="btn btn-sm btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>กลับเอกสาร {{ line.doc_base }}
+</a>
+{% endblock %}
+
+{% macro mode_label(mode) %}{{ 'คงยอดคงเหลือ' if mode == 'hold' else 'ขยับยอดคงเหลือ' }}{% endmacro %}
+
+{% block content %}
+<!-- The line as Sendy holds it -->
+<div class="card mb-3" id="uc-line">
+  <div class="card-body py-2">
+    <div class="row g-3 align-items-center">
+      <div class="col-auto">
+        <span class="text-subtle small">บรรทัด</span><br>
+        <a href="{{ url_for('sales.sales_doc', doc_base=line.doc_base) }}"
+           class="font-mono fw-600 text-decoration-none text-main">{{ line.doc_no }}</a>
+      </div>
+      <div class="col-auto">
+        <span class="text-subtle small">วันที่</span><br>
+        <strong class="font-mono">{{ line.date_iso }}</strong>
+      </div>
+      <div class="col-auto">
+        <span class="text-subtle small">ลูกค้า</span><br>
+        <strong>{{ line.customer or '–' }}</strong>
+      </div>
+      <div class="col-12 col-md">
+        <span class="text-subtle small">สินค้า</span><br>
+        <strong>{{ line.display_name or '–' }}</strong>
+        <span class="text-subtle small ms-1 font-mono">{{ line.bsn_code }}</span>
+      </div>
+      <div class="col-auto text-end">
+        <span class="text-subtle small">จำนวน</span><br>
+        <strong><span data-uc="qty">{{ line.qty | fmt_qty }}</span> <span data-uc="unit">{{ line.unit }}</span></strong>
+      </div>
+      <div class="col-auto text-end">
+        <span class="text-subtle small">ราคา/หน่วย</span><br>
+        <strong data-uc="unit-price">{{ line.unit_price | fmt_price }}</strong>
+      </div>
+      <div class="col-auto text-end">
+        <span class="text-subtle small">สุทธิ</span><br>
+        <strong data-uc="net">{{ line.net | fmt_price }}</strong>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if active %}
+<!-- The active correction, and the way out of it -->
+<div class="card mb-3" id="uc-active">
+  <div class="card-header fw-600">การแก้หน่วยที่ใช้อยู่</div>
+  <div class="card-body">
+    <p class="mb-1">
+      <span class="badge bg-warning text-dark">แก้หน่วย: {{ active.express_unit_raw }} → {{ active.corrected_unit }}</span>
+      <span class="ms-2">{{ mode_label(active.stock_mode) }}</span>
+    </p>
+    <p class="text-subtle small mb-1">โดย {{ active.created_by }} เมื่อ <span class="font-mono">{{ active.created_at }}</span></p>
+    <p class="mb-3 fst-italic">&ldquo;{{ active.reason }}&rdquo;</p>
+    <form method="post" action="{{ url_for('sales.unit_correction_cancel') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="correction_id" value="{{ active.id }}">
+      <label class="form-label small" for="uc-cancel-reason">เหตุผลที่ยกเลิก (อย่างน้อย {{ min_reason }} ตัวอักษร)</label>
+      <textarea class="form-control mb-2" id="uc-cancel-reason" name="reason" rows="2"
+                required minlength="{{ min_reason }}"></textarea>
+      <button type="submit" class="btn btn-outline-danger btn-touch">ยกเลิกการแก้หน่วย</button>
+    </form>
+  </div>
+</div>
+{% else %}
+<!-- Step 1: pick the unit and look before correcting -->
+<div class="card mb-3" id="uc-correct">
+  <div class="card-header fw-600">แก้หน่วยของบรรทัดนี้</div>
+  <div class="card-body">
+    {% if line.unit_choices %}
+    <form method="post" action="{{ url_for('sales.unit_correction_preview') }}"
+          class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="doc_no" value="{{ line.doc_no }}">
+      <input type="hidden" name="bsn_code" value="{{ line.bsn_code }}">
+      <div class="col-auto">
+        <label class="form-label small" for="uc-unit">หน่วยที่ถูกต้อง (ตอนนี้ {{ line.unit }})</label>
+        <select class="form-select" id="uc-unit" name="corrected_unit" required>
+          {% for unit in line.unit_choices %}
+          <option value="{{ unit }}"{% if unit == chosen_unit %} selected{% endif %}>{{ unit }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-touch">ดูผลก่อนแก้</button>
+      </div>
+    </form>
+    {% else %}
+    <p class="text-subtle mb-0">บรรทัดนี้ไม่มีหน่วยอื่นให้เลือก (ต้องเป็นหน่วยหลักหรือหน่วยที่มีอัตราแปลงของสินค้า)</p>
+    {% endif %}
+
+    {% if refused %}
+    <div class="alert alert-danger mt-3 mb-0" id="uc-refused">
+      <i class="bi bi-x-circle me-2"></i>{{ refused }}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if effect %}
+<!-- Step 2: what the correction would do, and the choice that is the admin's -->
+<div class="card mb-3" id="uc-confirm">
+  <div class="card-header fw-600">ยืนยันแก้หน่วย: {{ effect.express_unit_raw }} → {{ effect.corrected_unit }}</div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('sales.unit_correction_apply') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="doc_no" value="{{ effect.doc_no }}">
+      <input type="hidden" name="bsn_code" value="{{ effect.bsn_code }}">
+      <input type="hidden" name="corrected_unit" value="{{ effect.corrected_unit }}">
+
+      <p class="mb-3">
+        รายการตัดสต็อกของบรรทัดนี้:
+        <strong><span data-uc="old-effect">{{ effect.old_effect | fmt_qty }}</span> →
+        <span data-uc="new-effect">{{ effect.new_effect | fmt_qty }}</span></strong> {{ line.base_unit }}
+      </p>
+
+      <div class="form-check mb-2">
+        <input class="form-check-input" type="radio" name="stock_mode" id="uc-mode-hold" value="hold"
+               {% if effect.proposed_mode == 'hold' %}checked{% endif %} required>
+        <label class="form-check-label" for="uc-mode-hold" data-uc="mode-hold">
+          <strong>คงยอดคงเหลือ</strong>{% if effect.proposed_mode == 'hold' %} (ระบบแนะนำ){% endif %}:
+          สต็อกตอนนี้ <span data-uc="stock-now">{{ effect.stock_now | fmt_qty }}</span> →
+          <span data-uc="stock-after-hold">{{ effect.stock_after_hold | fmt_qty }}</span>
+          <br><span class="text-subtle small">ระบบจะลงรายการปรับยอด
+          <span data-uc="hold-offset">{{ effect.hold_offset | fmt_qty }}</span> ย้อนไปวันที่ขาย</span>
+        </label>
+      </div>
+      <div class="form-check mb-3">
+        <input class="form-check-input" type="radio" name="stock_mode" id="uc-mode-move" value="move"
+               {% if effect.proposed_mode == 'move' %}checked{% endif %} required>
+        <label class="form-check-label" for="uc-mode-move" data-uc="mode-move">
+          <strong>ขยับยอดคงเหลือ</strong>{% if effect.proposed_mode == 'move' %} (ระบบแนะนำ){% endif %}:
+          สต็อกตอนนี้ <span data-uc="stock-now">{{ effect.stock_now | fmt_qty }}</span> →
+          <span data-uc="stock-after-move">{{ effect.stock_after_move | fmt_qty }}</span>
+        </label>
+      </div>
+
+      <p class="small mb-3">
+        {% if effect.adjust_seen %}
+        พบรายการปรับสต็อกหลังวันขาย: "{{ effect.adjust_seen.note }}" เมื่อ {{ effect.adjust_seen.created_at }}<br>
+        ระบบไม่รู้ว่ารายการนี้เป็นการนับสต็อกจริงหรือไม่ โปรดเลือกเอง
+        {% else %}
+        ไม่พบรายการปรับสต็อกหลังวันขาย
+        {% endif %}
+      </p>
+
+      {% if effect.exposure_after != effect.exposure_before %}
+      <div class="alert alert-warning small">
+        ถ้าเลือกขยับยอดคงเหลือ ต้นทุนเฉลี่ยย้อนหลังของสินค้านี้จะถูกคำนวณใหม่
+        {% if effect.exposure_after.purchases_below_zero != effect.exposure_before.purchases_below_zero %}
+        <br>รายการรับเข้าที่คิดต้นทุนตอนสต็อกติดลบ:
+        <span data-uc="below-zero">{{ effect.exposure_before.purchases_below_zero }}</span> →
+        <span data-uc="below-zero">{{ effect.exposure_after.purchases_below_zero }}</span>
+        {% endif %}
+        {% if effect.exposure_after.purchases_at_zero != effect.exposure_before.purchases_at_zero %}
+        <br>รายการรับเข้าที่คิดต้นทุนตอนสต็อกเป็นศูนย์:
+        <span data-uc="at-zero">{{ effect.exposure_before.purchases_at_zero }}</span> →
+        <span data-uc="at-zero">{{ effect.exposure_after.purchases_at_zero }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if effect.hold_reweights_purchases > 0 %}
+      <div class="alert alert-warning small">
+        บรรทัดนี้เป็นใบลดหนี้ และมีการรับเข้า <span data-uc="reweights">{{ effect.hold_reweights_purchases }}</span> รายการในวันเดียวกัน
+        ต้นทุนเฉลี่ยจะขยับแม้เลือกคงยอดคงเหลือ
+      </div>
+      {% endif %}
+
+      <label class="form-label small" for="uc-reason">เหตุผล (อย่างน้อย {{ min_reason }} ตัวอักษร)</label>
+      <textarea class="form-control mb-2" id="uc-reason" name="reason" rows="2"
+                required minlength="{{ min_reason }}"></textarea>
+      <button type="submit" class="btn btn-danger btn-touch">ยืนยันแก้หน่วย</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+
+{% if history %}
+<!-- Ended corrections of this line, newest first -->
+<div class="card mb-4" id="uc-history">
+  <div class="card-header fw-600">ประวัติการแก้หน่วยของบรรทัดนี้</div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr>
+          <th>แก้</th>
+          <th>สต็อก</th>
+          <th>แก้โดย / เหตุผล</th>
+          <th>สิ้นสุด</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in history %}
+        <tr data-uc="history-row">
+          <td class="small">{{ c.express_unit_raw }} → {{ c.corrected_unit }}</td>
+          <td class="small">{{ mode_label(c.stock_mode) }}</td>
+          <td class="small">
+            {{ c.created_by }} <span class="text-subtle font-mono">{{ c.created_at }}</span>
+            <div class="fst-italic">&ldquo;{{ c.reason }}&rdquo;</div>
+          </td>
+          <td class="small">
+            {{ c.end_label }}
+            <div>โดย {{ c.ended_by or '—' }} <span class="text-subtle font-mono">{{ c.ended_at }}</span></div>
+            {% if c.end_reason %}<div class="fst-italic">&ldquo;{{ c.end_reason }}&rdquo;</div>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

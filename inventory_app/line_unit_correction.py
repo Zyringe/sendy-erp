@@ -615,10 +615,15 @@ def line_view(conn, doc_no, bsn_code):
 
 
 def corrections_for_line(conn, doc_no, bsn_code):
-    """Every correction of one line, any status, newest first."""
-    return _dicts(conn.execute(
+    """Every correction of one line, any status, newest first. `end_label`
+    says in Thai how an ended one ended (None while active)."""
+    rows = _dicts(conn.execute(
         "SELECT * FROM sales_line_unit_corrections WHERE doc_no=? AND bsn_code=?"
         " ORDER BY created_at DESC, id DESC", (doc_no, bsn_code)))
+    for c in rows:
+        c['end_label'] = ('ยกเลิก' if c['status'] == 'cancelled'
+                          else _RETIRE_CAUSE_TH.get(c['end_cause']))
+    return rows
 
 
 def correction(conn, correction_id):

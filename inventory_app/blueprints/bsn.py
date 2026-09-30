@@ -1110,6 +1110,14 @@ def _release_import_lock(fd):
             pass
 
 
+def import_running():
+    """Whether an Express import holds the flock right now. A probe for a
+    writer that must not start under a running import: nothing is kept."""
+    fd = _acquire_import_lock()
+    _release_import_lock(fd)
+    return fd is None
+
+
 def _audit_forced_import_authorization(incoming, overrode, upload_meta):
     """Record authorization to override the stale-export guard.
 

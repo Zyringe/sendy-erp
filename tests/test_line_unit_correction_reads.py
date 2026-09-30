@@ -96,6 +96,27 @@ def test_corrections_for_line_lists_this_lines_corrections_newest_first(line):
         (second, 'active', 'กล่อง'), (first, 'cancelled', 'หลอด')]
 
 
+def test_corrections_for_line_says_in_thai_how_each_one_ended(line, monkeypatch):
+    path, _pid = line
+    first = _luc(path, 'apply', LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
+    _luc(path, 'cancel', first, 'ยกเลิกเพราะแก้ผิดบรรทัด', 'put')
+    _luc(path, 'apply', LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
+    # Express re-keys the line to 3 โหล: the importer retires the correction.
+    book = sc.standard_book()
+    book.stcrd[1]['TRNQTY'] = 3.0
+    sc.run_zip(monkeypatch, book)
+    third = _luc(path, 'apply', LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
+
+    rows = _luc(path, 'corrections_for_line', LINE, sc.CODE)
+
+    assert [(r['status'], r['end_label']) for r in rows] == [
+        ('active', None),
+        ('retired', 'Express แก้บรรทัดนี้ ระบบจึงใช้ค่าของ Express'),
+        ('cancelled', 'ยกเลิก'),
+    ]
+    assert rows[0]['id'] == third
+
+
 def test_correction_returns_one_row_by_id_or_none(line):
     path, _pid = line
     cid = _luc(path, 'apply', LINE, sc.CODE, 'หลอด', 'hold', sc.REASON, 'put')
