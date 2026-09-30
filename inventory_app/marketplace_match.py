@@ -414,7 +414,7 @@ _STATUS_CANCEL_RETURN = {
 }
 
 
-def _is_matchable_status(status, settled=False):
+def _is_matchable_status(status, settled=False, platform=None, actual_payout=None):
     """True if an order at this ``status`` should enter the automatch pool.
 
     ``status`` is a STALE snapshot from the last order-export upload — it can
@@ -428,19 +428,25 @@ def _is_matchable_status(status, settled=False):
     Fail-safe: an unsettled order at a status outside the known inventory
     above is SKIPPED (never guessed) and logged — a platform introducing a
     new status must not silently start (or stop) matching until someone
-    classifies it."""
+    classifies it.
+
+    TikTok settles a cancel at ฿0 with a settled date, so for tiktok the
+    settled override also needs money (``actual_payout > 0``): an unknown
+    cancel spelling must not be promoted into the pool. Shopee/Lazada keep
+    the plain override."""
     if status in _STATUS_CANCEL_RETURN:
         return False
     if status in _STATUS_COMPLETED or status in _STATUS_IN_TRANSIT:
         return True
     if status and status.startswith(_STATUS_COMPLETED_PREFIX):
         return True
-    if settled:
+    if settled and (platform != 'tiktok' or (actual_payout or 0) > 0):
         return True
     if status in _STATUS_NOT_SHIPPED:
         return False
     logging.getLogger(__name__).warning(
-        "marketplace_match: unknown order status %r — skipping (fail-safe)", status)
+        "marketplace_match: unknown order status %r (%s) — skipping (fail-safe)",
+        status, platform)
     return False
 
 
@@ -471,7 +477,8 @@ def _matchable_orders(conn, platform):
     ).fetchall()
     return [r for r in rows
             if _is_matchable_status(
-                r['status'], settled=r['settled_at'] is not None and r['actual_payout'] is not None)
+                r['status'], settled=r['settled_at'] is not None and r['actual_payout'] is not None,
+                platform=r['platform'], actual_payout=r['actual_payout'])
             and r['billed_basis'] is not None]
 
 

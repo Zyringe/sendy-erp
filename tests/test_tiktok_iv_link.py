@@ -286,3 +286,31 @@ def test_a_tiktok_cancel_settled_at_zero_never_takes_a_later_iv(conn):
     assert _o817_link(conn) is None and r['returns_matched'] == 0
     # Control: the IV is a real candidate — the two sales still link as before.
     assert len(_links(conn)) == 2
+
+
+def test_settled_override_needs_money_for_tiktok_only():
+    assert marketplace_match._is_matchable_status(
+        'Canceled', settled=True, platform='tiktok', actual_payout=0.0) is False
+    assert marketplace_match._is_matchable_status(
+        'Canceled', settled=True, platform='tiktok', actual_payout=12.0) is True
+    # Control: Shopee/Lazada keep the plain settled override.
+    for p in ('shopee', 'lazada'):
+        assert marketplace_match._is_matchable_status(
+            'Canceled', settled=True, platform=p, actual_payout=0.0) is True
+
+
+def test_unknown_tiktok_cancel_spelling_settled_at_zero_is_not_matched(conn):
+    conn.execute("UPDATE marketplace_orders SET status='Canceled' WHERE platform='tiktok' "
+                 "AND order_sn=?", (O817,))
+    conn.commit()
+    _add_two_line_iv(conn, 'IV6901521', '2026-09-06', [9403, 9404])
+    marketplace_match.run_automatch(conn, 'tiktok')
+    assert _o817_link(conn) is None
+    assert len(_links(conn)) == 2                       # control: the two sales still link
+
+
+def test_unknown_status_warning_names_the_platform(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger='marketplace_match'):
+        marketplace_match._is_matchable_status('Mystery', settled=False, platform='tiktok')
+    assert 'Mystery' in caplog.text and 'tiktok' in caplog.text
