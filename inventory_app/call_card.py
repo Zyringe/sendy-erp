@@ -549,8 +549,14 @@ def get_card(conn, customer_code):
     # The clearance panel (Put, 2026-09-30, option b) is UNCHANGED by C1: it seeds
     # from the customer's top 30 rows of everything RECEIVED, free samples and
     # returned-only products included, exactly as before the call card moved onto
-    # purchase_history (a free sample of a category is a reason to offer its slow stock).
-    clearance = _compute_clearance(conn, _ranked(rows)[:30])
+    # purchase_history (a free sample of a category is a reason to offer its slow stock),
+    # documents invoiced in error included.
+    seed_rows = rows
+    if purchase_history.has_invoiced_in_error(conn, key):
+        # a flagged giveaway (01อ35): the shop was handed those goods, so they rank too
+        seed_rows = purchase_history.products(conn, key, counted=True, include_unbought=True,
+                                              invoiced_in_error=True)
+    clearance = _compute_clearance(conn, _ranked(seed_rows)[:30])
 
     # ── 7. AR detail ─────────────────────────────────────────────────────────
     ar = []

@@ -217,3 +217,22 @@ def test_clearance_panel_still_seeds_from_a_freebie_only_product(card_conn):
     card = call_card.get_card(c, CODE)
     assert _pid(c, 'C') not in _by_pid(card), 'CONTROL: C1 still drops the freebie-only product'
     assert [x['product_id'] for x in card['clearance']] == [slow]
+
+
+def test_clearance_panel_also_seeds_from_a_giveaway_document(card_conn):
+    """W1 with 01อ35's shape: a product only ever handed over on a document invoiced in
+    error (flagged giveaway GV-9) is out of ซื้อรวม (D1) but still seeds the panel."""
+    c = card_conn
+    cat = c.execute("INSERT INTO categories (code, name_th) VALUES ('ZG-P3', 'หมวดแจก')").lastrowid
+    gift = mk_product(c, 'สินค้าแจกพีสาม')
+    c.execute("UPDATE products SET category_id = ? WHERE id = ?", (cat, gift))
+    slow = mk_product(c, 'สินค้าค้างสต็อกแจก')
+    c.execute("UPDATE products SET category_id = ?, hard_to_sell = 1 WHERE id = ?", (cat, slow))
+    c.execute("INSERT OR REPLACE INTO stock_levels (product_id, quantity) VALUES (?, 50)", (slow,))
+    add_line(c, doc_base='GV-9', date_iso='2026-03-05', pid=gift, qty=3, net=300, customer=N1,
+             code=CODE)
+    writeoff(c, 'GV-9', 1, CODE)
+    c.commit()
+    card = call_card.get_card(c, CODE)
+    assert gift not in _by_pid(card), 'CONTROL: the giveaway is not a ซื้อประจำ row (D1)'
+    assert [x['product_id'] for x in card['clearance']] == [slow]

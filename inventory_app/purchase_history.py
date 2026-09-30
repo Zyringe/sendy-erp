@@ -82,9 +82,11 @@ def _key_match():
     return sql.rstrip(), 3
 
 
-def _scope(key, date_from=None, date_to=None):
+def _scope(key, date_from=None, date_to=None, invoiced_in_error=False):
     """WHERE clause (unaliased columns) + params for one customer's counted rows:
-    the key, the optional date window, and not-invoiced-in-error."""
+    the key, the optional date window, and not-invoiced-in-error (unless
+    `invoiced_in_error=True`, which keeps those documents: only the call card's
+    clearance seed asks, it wants everything the customer was handed)."""
     match, n = _key_match()
     conds = [match]
     params = [key] * n
@@ -94,7 +96,8 @@ def _scope(key, date_from=None, date_to=None):
     if date_to:
         conds.append('date_iso <= ?')
         params.append(date_to)
-    conds.append(sales_filters.not_a_sale_clause())
+    if not invoiced_in_error:
+        conds.append(sales_filters.not_a_sale_clause())
     return ' AND '.join(conds), params
 
 
@@ -175,7 +178,8 @@ def totals(conn, key, date_from=None, date_to=None):
     return _totals(conn, where, params)
 
 
-def products(conn, key, date_from=None, date_to=None, counted=False, include_unbought=False):
+def products(conn, key, date_from=None, date_to=None, counted=False, include_unbought=False,
+             invoiced_in_error=False):
     """Just `history()['products']`: one statement. For a surface that renders the
     per-product table and needs nothing else (the call card's rows).
 
@@ -189,10 +193,14 @@ def products(conn, key, date_from=None, date_to=None, counted=False, include_unb
 
     `include_unbought=True` (only with `counted`) also returns the (product, unit)
     groups with `times_bought = 0` (only returned, given free or invoiced in error):
-    the call card's clearance panel seeds from everything the customer received."""
+    the call card's clearance panel seeds from everything the customer received.
+
+    `invoiced_in_error=True` also lets in the documents invoiced in error (a flagged
+    giveaway): the customer WAS handed those goods. Only that seed asks; every figure
+    a salesperson reads as ซื้อรวม leaves them out."""
     import price_lookup
 
-    where, params = _scope(key, date_from, date_to)
+    where, params = _scope(key, date_from, date_to, invoiced_in_error)
     # Money and quantity are NET of credit notes (#646); times_bought and
     # last_purchase stay on the purchase half (a credit note is not a purchase,
     # the invoice it reverses still is). HAVING drops a product that was only
@@ -229,6 +237,14 @@ def products(conn, key, date_from=None, date_to=None, counted=False, include_unb
         for r in rows:
             del r['qty_counted'], r['net_counted']
     return rows
+
+
+def has_invoiced_in_error(conn, key):
+    """True if the key has a document invoiced in error (a flagged giveaway)."""
+    where, params = _scope(key, invoiced_in_error=True)
+    return bool(conn.execute(
+        f"SELECT 1 FROM sales_transactions WHERE {where} "
+        f"AND NOT ({sales_filters.not_a_sale_clause()}) LIMIT 1", params).fetchone())
 
 
 def history(conn, key, date_from=None, date_to=None, today=None):
