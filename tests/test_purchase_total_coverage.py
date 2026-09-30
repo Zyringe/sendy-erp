@@ -22,6 +22,7 @@ one string, the SUM in another), files outside inventory_app/ (scripts/), and
 any figure computed in Python from fetched rows. The cross-surface test in
 test_494_purchase_total.py is the behavioural half; this is the census.
 """
+import ast
 import os
 import re
 
@@ -56,15 +57,6 @@ ALLOWED = {
         'CASE expressions over price_lookup.returned_lines_filter, plus '
         'returned_net. Per-product figures, never the customer\'s total, which '
         'is the two purchase_net_sql calls in this same function (MUST_USE_HELPER).'),
-    'models/customers.py::_customer_product_cards': (2,
-        'one row per (product, unit), used to order the product cards by money '
-        'and to decide which reach the top-20 union. A per-product figure, '
-        'never the customer\'s total. #646 made it net of credit notes, so it '
-        'agrees with the header purchase_net_sql produces; the second '
-        'aggregate is returned_net, the amount the card\'s badge names. Both '
-        'are CASE expressions over price_lookup.returned_lines_filter rather '
-        'than purchase_net_sql, because times_bought in the same GROUP BY must '
-        'keep reading the purchase population alone.'),
     # ── money owed (AR), not money spent ──
     'blueprints/mobile.py::sales_trip': (1,
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '
@@ -114,9 +106,6 @@ MUST_USE_HELPER = {
     'models/customers.py::_customer_sales_aggregates': 2,   # header + monthly
     'purchase_history.py::history': 2,                      # card C: header + monthly
     'purchase_history.py::histories': 1,                    # card C: every customer's ยอดซื้อรวม
-    'models/customers.py::get_customers': 1,                # /customers list
-    'blueprints/mobile.py::customer_detail': 1,             # /m/customer ยอดสะสม
-    'call_card.py::get_call_list': 1,                       # /call spend
 }
 
 
@@ -165,6 +154,49 @@ def test_every_per_customer_net_aggregate_is_the_helper_or_declared():
 @pytest.mark.parametrize('site', sorted(ALLOWED))
 def test_every_exemption_carries_a_reason(site):
     assert len(ALLOWED[site][1]) > 40, f'{site}: say WHY it keeps its own definition'
+
+
+# Card C P2: the customer surfaces read their history from ONE module instead of
+# holding an aggregate each, so the census above no longer names them. This is the
+# positive control that does: each must still CALL purchase_history, and the
+# census itself proves it holds no raw aggregate of its own (none is in ALLOWED).
+SURFACES_ON_THE_MODULE = {
+    ('models/customers.py', 'get_customer_summary_by_code'): 'history',
+    ('models/customers.py', 'get_customers'): 'histories',
+    ('blueprints/mobile.py', 'customer_detail'): 'history',
+    ('blueprints/mobile.py', 'sales_trip'): 'histories',
+    ('call_card.py', 'get_call_list'): 'histories',
+}
+
+
+def _calls_module(src, func, name):
+    """True if function `func` in `src` calls purchase_history.<name>(...)."""
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef) and node.name == func:
+            return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                       and n.func.attr == name
+                       and isinstance(n.func.value, ast.Name)
+                       and n.func.value.id == 'purchase_history'
+                       for n in ast.walk(node))
+    raise AssertionError(f'{func} not found')
+
+
+@pytest.mark.parametrize('site', sorted(SURFACES_ON_THE_MODULE))
+def test_the_customer_surfaces_read_purchase_history(site):
+    rel, func = site
+    src = _census.read(os.path.join(_census.APP, rel))
+    assert _calls_module(src, func, SURFACES_ON_THE_MODULE[site]), \
+        f'{rel}::{func} stopped calling purchase_history.{SURFACES_ON_THE_MODULE[site]}'
+
+
+def test_the_module_call_check_can_fail():
+    """CONTROL: a matcher that answered True for anything would pass the above."""
+    src = ('import purchase_history\n'
+           'def a(conn):\n    return purchase_history.histories(conn)\n'
+           'def b(conn):\n    return conn.execute("SELECT 1")\n')
+    assert _calls_module(src, 'a', 'histories')
+    assert not _calls_module(src, 'b', 'histories')
+    assert not _calls_module(src, 'a', 'history')
 
 
 def test_the_purchase_total_surfaces_use_the_helper():

@@ -471,7 +471,9 @@ def test_subcategory_already_bought_in_another_variant_is_excluded(cust):
 
     import models.customers as customers
     own_where, own_params = customers._customer_sales_scope('customer_code', TEST_CODE, None, None)
-    cards = customers._customer_product_cards(conn, own_where, own_params)
+    import purchase_history
+    rows = purchase_history.history(conn, TEST_CODE)['products']
+    cards = customers._customer_product_cards(conn, own_where, own_params, rows)
     assert any(c['product_id'] == pid_mine for c in cards), "control: own variant must be on the card"
 
     out = _suggestions(conn, today=today)

@@ -88,8 +88,8 @@ EXPECTED = {
         'the resolver disagree about which bills exist.'),
     'models/customers.py::_customer_product_cards': ('price',
         "ซื้อบ่อย's per-card LAST BILL, whose net/qty is rendered to a rep as "
-        'a price. Same function also holds a purchase site (below) — the '
-        'count and the price answer different questions on purpose.'),
+        'a price. Card C P2 moved the times_bought count out of this function '
+        'into purchase_history, so it now holds the price site alone.'),
     'scripts/price_lookup_cli.py::_latest_cash_per_piece': ('price',
         "the CLI's latest-B2B-cash-per-piece figure, used by the sibling "
         'price hint /quote-customer prints. Named by this census rather than '
@@ -100,31 +100,19 @@ EXPECTED = {
         'the customer page ซื้อล่าสุด + จำนวนครั้งซื้อ pair. A written-off bill '
         'is still a purchase; moving this date backwards is exactly what Put '
         'ruled against (prod 99ส09, 2025-03-31 -> 2024-12-10).'),
-    'models/customers.py::get_customers': ('purchase',
-        'the /customers list ซื้อล่าสุด column. Must match the detail page '
-        'above or the two disagree one click apart.'),
-    'models/customers.py::_customer_product_cards ': ('purchase',
-        "ซื้อบ่อย's times_bought / total_qty / total_net per (product, unit) — "
-        'ครั้งที่ซื้อ, a purchase count. (Trailing space in the key: this '
-        'function is listed twice, see the price entry above.)'),
     'models/customers.py::_cross_sell_suggestions': ('purchase',
         'เสนอเพิ่ม (#498): how many OTHER shops bought a product, and whether '
         'THIS shop ever did. All THREE sites in this function must agree, or '
         'the self-exclusion stops matching the counting and a shop gets its '
         'own product suggested back to it.'),
-    'call_card.py::get_call_list': ('purchase',
-        "/call's ซื้อล่าสุด column and the เงียบ badge — the worklist that "
-        'decides who a rep visits.'),
-    'blueprints/mobile.py::sales_trip': ('purchase',
-        "the mobile trip row's ล่าสุด, the same question as its desktop twin "
-        '(#513).'),
     'purchase_history.py::history': ('purchase',
-        'card C: the one customer-history module the surfaces above move onto '
-        '(P2+). The same ครั้งที่ซื้อ / ซื้อล่าสุด / times_bought questions, one '
-        'query each; a written-off bill is still a purchase.'),
+        'card C: the one customer-history module the customer page, the mobile '
+        'page, /customers, /call and the sales trip read (P2). ครั้งที่ซื้อ / '
+        'ซื้อล่าสุด / times_bought, one query each; a written-off bill is still '
+        'a purchase.'),
     'purchase_history.py::histories': ('purchase',
         'card C: /customers, /call and the sales trip read their ซื้อล่าสุด from '
-        'here once P2 lands. Same question as get_customers / get_call_list.'),
+        'here (P2). The list surfaces no longer name the predicate themselves.'),
     'winback.py::compute_winback': ('purchase',
         'ครั้งที่ซื้อ >= 3 and the median gap between purchase DATES. A bill '
         'that was never paid is still a purchase this shop made.'),
@@ -255,9 +243,10 @@ def test_both_halves_of_the_split_are_actually_used():
     price = {s for s, n in found.items() if n['price']}
     purchase = {s for s, n in found.items() if n['purchase']}
     assert len(price) >= 5 and len(purchase) >= 5, (price, purchase)
-    assert price & purchase == {'models/customers.py::_customer_product_cards'}, (
-        'exactly one function is supposed to ask BOTH questions '
-        f'(ซื้อบ่อย: a count and a price); found {sorted(price & purchase)}')
+    assert price & purchase == set(), (
+        'no function is supposed to ask BOTH questions any more (ซื้อบ่อย was '
+        'the one until card C P2 moved its count into purchase_history); '
+        f'found {sorted(price & purchase)}')
 
 
 # ── the census's own coverage: one rogue source per shape ───────────────────

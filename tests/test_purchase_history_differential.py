@@ -21,7 +21,7 @@ WINDOWS = [(None, None), ('2026-02-01', None), (None, '2026-03-15'),
            ('2026-02-10', '2026-05-01')]
 
 
-def _build_shop(conn, rng, code, pids):
+def _build_shop(conn, rng, code, pids, marketplace=0.08):
     name = 'ร้าน%s' % code
     docs = []
     for i in range(rng.randint(3, 10)):
@@ -32,7 +32,7 @@ def _build_shop(conn, rng, code, pids):
         for n in range(rng.randint(1, 3)):
             net = rng.choice([0, 0, 50, 120, 400, 999.5])
             qty = rng.choice([1, 2, 6, 12])
-            customer = 'หน้าร้านS' if rng.random() < 0.08 else name
+            customer = 'หน้าร้านS' if rng.random() < marketplace else name
             add_line(conn, doc_base=doc, date_iso=date, pid=rng.choice(pids), qty=qty,
                      net=net, customer=customer, code=code, suffix=n + 1,
                      unit=rng.choice(['ตัว', 'ตัว', 'โหล']))

@@ -95,12 +95,6 @@ def _code_only(sql):
 # figure, read off the purchase population.
 ALLOWED = {
     # ── the ซื้อ-labelled surfaces: the purchase population, #493 + #513 ──
-    'call_card.py::get_call_list': (1, 1,
-        "/call's ซื้อล่าสุด column and the เงียบ badge computed from it. Its one "
-        'aggregate IS the filtered one (#513).'),
-    'blueprints/mobile.py::sales_trip': (1, 1,
-        "the trip row's ล่าสุด — a rep deciding who to visit. Its one aggregate "
-        'IS the filtered one (#513).'),
     'models/customers.py::_customer_sales_aggregates': (6, 1,
         'the customer page. THREE questions live here and only one is ซื้อ: the '
         'purchase pair (purchase_doc_count + last_purchase_date) is the single '
@@ -108,28 +102,12 @@ ALLOWED = {
         'doc_count/last_date stay raw because the page labels them จำนวนเอกสาร '
         'and the ช่วงเวลา range end, and a credit note IS a document and IS '
         'activity; monthly and the document list are per-period/per-document.'),
-    'models/customers.py::get_customers': (3, 1,
-        "the /customers list. Its ซื้อล่าสุด column reads the evidence-filtered "
-        'last_purchase_date subquery (#493); the raw COUNT/MAX beside it feed '
-        'จำนวนเอกสาร and the ช่วงเวลา end, same split as the detail page.'),
-    'models/customers.py::_customer_product_cards': (0, 3,
-        'สินค้าที่ซื้อบ่อย: times_bought per (product, unit) over the PURCHASE '
-        'population (#493 slice 2). Per-product, and already filtered. The raw '
-        'count went 1 -> 0 in #646: the doc count is now '
-        'COUNT(DISTINCT CASE WHEN <purchase population> THEN doc_base END), so '
-        'it is no longer a bare aggregate this sweep has to take on trust. '
-        'What the sweep still cannot see is WHICH of the three predicates '
-        'wraps it — test_646_card_returns.py::'
-        'test_times_bought_still_counts_the_purchase_population_only is the '
-        'behavioural pin for that, and it goes red if the CASE is repointed. Its '
-        'call sites are deliberately one of EACH since #554: times_bought is '
-        'purchase_population_filter, while the last bill whose net/qty is '
-        'rendered to a rep AS A PRICE is price_evidence_filter. #646 added the '
-        'THIRD: returned_lines_filter, the credit notes subtracted from the '
-        'card\'s qty/money. times_bought still counts the purchase half ALONE '
-        '(it is inside a CASE over that predicate), so the ซื้อ surfaces this '
-        'census guards did not move — test_646_card_returns.py pins that, and '
-        'the two predicates are asserted disjoint there against real rows.'),
+    'models/customers.py::_customer_product_cards': (0, 1,
+        'สินค้าที่ซื้อบ่อย: only the PRICE half is left here. The last bill whose '
+        'net/qty is rendered to a rep AS A PRICE is price_evidence_filter (#554). '
+        "times_bought moved to purchase_history in card C P2 (declared there as "
+        'purchase_history.py::history), which is why the purchase call sites went '
+        '3 -> 1 and the returned_lines_filter CASEs left with them.'),
     'peer_pricing.py::product_peer_prices': (0, 1,
         'peer prices for one product over the PRICE-evidence population '
         '(price_evidence_filter, #554 — a written-off bill is not a price the '
@@ -187,11 +165,6 @@ ALLOWED = {
         "every customer's raw last_activity (feeds no ซื้อ label) beside the "
         'one purchase-population last_purchase that /call, the sales trip and '
         '/customers render.'),
-    'blueprints/mobile.py::customer_detail': (2, 0,
-        "/m/customer's เอกสารทั้งหมด and the activity dates behind it: the "
-        'mobile mirror of the desktop จำนวนเอกสาร card, labelled documents. '
-        'Nothing on that screen says ซื้อล่าสุด. (`last_seen` is computed and '
-        'the template never renders it — pre-existing, left alone.)'),
     'scripts/audit_product_naming.py::evidence_for_product': (1, 0,
         "the naming audit's last-sale date for ONE PRODUCT (its customer clause "
         'only drops marketplace rows). Per product, and an offline audit '
@@ -205,10 +178,7 @@ ALLOWED = {
 # control whose failure NAMES the surface that regressed, where the census
 # above would only report a changed tuple.
 MUST_USE_HELPER = (
-    'call_card.py::get_call_list',
-    'blueprints/mobile.py::sales_trip',
     'models/customers.py::_customer_sales_aggregates',
-    'models/customers.py::get_customers',
     'purchase_history.py::history',
     'purchase_history.py::histories',
 )
