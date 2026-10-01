@@ -7,8 +7,8 @@ Connection style mirrors hr.py / commission.py: own `_connect()` reading
 `config.DATABASE_PATH`, every public function accepts an optional caller-
 supplied `conn` (used, not closed) else opens/owns one.
 
-Established join idiom (do NOT diverge — see models.get_payment_status /
-get_payment_summary ≈ line 2183-2245):
+Established join idiom (do NOT diverge; receipt_status.rows and
+models.get_payment_status read through invoice_settlement below):
     paid_invoices.doc_no = sales_transactions.doc_base
     paid_invoices.doc_kind in ('IV','SR')   ← 'IV'=settlement, 'SR'=CN netting
     received_payments.id = paid_invoices.re_id
@@ -18,7 +18,7 @@ LEGACY-NULL-AMOUNT RULE (real amounts win over legacy NULLs):
   `received_payments.total` and `paid_invoices.amount` were added in
   migration 058. Rows imported before 058 have `paid_invoices.amount IS
   NULL` — "linked but amount unknown". The pre-058 logic
-  (get_payment_summary) treated *any* non-cancelled link as "this invoice
+  treated *any* non-cancelled link as "this invoice
   is fully paid".
 
   Per-invoice resolution (priority order):
