@@ -19,9 +19,9 @@ credit notes and freebie-only bills as purchases, and it read documents invoiced
 2. **The key is the customer code.** A sales row with no code takes the one code that carries the same
    exact bill name (A1, `customer_key_sql`, read-time, nothing written); with no such code, or two, the key
    is the bill name and the row stays an orphan: never guessed. `customer_key_sql` is the ONLY statement of
-   that rule. `history()` asks it once per call for the bill names that resolve to the key and filters on
-   them as literals. The call card follows the same rule: a bill name that is itself a `/call` entry is that
-   entry, not the name resolver's first code (`ar_followup._customer_group` still takes `LIMIT 1` for AR).
+   that rule. `history()` asks it once per `history()` call for the bill names that resolve to the key and filters on
+   them as bound parameters. The call card follows the same rule: a bill name that is itself a `/call` entry is that
+   entry, not the name resolver's first code (`ar_followup._customer_group` still takes `LIMIT 1` for AR). One guess remains: a typed or bookmarked URL with a two-code bill name that has NO code-less rows is not a `/call` entry, and the card still uses the resolver's first code as its history key. No link in the app produces such a URL.
 3. **Windows are explicit per fact.** `history(date_from, date_to)` bounds every field except `winback`,
    which is always all-time. `histories(total_since)` bounds `purchase_total` only. The rule lives in the
    module, not at the call site.
@@ -44,7 +44,7 @@ credit notes and freebie-only bills as purchases, and it read documents invoiced
   test red naming the function.
 - If an import ever gives a bill name that A1 resolved a second code, that name's credit notes detach and
   the twin's ยอดซื้อรวม jumps back up, silently. By design (never guess); worth a data-quality alert later.
-- `history()` filters on the key, which no index serves: each call scans `sales_transactions` (25-28 ms
+- `history()` filters on the key, which no index serves: each call scans `sales_transactions` (25-36 ms
   on 20.6k rows). A loop over keys must use `histories()`. Upgrade path: an expression index on
   `customer_key_sql('')`.
 - Not covered by the test: SQL built from separate variables, and a figure computed in Python from fetched

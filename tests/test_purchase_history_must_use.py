@@ -18,7 +18,9 @@ What it asserts, per `file::function`:
    holds no shape of its own (N4 of the P2 review: calling the module is not
    enough, a surface could call `histories()` and still re-add its own
    `SUM(purchase_net_sql)` with a bill-name filter).
-3. The module's own functions still use the shared helpers they are pinned to.
+3. The module's own functions still use the shared helpers they are pinned to (presence only).
+   The module's internals are otherwise guarded by behaviour tests (test_purchase_history*,
+   the differentials) and test_554, not by counts here: the old per-function counts are gone.
 
 A query is "customer-keyed" when it names `customer` / `customer_code` /
 `customer_key_sql(...)` or sits in a function whose name says customer. The key
@@ -42,7 +44,8 @@ _KEYED = re.compile(r'\b(?:customer|customer_code)\b|customer_key_sql', re.IGNOR
 
 # shape -> pattern, applied to the rendered SQL of one query.
 SHAPES = {
-    'last date':   re.compile(r'MAX\(\s*(?:\w+\.)?date_iso\s*\)', re.IGNORECASE),
+    'last date':   re.compile(r'M(?:AX|IN)\(\s*(?:CASE\b[^()]{0,200}?\bTHEN\s+)?(?:\w+\.)?date_iso\b',
+                          re.IGNORECASE),
     'doc count':   re.compile(r'COUNT\(\s*DISTINCT\s*\(?\s*(?:\w+\.)?doc_base\s*\)'
                               r'|COUNT\(\s*DISTINCT\s+CASE\b[^()]{0,200}?\bdoc_base\s+END\s*\)',
                               re.IGNORECASE),
@@ -102,20 +105,32 @@ DECLARED = {
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '
         'VAT-inclusive cash. Money the customer owes, not what it bought; its ซื้อล่าสุด '
         'comes from purchase_history.histories().'),
-    'models/payments.py::get_payment_status': ({'raw money'},
+    'models/payments.py::get_payment_status': ({'last date', 'raw money'},
         'the /ar รายบิล document ledger: one row per bill, billed against paid. An AR '
         'balance, not a purchase total.'),
     'models/payments.py::get_ar_reconciliation': ({'raw money'},
         'the "Ledger (Sendy)" unpaid column of /ar?tab=กระทบยอด, deliberately '
         'unfiltered so it can be held against the Express snapshot.'),
-    'models/payments.py::find_payment_candidates': ({'raw money'},
+    'models/payments.py::find_payment_candidates': ({'last date', 'raw money'},
         'matches an incoming transfer to a customer\'s unpaid bills (VAT-inclusive '
         'cash owed). An AR search, not a purchase total.'),
-    'payments_alloc.py::_settlement_rows': ({'raw money'},
+    'payments_alloc.py::_settlement_rows': ({'last date', 'raw money'},
         'per-invoice billed vs collected for AR allocation (VAT-inclusive cash, '
         'credit notes handled by the allocation itself).'),
     # ── one document, one product, one period, or the price domain ──
-    'commission.py::get_invoices_for_salesperson': ({'raw money'},
+    'commission.py::<module>': ({'last date'},
+        'a module-level query reading a document\'s own issue date (MIN(date_iso) per '
+        'doc_base) for the commission tab. A date on one invoice, not a customer\'s history.'),
+    'marketplace_match.py::_ivs_for': ({'last date'},
+        'marketplace IV matching: the candidate invoice\'s own date (MIN(date_iso) per '
+        'document). Per document, never a customer\'s last purchase.'),
+    'marketplace_match.py::_ivs_and_srs_for': ({'last date'},
+        'marketplace IV/SR matching: each candidate document\'s own date (MIN(date_iso) '
+        'per document). Per document, not a customer\'s history.'),
+    'marketplace_match.py::plan_manual_pick': ({'last date'},
+        'the manual IV pick: the picked document\'s own date (MIN(date_iso)). Per '
+        'document, not a customer\'s history.'),
+    'commission.py::get_invoices_for_salesperson': ({'last date', 'raw money'},
         'the sales-rep commission tab: one row per INVOICE with its customer. A '
         'document total, never summed per customer.'),
     'models/pricing_ap.py::get_product_pricing': ({'doc count', 'last date', 'raw money'},
@@ -241,6 +256,11 @@ PLANTED = {
     'a private ยอดซื้อรวม beside a module call':
         ("SELECT SUM({sales_filters.purchase_net_sql('s')}) FROM sales_transactions s "
          "WHERE s.customer = ?", 'purchase net'),
+    'a last date through a CASE':
+        ("SELECT customer_code, MAX(CASE WHEN doc_base LIKE 'IV%' THEN date_iso END) "
+         "FROM sales_transactions GROUP BY customer_code", 'last date'),
+    'a first date':
+        ('SELECT MIN(date_iso) FROM sales_transactions WHERE customer_code = ?', 'last date'),
     'a private document count':
         ('SELECT COUNT(DISTINCT doc_base) FROM sales_transactions WHERE customer = ?',
          'doc count'),
