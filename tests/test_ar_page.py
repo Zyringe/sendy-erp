@@ -308,6 +308,30 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     assert s['partial_remainder'] + s['unpaid_remainder'] \
         == pytest.approx(sum(r['remainder'] for r in open_rows), abs=0.01)
 
+    # The remainder cards against SQL written here, not the engine: billed
+    # minus active receipt amounts minus credit notes, per open invoice.
+    conn = sqlite3.connect(tmp_db)
+    conn.execute('CREATE TEMP TABLE open_docs (doc TEXT PRIMARY KEY)')
+    conn.executemany('INSERT INTO open_docs VALUES (?)', [(r['doc_base'],) for r in open_rows])
+    oracle = dict(conn.execute('''
+        SELECT o.doc,
+               ROUND((SELECT SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END)
+                        FROM sales_transactions WHERE doc_base = o.doc), 2)
+             - COALESCE((SELECT SUM(pi.amount) FROM paid_invoices pi
+                           JOIN received_payments rp ON rp.id = pi.re_id
+                          WHERE rp.cancelled = 0 AND pi.doc_kind = 'IV'
+                            AND pi.doc_no = o.doc), 0)
+             - COALESCE((SELECT SUM(credited_amount) FROM credit_note_amounts
+                          WHERE ref_invoice = o.doc), 0)
+          FROM open_docs o
+    ''').fetchall())
+    conn.close()
+    moved = [d for d, rem in oracle.items()
+             if round(rem, 2) != next(r['billed'] for r in open_rows if r['doc_base'] == d)]
+    assert moved, 'no open invoice has a receipt or credit note; remainder untested'
+    assert s['partial_remainder'] + s['unpaid_remainder'] \
+        == pytest.approx(sum(oracle.values()), abs=0.01)
+
     # control: the fixture really does contain the multi-link shape
     conn = sqlite3.connect(tmp_db)
     multi = conn.execute(
