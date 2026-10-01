@@ -446,3 +446,64 @@ def test_invoice_list_never_shows_a_receipt_its_status_did_not_see(empty_db_conn
 
     assert len(page_rows) == 1
     assert (page_rows[0]['status'], page_rows[0]['re_no']) == ('unpaid', None)
+
+
+# Decision A (Put, 2026-10-02): a remainder under ฿1 is an Express short-close.
+# The status stays partial; reconcile and the matcher stop treating it as a gap.
+
+def _snapshot_row(conn, code, doc, outstanding):
+    batch = conn.execute("INSERT INTO express_import_log (file_type, snapshot_date_iso)"
+                         " VALUES ('ar_snapshot', '2026-09-30')").lastrowid
+    conn.execute("""INSERT INTO express_ar_outstanding
+                      (batch_id, snapshot_date_iso, customer_code, customer_name,
+                       doc_date_iso, doc_no, bill_amount, outstanding_amount, entity)
+                    VALUES (?, '2026-09-30', ?, 'A', '2026-07-01', ?, ?, ?, 'BSN')""",
+                 (batch, code, doc, outstanding, outstanding))
+
+
+def test_reconcile_counts_a_satang_short_close_as_match(empty_db_conn):
+    """01อ35: snapshot 60,189.27, ledger 60,189.30 (IV6900675 closed ฿0.03 short)."""
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-OPEN', 'A', 'C-A', '2026-07-01', 60189.27)
+    _ins_sale(c, 'IV-SHORT', 'A', 'C-A', '2026-07-02', 8064.27)
+    r = _ins_receipt(c, 'RE-S', 'A', '2026-07-10')
+    _ins_paid(c, r, 'IV-SHORT', 8064.24)
+    _snapshot_row(c, 'C-A', 'IV-OPEN', 60189.27)
+    c.commit()
+
+    row = {r['customer_code']: r for r in models.get_ar_reconciliation()['rows']}['C-A']
+
+    assert (row['ledger_amount'], row['snapshot_amount']) == (60189.30, 60189.27)
+    assert row['diff'] == pytest.approx(0.03)
+    assert row['status'] == 'match'
+    assert _rows(c)['IV-SHORT']['status'] == 'partial', 'the status itself stays partial'
+
+
+def test_reconcile_still_flags_a_gap_of_one_baht(empty_db_conn):
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-OPEN', 'A', 'C-A', '2026-07-01', 101.00)
+    _snapshot_row(c, 'C-A', 'IV-OPEN', 100.00)
+    c.commit()
+
+    row = {r['customer_code']: r for r in models.get_ar_reconciliation()['rows']}['C-A']
+
+    assert row['status'] == 'diff'
+
+
+def test_matcher_never_offers_a_satang_remainder(empty_db_conn):
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-EXACT', 'A', 'C-A', '2026-07-01', 500.00)
+    _ins_sale(c, 'IV-SHORT', 'A', 'C-A', '2026-07-02', 8064.27)
+    r = _ins_receipt(c, 'RE-S', 'A', '2026-07-10')
+    _ins_paid(c, r, 'IV-SHORT', 8064.24)
+    c.commit()
+
+    hits = models.find_payment_candidates(500.03, tolerance=0.03)
+
+    assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV-EXACT']]
+    assert hits[0]['match_count'] == 1
+    assert hits[0]['total_unpaid_bills'] == 1
+    assert models.find_payment_candidates(0.03, tolerance=0) == []
