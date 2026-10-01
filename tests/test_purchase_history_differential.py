@@ -21,7 +21,7 @@ WINDOWS = [(None, None), ('2026-02-01', None), (None, '2026-03-15'),
            ('2026-02-10', '2026-05-01')]
 
 
-def _build_shop(conn, rng, code, pids, marketplace=0.08):
+def _build_shop(conn, rng, code, pids, marketplace=0.08, attach=True):
     name = 'ร้าน%s' % code
     docs = []
     for i in range(rng.randint(3, 10)):
@@ -46,7 +46,7 @@ def _build_shop(conn, rng, code, pids, marketplace=0.08):
     # code that name carries): it attaches to `code` (card C P4 / A1). Half the seeds
     # have one, so the attach path of both SQL encodings of the rule is exercised on
     # randomised, tie-dense data and not only on the hand-built P4 cases (#699 W5).
-    if rng.random() < 0.5:
+    if attach and rng.random() < 0.5:
         add_line(conn, doc_base='SRA%s' % code, date_iso=rng.choice(DATES), pid=rng.choice(pids),
                  qty=rng.choice([1, 2, 6]), net=rng.choice([0, 50, 120, 400]),
                  customer=name, code=rng.choice([None, None, '', '  ']))

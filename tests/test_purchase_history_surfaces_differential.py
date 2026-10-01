@@ -27,7 +27,9 @@ def _shops(conn):
     for seed in SEEDS:
         # marketplace=0: /call's old spend dropped a หน้าร้าน-named line under a coded
         # shop (see the last test). Everything else must be identical.
-        _build_shop(conn, random.Random(seed), 'R%d' % seed, pids, marketplace=0)
+        # attach=False: these compare against SQL frozen BEFORE A1 (card C P4); the attach
+        # path is pinned by test_purchase_history_differential.py and the P4 tests.
+        _build_shop(conn, random.Random(seed), 'R%d' % seed, pids, marketplace=0, attach=False)
         conn.execute("INSERT INTO customers (code, name, address) VALUES (?,?,?)",
                      ('R%d' % seed, 'หจก.ร้านR%d' % seed, 'ขอนแก่น'))
     conn.commit()
