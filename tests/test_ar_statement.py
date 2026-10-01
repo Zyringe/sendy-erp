@@ -128,7 +128,8 @@ def test_freshness_at_the_threshold_with_a_supplied_as_of(tmp_db):
     assert (past['age_days'], past['is_stale']) == (2, True)
     assert (future['age_days'], future['is_stale']) == (-1, True)
     assert same['as_of'] == snap == same['snapshot_date']
-    assert same['stale_after_days'] == ar_statement.AR_SNAPSHOT_STALE_AFTER_DAYS == 1
+    # The threshold the banner prints is the oldest age still read as fresh.
+    assert same['stale_after_days'] == edge['age_days']
 
 
 def test_freshness_with_no_snapshot_is_stale(empty_db):

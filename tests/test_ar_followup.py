@@ -1265,3 +1265,37 @@ def test_resolve_customer_target_refuses_a_name_with_evidence(empty_db_conn):
     _log(c, 'ลูกค้าเดินเข้า', None, log_date='2026-07-01')
     c.commit()
     assert arf.resolve_customer_target('ลูกค้าเดินเข้า', conn=c) is None
+
+
+def test_dunning_page_lists_oldest_first_and_keeps_snapshot_order_on_ties(tmp_db):
+    """The dunning page sorts its chaseable rows oldest first. Equal ages keep
+    the snapshot's own order (a stable sort), as trunk's page did."""
+    import re
+    import sqlite3
+    from datetime import date as _date, timedelta as _td
+    code = 'ZZDUNSORT'
+    conn = sqlite3.connect(tmp_db)
+    try:
+        snap, batch_id = conn.execute(
+            "SELECT snapshot_date_iso, batch_id FROM express_ar_outstanding"
+            " WHERE entity='BSN' ORDER BY snapshot_date_iso DESC LIMIT 1").fetchone()
+        conn.execute("DELETE FROM express_ar_outstanding WHERE TRIM(customer_code) = ?", (code,))
+        snap_d = _date.fromisoformat(snap)
+        # Inserted in this order; the page must not show it in this order.
+        for doc, days in (('ZZDS-NEW', 5), ('ZZDS-TIE-A', 50), ('ZZDS-OLD', 100),
+                          ('ZZDS-TIE-B', 50)):
+            conn.execute("""
+                INSERT INTO express_ar_outstanding
+                    (batch_id, snapshot_date_iso, customer_code, customer_name, doc_no,
+                     doc_date_iso, is_anomalous, bill_amount, paid_amount,
+                     outstanding_amount, entity)
+                VALUES (?, ?, ?, 'ทดสอบ เรียงบิล', ?, ?, 0, 100, 0, 100, 'BSN')
+            """, (batch_id, snap, code, doc, (snap_d - _td(days=days)).isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = _admin_client(tmp_db).get(f'/accounting/ar-followup/customer/{code}')
+    assert r.status_code == 200
+    docs = re.findall(r'>(ZZDS-[A-Z-]+)</a>', r.get_data(as_text=True))
+    assert docs == ['ZZDS-OLD', 'ZZDS-TIE-A', 'ZZDS-TIE-B', 'ZZDS-NEW']
