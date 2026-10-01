@@ -667,8 +667,9 @@
 
 {# ── Tab: จับคู่ยอดโอน ───────────────────────────────────────────────────── #}
 {# Put types the amount that landed in the bank; this answers which customer's #}
-{# outstanding invoices can add up to it. Lived on /payment-status/customers   #}
-{# until PR #169 folded that page into /ar without bringing the matcher.       #}
+{# not-yet-received invoices (receipt status, not debt) add up to it. Lived on  #}
+{# /payment-status/customers until PR #169 folded that page into /ar without   #}
+{# bringing the matcher.                                                        #}
 {% if tab == 'match' %}
 <div class="card mb-3">
   <div class="card-body py-3">
@@ -762,9 +763,9 @@
             {% endif %}
           </td>
           <td class="text-center">
-            <span class="badge bg-danger-subtle text-danger">{{ c.total_unpaid_bills }} ใบ</span>
+            <span class="badge bg-secondary-subtle text-secondary">{{ c.total_unpaid_bills }} ใบ</span>
           </td>
-          <td class="text-end pe-3 text-danger">{{ '{:,.2f}'.format(c.total_outstanding) }}</td>
+          <td class="text-end pe-3">{{ '{:,.2f}'.format(c.total_outstanding) }}</td>
         </tr>
         {% endfor %}
       </tbody>
