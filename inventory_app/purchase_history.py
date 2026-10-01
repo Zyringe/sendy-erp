@@ -38,7 +38,7 @@ DEFINITIONS (each is the CONTEXT.md term, one rule per line):
 
 This module answers history facts only. It never reads the price-evidence
 predicate or the write-off table by name: price and AR keep their own
-populations (`price_lookup`, `cashflow.BSN_AR_PREDICATE`), and consume the rows
+populations (`price_lookup`, `ar_statement.BSN_AR_PREDICATE`), and consume the rows
 returned here.
 
 Plain dicts, like winback.py. No module-level caches (gunicorn -w 2).
