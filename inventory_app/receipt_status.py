@@ -39,6 +39,9 @@ def rows(conn=None, customer=None, customer_code=None, as_of=None):
     written_off unless it was received in full, in which case the write-off
     forgave nothing and it stays paid. `written_off` flags every invoice in
     the table whatever its status.
+
+    `remainder` is billed minus credit notes minus collected. It is negative
+    on an overpaid invoice, whose status stays paid.
     """
     own = conn is None
     if own:
