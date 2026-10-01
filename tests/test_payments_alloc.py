@@ -2,7 +2,7 @@
 reconciliation + FIFO allocation.
 
 Synthetic data only (built on empty_db_conn schema clone). Mirrors the
-established join idiom from models.get_payment_summary:
+established join idiom in payments_alloc's module docstring:
   paid_invoices.iv_no = sales_transactions.doc_base
   received_payments.cancelled = 0
 """
@@ -874,7 +874,7 @@ def test_cancelled_only_receipt_leaves_invoice_unpaid_everywhere(empty_db_conn):
     _ins_paid(c, rc, doc, 1000.0)
     c.commit()
 
-    # 1. get_payment_summary
+    # 1. get_payment_status summary
     summary = dict(models.get_payment_status()[2])
     assert summary['paid_count'] == 0
     assert summary['unpaid_count'] == 1

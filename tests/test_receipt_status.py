@@ -561,3 +561,42 @@ def test_reconcile_reads_snapshot_and_ledger_from_one_snapshot(empty_db_conn, mo
     row = {r['customer_code']: r for r in models.get_ar_reconciliation()['rows']}['C-A']
 
     assert (row['ledger_amount'], row['status']) == (100.00, 'match')
+
+
+
+def _admin_reconcile_page():
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1; s['username'] = 'admin'; s['role'] = 'admin'
+    r = c.get('/ar?tab=reconcile&show_all=1')
+    assert r.status_code == 200
+    return r.data.decode()
+
+
+def test_reconcile_route_reads_table_and_credit_section_from_one_snapshot(empty_db_conn, monkeypatch):
+    """An overpayment imported between the reconcile table read and the credit
+    section read must not show in the credit section of the same page."""
+    import database
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-OPEN', 'A', 'C-A', '2026-07-01', 100.00)
+    _snapshot_row(c, 'C-A', 'IV-OPEN', 100.00)
+    c.commit()
+    real = models.get_ar_reconciliation
+
+    def reconcile_then_import(*args, **kwargs):
+        out = real(*args, **kwargs)
+        w = database.get_connection()
+        _ins_sale(w, 'IV-OVER', 'B', 'C-B', '2026-07-03', 100.00)
+        _ins_paid(w, _ins_receipt(w, 'RE-OVER', 'B', '2026-07-04'), 'IV-OVER', 150.00)
+        w.commit()
+        w.close()
+        return out
+
+    monkeypatch.setattr(models, 'get_ar_reconciliation', reconcile_then_import)
+    assert 'IV-OVER' not in _admin_reconcile_page()
+
+    monkeypatch.setattr(models, 'get_ar_reconciliation', real)
+    assert 'IV-OVER' in _admin_reconcile_page()
