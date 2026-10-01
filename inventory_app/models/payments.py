@@ -404,10 +404,12 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
     return page_rows, len(rows), summary
 
 
-def get_ar_reconciliation():
+def get_ar_reconciliation(conn=None):
     """Per-customer reconcile: chaseable AR (ar_statement.customer_totals) vs
     the Sendy ledger's open remainder (receipt_status partial + unpaid).
     Read-only. Snapshot is the canonical AR; ledger is the live cross-check.
+    Both sides come from one read transaction: its own, or the caller's `conn`
+    from `database.read_snapshot()`.
 
     Returns dict with keys:
       rows: list of {customer_code, customer_name, snapshot_amount, ledger_amount,
@@ -416,9 +418,11 @@ def get_ar_reconciliation():
     """
     # Snapshot side (canonical): the same per-customer totals /ar shows. Every
     # blank-code customer shares the one None key, as the ledger side's would.
-    with read_snapshot() as conn:
-        totals = ar_statement.customer_totals(conn=conn)
-        status_rows = receipt_status.rows(conn=conn)
+    if conn is None:
+        with read_snapshot() as c:
+            return get_ar_reconciliation(conn=c)
+    totals = ar_statement.customer_totals(conn=conn)
+    status_rows = receipt_status.rows(conn=conn)
     snap = {}
     for t in totals:
         e = snap.setdefault(t['customer_code'], {'name': t['customer'], 'amount': 0.0})
