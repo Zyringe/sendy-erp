@@ -103,6 +103,18 @@ def client(tmp_db):
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _no_detached_register_process(monkeypatch):
+    """Successful route tests own no real detached child process."""
+    import shutil
+    import blueprints.bsn as bsn_mod
+
+    monkeypatch.setattr(
+        bsn_mod, '_spawn_register_import',
+        lambda dataset_dir, _run_id: shutil.rmtree(dataset_dir, ignore_errors=True),
+        raising=False)
+
+
 # The route calls commit_express_dbf() with its default since_days=60, so
 # every header row below must be recent (relative to today, not a fixed
 # date) or the recency filter (see test_express_dbf_source.py) would drop
@@ -295,6 +307,61 @@ def test_upload_happy_path_imports_all_six_types(client, tmp_path, monkeypatch):
     ).fetchone()
     assert cna['credited_amount'] == 100.0
     conn.close()
+
+
+def test_upload_defers_register_reads_and_persists_building_status(
+        client, tmp_path, monkeypatch):
+    import html
+    import json
+    import shutil
+
+    import blueprints.bsn as bsn_mod
+    import config
+    import express_dbf_source as eds
+
+    _login(client)
+    base_tables = _fake_tables()
+    moved = {'GLACC', 'GLJNL', 'GLJNLIT', 'OESO', 'OESOIT', 'BKTRN'}
+    opened = []
+
+    def fake_open(_dataset_dir, name):
+        opened.append(name)
+        if name in base_tables:
+            return base_tables[name]
+        if name in moved:
+            return []
+        raise FileNotFoundError(name)
+
+    monkeypatch.setattr(eds, 'open_table', fake_open)
+    spawned = []
+
+    def fake_spawn(dataset_dir, run_id):
+        spawned.append((run_id, set(os.listdir(dataset_dir))))
+        shutil.rmtree(dataset_dir)
+
+    monkeypatch.setattr(bsn_mod, '_spawn_register_import', fake_spawn, raising=False)
+    source_names = sorted(set(base_tables) | moved)
+    zpath = _make_zip(tmp_path, names=source_names)
+    with open(zpath, 'rb') as f:
+        resp = client.post('/import-express-dbf/upload',
+                           data={'file': (f, 'upload.zip')},
+                           content_type='multipart/form-data',
+                           follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert moved.isdisjoint(opened), f'registers were parsed in-request: {opened}'
+    assert len(spawned) == 1
+    assert spawned[0][1] == {f'{name}.DBF' for name in moved | {'ARMAS'}}
+    assert ('ทะเบียน (บัญชีแยกประเภท · ใบสั่งขาย · ทะเบียนเช็ค): '
+            'กำลังนำเข้าเบื้องหลัง — ดูสถานะที่บรรทัด "ผลการนำเข้าล่าสุด" ด้านล่าง'
+            in html.unescape(resp.get_data(as_text=True)))
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    assert notes['registers'] == {'status': 'building'}
 
 
 def test_upload_updates_freshness_badge(client, tmp_path, monkeypatch):

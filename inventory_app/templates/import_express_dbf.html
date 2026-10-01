@@ -112,6 +112,25 @@
             · <em>อัปโหลด zip เดิมซ้ำได้ ปลอดภัย (ฝั่ง BSN นำเข้าซ้ำไม่มีผล)</em>{% endif %}
           </li>
           {% endif %}
+          {% if last_run.results.registers %}
+          {% set registers = last_run.results.registers %}
+          {% set register_error = registers.get('error')
+             or registers.get('general_ledger', {}).get('error')
+             or registers.get('sales_orders', {}).get('error')
+             or registers.get('bank_cheques', {}).get('error') %}
+          <li class="registers-status {{ 'text-warning' if registers.status in ('building', 'stalled')
+                        else ('text-success' if registers.status == 'done'
+                              else ('text-muted' if registers.status == 'superseded'
+                                    else 'text-danger')) }}">
+            ทะเบียน (บัญชีแยกประเภท · ใบสั่งขาย · ทะเบียนเช็ค):
+            {% if registers.status == 'building' %}กำลังนำเข้าเบื้องหลัง… (รีเฟรชหน้านี้เพื่อดูผล)
+            {% elif registers.status == 'stalled' %}การนำเข้าไม่ตอบสนอง (>30 นาที) — อัปโหลด zip เดิมซ้ำได้ ปลอดภัย
+            {% elif registers.status == 'done' %}สำเร็จ {{ (registers.finished_at or '')[:16]|replace('T', ' ') }}
+            {% elif registers.status == 'superseded' %}ข้ามรอบนี้ เพราะมีไฟล์อัปโหลดที่ใหม่กว่า
+            {% else %}ไม่สำเร็จ{% if register_error %} — {{ register_error }}{% endif %}
+            · <em>อัปโหลด zip เดิมซ้ำได้ ปลอดภัย</em>{% endif %}
+          </li>
+          {% endif %}
         </ul>
         {% endif %}
       </div>

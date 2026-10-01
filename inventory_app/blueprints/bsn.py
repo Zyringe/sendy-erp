@@ -936,6 +936,8 @@ _EXPRESS_DBF_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 _EXPRESS_DBF_MAX_MEMBERS = 800
 _EXPRESS_DBF_MAX_MEMBER_BYTES = 300 * 1024 * 1024        # BSN5657 STCRD ≈ 119MB
 _EXPRESS_DBF_MAX_TOTAL_BYTES = 1536 * 1024 * 1024
+_EXPRESS_REGISTER_SOURCE_TABLES = (
+    'GLACC', 'GLJNL', 'GLJNLIT', 'OESO', 'OESOIT', 'BKTRN', 'ARMAS')
 
 # ISINFO identity → which import path a dataset dir feeds. Values verified
 # against the real company files 2026-08-02 (BSN5657's TAXID is literally
@@ -1025,18 +1027,22 @@ def express_dbf_import():
                         'results': json.loads(row['notes'] or '{}')}
         except ValueError:
             last_run = {'at': row['imported_at'], 'results': {}}
-        # A builder that died before reporting leaves 'building' forever —
-        # after 30 minutes show it as stalled (retrying the upload is safe).
-        vat_res = (last_run['results'].get('vat')
-                   if isinstance(last_run['results'], dict) else None)
-        if isinstance(vat_res, dict) and vat_res.get('status') == 'building':
+        # A detached builder that died before reporting leaves 'building'
+        # forever. After 30 minutes show either job as stalled; re-upload is
+        # idempotent for both.
+        if isinstance(last_run['results'], dict):
             from datetime import datetime, timedelta
-            try:
-                started = datetime.strptime(last_run['at'], '%Y-%m-%d %H:%M:%S')
-                if datetime.now() - started > timedelta(minutes=30):
-                    vat_res['status'] = 'stalled'
-            except (TypeError, ValueError):
-                pass
+            for key in ('vat', 'registers'):
+                result = last_run['results'].get(key)
+                if not (isinstance(result, dict)
+                        and result.get('status') == 'building'):
+                    continue
+                try:
+                    started = datetime.strptime(last_run['at'], '%Y-%m-%d %H:%M:%S')
+                    if datetime.now() - started > timedelta(minutes=30):
+                        result['status'] = 'stalled'
+                except (TypeError, ValueError):
+                    pass
     return render_template('import_express_dbf.html', freshness=freshness,
                            vat_freshness=book_registry.vat_book_freshness(),
                            last_run=last_run)
@@ -1394,6 +1400,8 @@ def express_dbf_upload():
         return redirect(redirect_to)
 
     tmpdir = tempfile.mkdtemp(prefix='express_dbf_')
+    register_dataset_dir = None
+    register_import_spawned = False
     try:
         zip_path = os.path.join(tmpdir, 'upload.zip')
         f.save(zip_path)
@@ -1630,7 +1638,9 @@ def express_dbf_upload():
                 # refused leaves the ledger above perfectly fine while that
                 # register silently keeps YESTERDAY's rows. The green summary
                 # flash means "the money landed" and must not be read as "all
-                # six datasets landed" — so say the difference out loud.
+                # datasets landed" — so say the difference out loud. GL, sales
+                # orders and cheques are not in per_type: they run detached
+                # (#676) and report through results['registers'].
                 for _register in express_registers.REGISTERS:
                     _err = (per_type.get(_register.key) or {}).get('error')
                     if _err:
@@ -1709,6 +1719,29 @@ def express_dbf_upload():
                                     f'Express แล้ว ({", ".join(_docs[:5])}'
                                     f'{" …" if len(_docs) > 5 else ""}) — '
                                     f'ดูรายละเอียดที่หน้า "การแจ้งเตือนระบบ"'))
+
+                # The request extraction is deleted in finally, so the worker
+                # gets a narrow durable copy containing only its own inputs.
+                try:
+                    register_dataset_dir = tempfile.mkdtemp(
+                        prefix='express_registers_run_')
+                    for _table in _EXPRESS_REGISTER_SOURCE_TABLES:
+                        _source = os.path.join(classified['bsn'], f'{_table}.DBF')
+                        if os.path.isfile(_source):
+                            shutil.copy2(_source, register_dataset_dir)
+                    results['registers'] = {'status': 'building'}
+                except Exception as _register_copy_exc:
+                    if register_dataset_dir:
+                        shutil.rmtree(register_dataset_dir, ignore_errors=True)
+                    register_dataset_dir = None
+                    results['registers'] = {
+                        'status': 'error',
+                        'error': str(_register_copy_exc)[:400],
+                    }
+                    flashes.append((
+                        'warning',
+                        f'ทะเบียนเบื้องหลังเตรียมไฟล์ไม่สำเร็จ '
+                        f'({_register_copy_exc}) — ยอดขาย/ซื้อ/รับชำระเข้าปกติ'))
             except Exception as exc:
                 results['bsn'] = {'ok': False, 'error': str(exc)[:400]}
                 flashes.append(('danger', f'BSN5657 นำเข้าไม่สำเร็จ: {exc}'))
@@ -1754,6 +1787,27 @@ def express_dbf_upload():
                                 f'บันทึกการแจ้งเตือนเอกสารไม่ตรงไม่สำเร็จ ({_aexc}) '
                                 f'— การนำเข้าไม่กระทบ'))
 
+        if ((results.get('registers') or {}).get('status') == 'building'
+                and register_dataset_dir):
+            try:
+                _spawn_register_import(register_dataset_dir, run_id)
+                register_import_spawned = True
+                flashes.append((
+                    'info',
+                    'ทะเบียน (บัญชีแยกประเภท · ใบสั่งขาย · ทะเบียนเช็ค): '
+                    'กำลังนำเข้าเบื้องหลัง — ดูสถานะที่บรรทัด '
+                    '"ผลการนำเข้าล่าสุด" ด้านล่าง'))
+            except Exception as exc:
+                _update_run_result(
+                    run_id, 'registers',
+                    {'status': 'error', 'error': str(exc)[:400]})
+                flashes.append((
+                    'warning',
+                    f'ทะเบียนเบื้องหลังเริ่มนำเข้าไม่สำเร็จ ({exc}) '
+                    f'— ยอดขาย/ซื้อ/รับชำระเข้าปกติ'))
+                shutil.rmtree(register_dataset_dir, ignore_errors=True)
+                register_dataset_dir = None
+
         if 'vat' in classified:
             try:
                 _spawn_vat_rebuild(classified['vat'], run_id, snapshot_date)
@@ -1770,6 +1824,8 @@ def express_dbf_upload():
     finally:
         _release_import_lock(locals().get('import_lock'))
         shutil.rmtree(tmpdir, ignore_errors=True)
+        if register_dataset_dir and not register_import_spawned:
+            shutil.rmtree(register_dataset_dir, ignore_errors=True)
 
     for cat, msg in flashes:
         flash(msg, cat)
@@ -1788,6 +1844,31 @@ def _update_run_result(run_id, key, value):
         conn.commit()
     finally:
         conn.close()
+
+
+# Process handles are retained only long enough to reap finished children.
+_REGISTER_IMPORT_PROCS = []
+
+
+def _spawn_register_import(dataset_dir, run_id):
+    """Start the copied BSN reference-register import outside the request."""
+    _REGISTER_IMPORT_PROCS[:] = [
+        proc for proc in _REGISTER_IMPORT_PROCS if proc.poll() is None]
+    builder = os.path.abspath(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        '..', 'express_registers_builder.py'))
+    proc = subprocess.Popen(
+        [sys.executable, builder,
+         '--source', dataset_dir,
+         '--db', config.DATABASE_PATH,
+         '--run-id', str(run_id),
+         '--cleanup-dir', dataset_dir],
+        cwd=os.path.dirname(builder),
+        env=os.environ.copy(),
+        stdout=None,
+        stderr=None,
+        start_new_session=True)
+    _REGISTER_IMPORT_PROCS.append(proc)
 
 
 # Not business state — bookkeeping so finished detached builders get reaped

@@ -102,7 +102,7 @@ def test_takes_no_cutoff_argument():
         build_bank_cheque_records([], cutoff=datetime.date(2026, 6, 18))
 
 
-# ── wiring through commit_express_dbf ───────────────────────────────────────
+# ── wiring through commit_express_registers ─────────────────────────────────
 
 def _rows(db_path):
     c = sqlite3.connect(db_path); c.row_factory = sqlite3.Row
@@ -135,21 +135,25 @@ def _patch(monkeypatch, tables):
     monkeypatch.setattr(eds, 'open_table', fake)
 
 
+def _commit(db_path):
+    import bsn_units
+    import import_router
+    return import_router.commit_express_registers('/x', db_path, bsn_units.DEFAULT_BOOK)
+
+
 def test_commit_replaces_rather_than_accumulating(empty_db, monkeypatch):
     """Replace-per-entity is the whole design (no unique key to upsert on), so
     the test that matters is that a second import does not double the register."""
-    import import_router
-
     tables = {'BKTRN': [_bktrn('A', AMOUNT=100.0), _bktrn('B', AMOUNT=200.0)]}
     _patch(monkeypatch, tables)
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
     assert out['bank_cheques']['stored'] == 2
     assert len(_rows(empty_db)) == 2
 
     tables['BKTRN'] = [_bktrn('A', AMOUNT=999.0)]
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    _commit(empty_db)
 
     rows = _rows(empty_db)
     assert len(rows) == 1, 'the register is replaced, not appended to'
@@ -160,16 +164,14 @@ def test_an_empty_register_does_not_erase_a_stored_one(empty_db, monkeypatch):
     """Same guard as the outstanding snapshots, for the same reason: a parse that
     yields nothing and a genuinely empty register look identical here, and
     deleting a good register to write nothing is the one unrecoverable outcome."""
-    import import_router
-
     tables = {'BKTRN': [_bktrn('A', AMOUNT=100.0)]}
     _patch(monkeypatch, tables)
     _seed_company(empty_db)
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    _commit(empty_db)
     assert len(_rows(empty_db)) == 1                      # CONTROL
 
     tables['BKTRN'] = []
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    out = _commit(empty_db)
 
     assert 'error' in out['bank_cheques']
     assert len(_rows(empty_db)) == 1, 'the stored register survived'
@@ -177,23 +179,20 @@ def test_an_empty_register_does_not_erase_a_stored_one(empty_db, monkeypatch):
 
 def test_an_empty_register_on_a_first_run_is_fine(empty_db, monkeypatch):
     """CONTROL for the guard above: with nothing to lose it must not complain."""
-    import import_router
-
     _patch(monkeypatch, {'BKTRN': []})
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
 
     assert out['bank_cheques']['stored'] == 0 and 'error' not in out['bank_cheques']
 
 
 def test_a_zip_without_bktrn_still_imports(empty_db, monkeypatch):
-    import import_router
-
     _patch(monkeypatch, {})
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
 
     assert 'skipped' in out['bank_cheques'] and 'error' not in out['bank_cheques']
-    assert 'error' not in out['ar_snapshot'], 'the rest of the import is unaffected'
+    assert 'error' not in out['general_ledger'], 'the other registers are unaffected'
+    assert 'error' not in out['sales_orders']

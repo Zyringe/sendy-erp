@@ -518,7 +518,8 @@ def test_a_dbf_upload_after_193_leaves_translated_order_lines_as_they_are(pre193
               for i, c in enumerate(codes, start=1)]
     group = {'OESO': oeso, 'OESOIT': oesoit}
     monkeypatch.setattr(eds, 'open_table', lambda _d, name: list(group.get(name.upper(), [])))
-    import_router.commit_express_dbf('/x', since_days=1, snapshot_date='2026-09-22')
+    import_router.commit_express_registers('/x', str(pre193_db),
+                                           bsn_units.DEFAULT_BOOK)
 
     conn = _conn(pre193_db)
     try:
