@@ -333,37 +333,37 @@ def test_invoice_list_filters_by_each_status(four_statuses):
     want = {'paid': ['IV-PAID'], 'partial': ['IV-PART'],
             'unpaid': ['IV-CN', 'IV-UNPAID'], 'written_off': ['IV-WO']}
     for status, docs in want.items():
-        rows, total = models.get_payment_status(status=status)
+        rows, total, _summary = models.get_payment_status(status=status)
         assert sorted(r['doc_base'] for r in rows) == docs, status
         assert total == len(docs)
-    rows, total = models.get_payment_status()
+    rows, total, _summary = models.get_payment_status()
     assert total == 5
     assert [r['doc_base'] for r in rows] == ['IV-WO', 'IV-CN', 'IV-UNPAID', 'IV-PART', 'IV-PAID']
 
 
 def test_invoice_list_keeps_search_date_range_and_paging(four_statuses):
     import models
-    rows, total = models.get_payment_status(search='part')
+    rows, total, _summary = models.get_payment_status(search='part')
     assert [r['doc_base'] for r in rows] == ['IV-PART'] and total == 1
-    rows, total = models.get_payment_status(search='B')
+    rows, total, _summary = models.get_payment_status(search='B')
     assert total == 3, 'search matches the customer name too'
-    rows, total = models.get_payment_status(date_from='2026-07-02', date_to='2026-07-04')
+    rows, total, _summary = models.get_payment_status(date_from='2026-07-02', date_to='2026-07-04')
     assert sorted(r['doc_base'] for r in rows) == ['IV-CN', 'IV-PART', 'IV-UNPAID']
-    rows, total = models.get_payment_status(page=2, per_page=2)
+    rows, total, _summary = models.get_payment_status(page=2, per_page=2)
     assert total == 5 and [r['doc_base'] for r in rows] == ['IV-UNPAID', 'IV-PART']
 
 
 def test_invoice_list_shows_the_newest_receipt(four_statuses):
     import models
-    rows, _ = models.get_payment_status(status='paid')
+    rows, _, _summary = models.get_payment_status(status='paid')
     assert rows[0]['re_no'] == 'RE-1' and rows[0]['paid_date'] == '2026-07-10'
-    rows, _ = models.get_payment_status(status='unpaid')
+    rows, _, _summary = models.get_payment_status(status='unpaid')
     assert all(r['re_no'] is None for r in rows)
 
 
 def test_summary_counts_every_receivable_once(four_statuses):
     import models
-    s = models.get_payment_summary()
+    s = models.get_payment_status()[2]
     assert (s['total_bills'], s['paid_count'], s['partial_count'],
             s['unpaid_count'], s['written_off_count']) == (5, 1, 1, 2, 1)
     assert s['paid_count'] + s['partial_count'] + s['unpaid_count'] \

@@ -333,12 +333,11 @@ def ar_dashboard():
         date_from = request.args.get('date_from', '').strip()
         date_to = request.args.get('date_to', '').strip()
         page, per_page = paging(request.args)
-        rows, total = models.get_payment_status(
+        rows, total, summ = models.get_payment_status(
             status=inv_status, search=inv_search,
             date_from=date_from, date_to=date_to,
             page=page, per_page=per_page,
         )
-        summ = models.get_payment_summary()
         total_pages = max(1, (total + per_page - 1) // per_page)
         ctx.update(
             inv_rows=rows, inv_total=total,

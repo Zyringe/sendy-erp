@@ -3,11 +3,10 @@
 docstring for the overall file-split rationale. No behavior changes.
 """
 
-import json
 import math
 
 import ar_statement
-from database import get_connection
+from database import get_connection, read_snapshot
 import document_kind
 import receipt_status
 
@@ -367,22 +366,22 @@ _ACTIVE_PAYMENT_DISPLAY_CTE = """
 
 
 def get_payment_status(status='all', search='', date_from='', date_to='', page=1, per_page=50):
-    """Receivable invoices with their receipt status, newest first, one page.
+    """The invoices tab: one page of receivable invoices, newest first, plus the
+    summary cards over every receivable invoice.
 
     Rows are `receipt_status.rows()` plus `paid_date` / `re_no` of the newest
-    active receipt. `status` is one of receipt_status.STATUSES (anything else
-    lists all). `search` matches doc_base or customer, case-insensitively;
-    `date_from` / `date_to` bound the invoice date and never mean as-of.
-    Returns (page_rows, total_matching).
+    active receipt, both read in one snapshot so a row never shows a receipt
+    its status did not count. `status` is one of receipt_status.STATUSES
+    (anything else lists all). `search` matches doc_base or customer,
+    case-insensitively; `date_from` / `date_to` bound the invoice date and
+    never mean as-of. Returns (page_rows, total_matching, summary).
     """
-    conn = get_connection()
-    try:
+    with read_snapshot() as conn:
         rows = receipt_status.rows(conn=conn)
         display = {r['doc_no']: r for r in conn.execute(
             f"WITH {_ACTIVE_PAYMENT_DISPLAY_CTE} "
             "SELECT doc_no, paid_date, re_no FROM active_payment_display")}
-    finally:
-        conn.close()
+    summary = receipt_status.summarize(rows)
 
     if status in receipt_status.STATUSES:
         rows = [r for r in rows if r['status'] == status]
@@ -402,27 +401,7 @@ def get_payment_status(status='all', search='', date_from='', date_to='', page=1
         d = display.get(r['doc_base'])
         page_rows.append(dict(r, paid_date=d['paid_date'] if d else None,
                               re_no=d['re_no'] if d else None))
-    return page_rows, len(rows)
-
-
-def get_payment_summary():
-    """Count of receivable invoices per receipt status, with the amounts each
-    card shows: billed for paid and written_off, the remainder still open for
-    partial and unpaid. The four counts add up to total_bills.
-    """
-    s = {'total_bills': 0, 'paid_billed': 0.0, 'partial_remainder': 0.0,
-         'unpaid_remainder': 0.0, 'written_off_billed': 0.0}
-    s.update({f'{st}_count': 0 for st in receipt_status.STATUSES})
-    for r in receipt_status.rows():
-        s['total_bills'] += 1
-        s[f"{r['status']}_count"] += 1
-        if r['status'] in (receipt_status.PAID, receipt_status.WRITTEN_OFF):
-            s[f"{r['status']}_billed"] += r['billed']
-        else:
-            s[f"{r['status']}_remainder"] += r['remainder']
-    for k in ('paid_billed', 'partial_remainder', 'unpaid_remainder', 'written_off_billed'):
-        s[k] = round(s[k], 2)
-    return s
+    return page_rows, len(rows), summary
 
 
 def get_ar_reconciliation():
@@ -437,8 +416,11 @@ def get_ar_reconciliation():
     """
     # Snapshot side (canonical): the same per-customer totals /ar shows. Every
     # blank-code customer shares the one None key, as the ledger side's would.
+    with read_snapshot() as conn:
+        totals = ar_statement.customer_totals(conn=conn)
+        status_rows = receipt_status.rows(conn=conn)
     snap = {}
-    for t in ar_statement.customer_totals():
+    for t in totals:
         e = snap.setdefault(t['customer_code'], {'name': t['customer'], 'amount': 0.0})
         e['amount'] = round(e['amount'] + t['outstanding'], 2)
 
@@ -446,7 +428,7 @@ def get_ar_reconciliation():
     # remainder after credit notes and receipts of every partial and unpaid
     # invoice (decision bA). A written-off invoice is not owed and stays out.
     led = {}
-    for r in receipt_status.rows():
+    for r in status_rows:
         if r['status'] in (receipt_status.PARTIAL, receipt_status.UNPAID) and r['customer_code']:
             e = led.setdefault(r['customer_code'], {'name': r['customer'], 'amount': 0.0})
             e['name'] = max(e['name'] or '', r['customer'] or '')
@@ -610,16 +592,12 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
     tol = max(0, round(tolerance * 100))
     lo, hi = target - tol, target + tol
 
-    conn = get_connection()
-    try:
+    with read_snapshot() as conn:
         bills = [r for r in receipt_status.rows(conn=conn)
                  if r['status'] in (receipt_status.PARTIAL, receipt_status.UNPAID)]
         vat_types = dict(conn.execute(
             "SELECT doc_base, MAX(vat_type) FROM sales_transactions "
-            "WHERE doc_base IN (SELECT value FROM json_each(?)) GROUP BY doc_base",
-            (json.dumps([r['doc_base'] for r in bills]),)).fetchall())
-    finally:
-        conn.close()
+            "WHERE doc_base IS NOT NULL GROUP BY doc_base").fetchall())
     bills.sort(key=lambda r: (r['customer'] or '', r['invoice_date'], r['doc_base']))
 
     customers = {}

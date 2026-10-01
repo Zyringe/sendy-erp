@@ -34,7 +34,7 @@ def test_get_ar_reconciliation_shape_and_totals(tmp_db):
 def test_reconciliation_ledger_total_matches_payment_summary(tmp_db):
     import models
     rec = models.get_ar_reconciliation()
-    summ = models.get_payment_summary()
+    summ = models.get_payment_status()[2]
     open_remainder = summ['unpaid_remainder'] + summ['partial_remainder']
     assert open_remainder > 0, 'clone has no open invoice; the comparison proves nothing'
     assert rec['ledger_total'] == pytest.approx(open_remainder, abs=0.01)
@@ -116,7 +116,7 @@ def test_invoices_tab_unpaid_count(tmp_db):
     c = _admin(tmp_db)
     r = c.get('/ar?tab=invoices')
     assert r.status_code == 200
-    assert str(models.get_payment_summary()['unpaid_count']) in r.data.decode()
+    assert str(models.get_payment_status()[2]['unpaid_count']) in r.data.decode()
 
 
 # ── Task 5 ────────────────────────────────────────────────────────────────────
@@ -273,16 +273,16 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     is what used to report MORE paid bills than total bills."""
     import models
     import sqlite3
-    s = dict(models.get_payment_summary())
+    s = dict(models.get_payment_status()[2])
     assert s['paid_count'] + s['partial_count'] + s['unpaid_count'] \
         + s['written_off_count'] == s['total_bills']
     assert s['paid_count'] <= s['total_bills']
-    rows, total = models.get_payment_status(per_page=10 ** 6)
+    rows, total, _summary = models.get_payment_status(per_page=10 ** 6)
     assert total == len(rows) == s['total_bills']
 
     # Conservation of baht: the split must account for every billed satang and
     # invent none. This is the assertion that actually pins "no amount
-    # multiplication" — derived independently of get_payment_summary().
+    # multiplication" — derived independently of the summary.
     conn = sqlite3.connect(tmp_db)
     billed = conn.execute('''
         SELECT ROUND(SUM(ROUND(net, 2)), 2) FROM (
@@ -321,8 +321,7 @@ def test_invoices_tab_payment_rate_never_exceeds_100(tmp_db):
 def test_invoices_tab_pagination_count_matches_summary(tmp_db):
     """The paginated total and the summary must count the same population."""
     import models
-    _rows, total = models.get_payment_status()
-    s = dict(models.get_payment_summary())
+    _rows, total, s = models.get_payment_status()
     assert total == s['total_bills']
 
 

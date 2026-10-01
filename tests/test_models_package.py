@@ -100,7 +100,6 @@ MOVED_NAMES = {
     ],
     'payments': [
         'parse_payment_csv', 'import_payments', 'get_payment_status',
-        'get_payment_summary',
         'get_ar_reconciliation', 'find_payment_candidates',
     ],
     'pricing_ap': [

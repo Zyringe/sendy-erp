@@ -9,7 +9,7 @@ Receipt status is not AR. It answers "has this invoice been received", never
 "what does this customer owe": that question is chaseable, owned by the Express
 snapshot (ADR 0012). Commission's "settled" means commission paid, not this.
 """
-from database import get_connection
+from database import read_snapshot
 import payments_alloc
 
 PAID = 'paid'
@@ -40,21 +40,20 @@ def rows(conn=None, customer=None, customer_code=None, as_of=None):
     forgave nothing and it stays paid. `written_off` flags every invoice in
     the table whatever its status.
 
+    With no `conn` it reads inside its own read transaction. A caller that
+    reads more alongside passes a connection from `database.read_snapshot()`.
+
     `remainder` is billed minus credit notes minus collected. It is negative
     on an overpaid invoice, whose status stays paid.
     """
-    own = conn is None
-    if own:
-        conn = get_connection()
-    try:
-        written_off = {r[0] for r in conn.execute(
-            "SELECT doc_no FROM ar_writeoffs WHERE ? IS NULL OR writeoff_date <= ?",
-            (as_of, as_of))}
-        settled = payments_alloc.invoice_settlement(
-            customer=customer, customer_code=customer_code, as_of=as_of, conn=conn)
-    finally:
-        if own:
-            conn.close()
+    if conn is None:
+        with read_snapshot() as c:
+            return rows(conn=c, customer=customer, customer_code=customer_code, as_of=as_of)
+    written_off = {r[0] for r in conn.execute(
+        "SELECT doc_no FROM ar_writeoffs WHERE ? IS NULL OR writeoff_date <= ?",
+        (as_of, as_of))}
+    settled = payments_alloc.invoice_settlement(
+        customer=customer, customer_code=customer_code, as_of=as_of, conn=conn)
 
     out = []
     for s in settled:
@@ -77,3 +76,22 @@ def rows(conn=None, customer=None, customer_code=None, as_of=None):
             'last_payment_date': s['last_payment_date'],
         })
     return out
+
+
+def summarize(status_rows):
+    """Counts per status for the invoices tab, with each card's amount: billed
+    for paid and written_off, the remainder still open for partial and unpaid.
+    The four counts add up to total_bills."""
+    s = {'total_bills': 0, 'paid_billed': 0.0, 'partial_remainder': 0.0,
+         'unpaid_remainder': 0.0, 'written_off_billed': 0.0}
+    s.update({f'{st}_count': 0 for st in STATUSES})
+    for r in status_rows:
+        s['total_bills'] += 1
+        s[f"{r['status']}_count"] += 1
+        if r['status'] in (PAID, WRITTEN_OFF):
+            s[f"{r['status']}_billed"] += r['billed']
+        else:
+            s[f"{r['status']}_remainder"] += r['remainder']
+    for k in ('paid_billed', 'partial_remainder', 'unpaid_remainder', 'written_off_billed'):
+        s[k] = round(s[k], 2)
+    return s

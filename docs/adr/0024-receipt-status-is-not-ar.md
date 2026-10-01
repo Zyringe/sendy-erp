@@ -38,8 +38,9 @@ credit notes unpaid, and the reconcile ledger counted two written-off invoices a
   for; chaseable stays the Express snapshot (ADR 0012).
 - Express closes some invoices short (a few satang to a few hundred baht). They read
   จ่ายบางส่วน here and their remainder appears in the reconcile ledger column and the matcher.
-- The invoices tab now computes the whole ledger in Python per request (one engine pass for the
-  list, one for the summary cards).
+- Each reader takes one read transaction (`database.read_snapshot()`) for every query it
+  makes, so an import that commits mid-request cannot split a page. The invoices tab runs the
+  engine once and builds both the list and the cards from those rows.
 - `tests/test_receipt_status.py` compares the module with the frozen trunk logic in
   `tests/_fixtures/payment_status_9e466e2.py` on random tie-dense ledgers: they agree on every
   invoice without a partial receipt, credit note or write-off, and every disagreement matches
