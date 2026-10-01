@@ -24,8 +24,9 @@ credit notes unpaid, and the reconcile ledger counted two written-off invoices a
 3. **Remainder, not billed (decision bA).** The reconcile ledger column and
    `find_payment_candidates` use each partial or unpaid invoice's remainder after credit notes
    and receipts. The matcher never offers a ตัดหนี้แล้ว invoice.
-4. **Readers.** `get_payment_status`, `get_payment_summary`, the ledger side of
-   `get_ar_reconciliation` and `find_payment_candidates` read the module. The newest receipt's
+4. **Readers.** `get_payment_status` (the invoices list plus `receipt_status.summarize` for its
+   cards), the ledger side of `get_ar_reconciliation` and `find_payment_candidates` read the
+   module. The newest receipt's
    number and date still come from `_ACTIVE_PAYMENT_DISPLAY_CTE`, display only.
    `_ACTIVE_PAID_DOCS_CTE` is deleted.
 5. **Satang short-closes are not gaps (decision A, Put 2026-10-02).** A remainder under
