@@ -54,13 +54,8 @@ MUST_USE_HELPER = {
     'models/sales.py::get_sales_summary': 2,          # /sales cards: qty + net
     'models/sales.py::get_trade_dashboard': 6,        # card (2) + weekly (1) + top products (2) + top customers (1)
     'models/sales.py::get_product_trade_summary': 8,  # card (2) + customers (2) + monthly (2) + docs (1) + doc units (1)
-    # card C P3 removed two entries that stood here: call_card._assemble_products (its ordering
-    # and ซื้อรวม qty now come from purchase_history.products, netted by returned_lines_filter)
-    # and customers._customer_sales_aggregates (deleted; its จำนวนชิ้น and top_products live
-    # in purchase_history._totals / history below).
-    'purchase_history.py::history': 2,                # card C: top_products (qty, net)
-    'purchase_history.py::_totals': 1,                # card C: จำนวนชิ้น (history() and totals() share it)
-    'purchase_history.py::products': 2,               # card C P3: the call card's ซื้อรวม qty + the money it ranks by (counted=True)
+    # The customer surfaces' own figures moved into purchase_history (card C); that module
+    # and the rule that surfaces use it are tests/test_purchase_history_must_use.py.
 }
 
 # file::function -> (raw aggregates it holds, why a return is not subtracted there).
@@ -108,16 +103,6 @@ ALLOWED = {
     'payments_alloc.py::cash_in_rows': (1,
         'cash received per invoice for /cashflow, over non-SR non-HS bills. Cash, not ยอดขาย.'),
     # ── one document, one product's price, one order, one platform ──
-    'purchase_history.py::products': (4,
-        'card C, per-product rows: qty and net are netted by returned_lines_filter '
-        'in a CASE (the #646 shape, mirror of _customer_product_cards), plus '
-        'returned_qty and returned_net, which are the credit notes THEMSELVES. '
-        'Not un-netted sales. Split out of history() in card C P3.'),
-    'purchase_history.py::history': (1,
-        'card C: returned_net_total, the credit notes THEMSELVES summed for the '
-        'page\'s footnote. Not un-netted sales.'),
-    'purchase_history.py::customer_documents': (1,
-        'one row per DOCUMENT, a credit note already negated in Python. A document list.'),
     'commission.py::get_invoices_for_salesperson': (1,
         'the commission tab\'s per-INVOICE rows (IV/HS only); payouts are '
         'receipt-driven and never read this sum.'),
@@ -163,7 +148,8 @@ def _per_function(src, pattern):
 
 
 def _app_counts(pattern):
-    return _census.app_counts(pattern, 'sales_transactions', include_scripts=True)
+    return _census.app_counts(pattern, 'sales_transactions', include_scripts=True,
+                              skip=('purchase_history.py',))
 
 
 def _function_queries(site):

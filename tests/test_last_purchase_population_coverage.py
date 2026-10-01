@@ -75,10 +75,8 @@ _STALE_AGG = re.compile(
 _HELPER = re.compile(
     r'\{\s*(?:pl|price_lookup)\s*\.\s*'
     r'(?:price_evidence_filter|purchase_population_filter)\s*\(')
-# The PURCHASE half specifically — what a ซื้อ-labelled surface must read (#554).
-_PURCHASE_HELPER = re.compile(
-    r'\{\s*(?:pl|price_lookup)\s*\.\s*purchase_population_filter\s*\(')
-_CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b', re.IGNORECASE)
+# `customer_key_sql` is a key too (#699 review W5).
+_CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b|customer_key_sql', re.IGNORECASE)
 # A SQL comment is prose. The comment on the very line this sweep exists to
 # protect says "a raw MAX(date_iso) showed a rep a RETURN", and counting that
 # is the same mistake as a `grep -c` that counts its own explanation.
@@ -135,35 +133,7 @@ ALLOWED = {
         'pseudo-customers. Data freshness for Shopee/Lazada/TikTok, not a B2B '
         "customer's buying history — and BOTH #554 populations exclude "
         'หน้าร้าน outright, so filtering it would answer NULL forever.'),
-    # ── a document, or a search hint ──
-    'purchase_history.py::customer_documents': (1, 0,
-        'one row per DOCUMENT, and the date shown against it — for a credit '
-        'note, the credit note\'s own date. A document list must show returns; '
-        'the customer page renders them with a negative total. Moved from '
-        'models/customers.py in card C P2.'),
-    'purchase_history.py::_totals': (4, 1,
-        'card C: the customer-level totals shared by history() and totals(). The '
-        'raw four are the NOT-ซื้อ questions (doc_count, first/last activity, the '
-        'purchase-count query\'s own COUNT and dates); the ONE purchase-population '
-        'query yields purchase_count / first_purchase / last_purchase, so the newest '
-        'document counted IS the last purchase.'),
-    'purchase_history.py::history': (2, 0,
-        'card C: the customer-history reader. The raw two are the monthly and '
-        'top-products document counts (per period / per product, not ซื้อ). The '
-        'customer-level totals moved to _totals, the per-product rows to products() '
-        '(card C P3), so it holds no population site of its own now.'),
-    'purchase_history.py::products': (0, 4,
-        'card C: the per-product rows of the customer page and the call card. '
-        'times_bought / last_purchase are CASEs over the purchase population (4 '
-        'population sites: those two plus the qty and net CASEs, which since the '
-        'one-statement rewrite of #699 review W2 say WHEN purchase ... ELSE 0), so a credit note or a freebie is never a purchase and a '
-        'product only ever returned is dropped (HAVING times_bought > 0). Pinned by '
-        'test_purchase_history.py and tests/test_card_c_call_card_history.py. '
-        'Moved out of history() in card C P3.'),
-    'purchase_history.py::histories': (1, 1,
-        "every customer's raw last_activity (feeds no ซื้อ label) beside the "
-        'one purchase-population last_purchase that /call, the sales trip and '
-        '/customers render.'),
+    # ── a search hint, an offline audit ──
     'scripts/audit_product_naming.py::evidence_for_product': (1, 0,
         "the naming audit's last-sale date for ONE PRODUCT (its customer clause "
         'only drops marketplace rows). Per product, and an offline audit '
@@ -173,13 +143,11 @@ ALLOWED = {
         'worklist figure — its own docstring said so before this sweep existed.'),
 }
 
-# The four surfaces #493 and #513 put on the purchase population. A positive
-# control whose failure NAMES the surface that regressed, where the census
-# above would only report a changed tuple.
-MUST_USE_HELPER = (
-    'purchase_history.py::products',    # card C P3: was history() (the per-product rows moved)
-    'purchase_history.py::histories',
-)
+# The ซื้อ surfaces #493 and #513 put on the purchase population now read it through
+# purchase_history, which tests/test_purchase_history_must_use.py owns (card C P5):
+# the surfaces must call the module and hold no aggregate, and the module must keep
+# using the population. This census keeps every other reader of it.
+OWNER = 'purchase_history.py'
 
 
 # ── reading queries out of Python (same reader as test_purchase_total_coverage) ──
@@ -218,22 +186,14 @@ def _queries(src):
     return out
 
 
-# A module whose whole job is one customer's history. Its key arrives through a
-# `{where}` / `{key}` hole in functions named `history`/`histories`, so neither
-# signal below fires and the sweep would report {} for the file (P1 review W1:
-# a clean result because the check never ran). Every sales_transactions query
-# in these files counts as per-customer.
-CUSTOMER_MODULES = ('purchase_history.py',)
-
-
-def _per_function(src, pattern, whole_file=False):
+def _per_function(src, pattern):
     """{function: hits of `pattern` in its per-customer sales_transactions
     queries}, SQL comments stripped first."""
     counts = {}
     for func, sql in _queries(src):
         if 'sales_transactions' not in sql:
             continue
-        if not (whole_file or _CUSTOMER_KEY.search(sql) or 'customer' in func.lower()):
+        if not (_CUSTOMER_KEY.search(sql) or 'customer' in func.lower()):
             continue
         n = len(pattern.findall(_code_only(sql)))
         if n:
@@ -255,10 +215,11 @@ def _py_files():
 def _app_counts(pattern):
     out = {}
     for rel, path in _py_files():
+        if rel == OWNER:
+            continue
         with open(path, encoding='utf-8') as f:
             src = f.read()
-        for func, n in _per_function(src, pattern,
-                                     whole_file=rel in CUSTOMER_MODULES).items():
+        for func, n in _per_function(src, pattern).items():
             out[f'{rel}::{func}'] = n
     return out
 
@@ -292,21 +253,6 @@ def test_every_entry_carries_a_reason(site):
     assert len(ALLOWED[site][2]) > 40, f'{site}: say WHAT question it answers'
 
 
-@pytest.mark.parametrize('site', MUST_USE_HELPER)
-def test_the_surfaces_that_say_bought_read_the_purchase_population(site):
-    """Positive control. The census above goes red on any change; this one
-    names the surface, so the failure says which screen went back to raw
-    rows rather than just that a tuple moved.
-
-    Since #554 it pins WHICH of the two predicates, not just that one is
-    read: a ซื้อ surface on price_evidence_filter satisfies the census above
-    (still "the population") and is still wrong — it would drop a bill the
-    shop really did buy and move ซื้อล่าสุด backwards, which is exactly what
-    Put ruled against on 2026-09-17."""
-    assert _app_counts(_PURCHASE_HELPER).get(site, 0) >= 1, \
-        f'{site} stopped reading price_lookup.purchase_population_filter'
-
-
 def test_the_population_is_not_found_everywhere():
     """CONTROL for the one above: a matcher that fired on every query would
     satisfy it just as well."""
@@ -337,6 +283,8 @@ AGGREGATE_SHAPES = {
                            'WHERE s.customer = c.name) FROM customers c',
     'grouped by code': 'SELECT customer_code, MAX(date_iso) FROM sales_transactions '
                        'GROUP BY customer_code',
+    'key expression only': 'SELECT MAX(s.date_iso) FROM sales_transactions s '
+                           "WHERE {purchase_history.customer_key_sql('s')} = ?",
     'even when filtered': 'SELECT MAX(date_iso) FROM sales_transactions '
                           "WHERE customer = ? AND "
                           "{pl.purchase_population_filter('')}",
