@@ -29,8 +29,6 @@ def _rows(conn, **kw):
     return {r['doc_base']: r for r in receipt_status.rows(conn=conn, **kw)}
 
 
-# ── the four statuses ─────────────────────────────────────────────────────────
-
 def test_each_of_the_four_statuses(empty_db_conn):
     c = empty_db_conn
     for doc in ('IV-PAID', 'IV-PART', 'IV-UNPAID', 'IV-WO'):
@@ -55,10 +53,7 @@ def test_each_of_the_four_statuses(empty_db_conn):
                                     'written_off', 'last_payment_date'}
 
 
-# ── write-off precedence ──────────────────────────────────────────────────────
-
 def test_fully_received_write_off_stays_paid_but_is_flagged(empty_db_conn):
-    """RE6900376 received IV6900401/402/403 in full; the write-off forgave nothing."""
     c = empty_db_conn
     _ins_sale(c, 'IV-WO-PAID', 'A', 'C-A', '2026-07-01', 1000.0)
     r = _ins_receipt(c, 'RE-1', 'A', '2026-07-30')
@@ -73,7 +68,6 @@ def test_fully_received_write_off_stays_paid_but_is_flagged(empty_db_conn):
 
 
 def test_part_paid_write_off_reads_written_off(empty_db_conn):
-    """IV6800934: part received, the rest forgiven — ตัดหนี้แล้ว wins over partial."""
     c = empty_db_conn
     _ins_sale(c, 'IV-WO-PART', 'A', 'C-A', '2026-07-01', 1000.0)
     r = _ins_receipt(c, 'RE-1', 'A', '2026-07-30')
@@ -108,8 +102,6 @@ def test_an_invoice_outside_ar_writeoffs_is_not_flagged(empty_db_conn):
     assert _rows(c)['IV-1']['written_off'] is False
 
 
-# ── receipt shapes ────────────────────────────────────────────────────────────
-
 def test_cancelled_receipt_is_not_a_payment(empty_db_conn):
     c = empty_db_conn
     _ins_sale(c, 'IV-C', 'A', 'C-A', '2026-07-01', 1000.0)
@@ -125,7 +117,6 @@ def test_cancelled_receipt_is_not_a_payment(empty_db_conn):
 
 
 def test_null_amount_legacy_link_reads_paid(empty_db_conn):
-    """Pre-058 receipts carry no amount: the link alone means settled."""
     c = empty_db_conn
     _ins_sale(c, 'IV-L', 'A', 'C-A', '2026-07-01', 1000.0)
     r = _ins_receipt(c, 'RE-L', 'A', '2026-07-05')
@@ -139,7 +130,6 @@ def test_null_amount_legacy_link_reads_paid(empty_db_conn):
 
 
 def test_credit_note_offsets_the_remainder(empty_db_conn):
-    """Decision bA: an unpaid invoice is owed after its credit notes."""
     c = empty_db_conn
     _ins_sale(c, 'IV-CN', 'A', 'C-A', '2026-07-01', 1000.0)
     _credit(c, 'SR-1', 'IV-CN', 300.0)
@@ -153,7 +143,6 @@ def test_credit_note_offsets_the_remainder(empty_db_conn):
 
 
 def test_credit_note_that_clears_the_bill_reads_paid(empty_db_conn):
-    """IV6901101 / 1074 / 1048: fully credited with no receipt."""
     c = empty_db_conn
     _ins_sale(c, 'IV-FC', 'A', 'C-A', '2026-07-01', 80.0)
     _credit(c, 'SR-2', 'IV-FC', 80.0)
@@ -166,7 +155,6 @@ def test_credit_note_that_clears_the_bill_reads_paid(empty_db_conn):
 
 
 def test_sr_fallback_credit_note_offsets_too(empty_db_conn):
-    """An SR not yet in credit_note_amounts still credits through its sales line."""
     c = empty_db_conn
     _ins_sale(c, 'IV-SRF', 'A', 'C-A', '2026-07-01', 1000.0)
     _ins_sr(c, 'SR-F', 'IV-SRF', 'A', 'C-A', '2026-07-03', 200.0)
@@ -177,8 +165,6 @@ def test_sr_fallback_credit_note_offsets_too(empty_db_conn):
     assert 'SR-F' not in rows, 'a credit note is never itself a receivable'
     assert rows['IV-SRF']['remainder'] == pytest.approx(800.0)
 
-
-# ── receivable population ─────────────────────────────────────────────────────
 
 def test_zero_total_invoice_is_not_receivable(empty_db_conn):
     c = empty_db_conn
@@ -205,7 +191,6 @@ def test_hs_cash_sale_is_never_receivable(empty_db_conn):
 
 
 def test_two_codes_sharing_one_bill_name(empty_db_conn):
-    """customer_code keys by exact code (#499); customer keys by the bill name."""
     c = empty_db_conn
     _ins_sale(c, 'IV-A1', 'ร้านเดียวกัน', 'C-1', '2026-07-01', 100.0)
     _ins_sale(c, 'IV-A2', 'ร้านเดียวกัน', 'C-2', '2026-07-02', 200.0)
@@ -228,14 +213,9 @@ def test_as_of_ignores_later_receipts(empty_db_conn):
     assert _rows(c)['IV-T']['status'] == 'paid'
 
 
-# ── randomized differential test against frozen trunk ─────────────────────────
-
 def _seed_random(c, rng, n_invoices):
-    """Tie-dense ledger: few amounts, few dates, shared names, every link shape.
-
-    Returns the facts each invoice was built from, so the rules below are
-    checked against what was inserted, not against either implementation.
-    """
+    """Returns the facts each invoice was built from, so the rules below are
+    checked against what was inserted, not against either implementation."""
     amounts = [100.0, 200.0, 1070.0, 333.33]
     names = [('ร้าน ก', 'C-1'), ('ร้าน ก', 'C-2'), ('ร้าน ข', 'C-3')]
     facts = {}
@@ -270,7 +250,6 @@ def _seed_random(c, rng, n_invoices):
 
 
 def _rule(f, trunk, head):
-    """The named rule that explains a disagreement, or None."""
     real = [a for a in f['active'] if a is not None]
     net_owed = round(f['billed'] - f['cn'], 2)
     if real:
@@ -318,8 +297,6 @@ def test_differential_against_frozen_trunk(empty_db_conn, seed):
     # The generator must actually produce disagreements, or this proves nothing.
     assert named > 0
 
-
-# ── the /ar readers built on it ───────────────────────────────────────────────
 
 @pytest.fixture
 def four_statuses(empty_db_conn):
@@ -388,7 +365,6 @@ def test_reconcile_ledger_is_the_open_remainder_per_code(four_statuses):
     import models
     rec = models.get_ar_reconciliation()
     ledger = {r['customer_code']: r['ledger_amount'] for r in rec['rows']}
-    # C-A: partial 600 left. C-B: 500 + (1000 - 300); the write-off is not owed.
     assert ledger == {'C-A': pytest.approx(600.0), 'C-B': pytest.approx(1200.0)}
     assert rec['ledger_total'] == pytest.approx(1800.0)
 

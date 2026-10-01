@@ -349,8 +349,7 @@ def import_payment_records(records, apply_removals=False):
 # DISPLAY ONLY — the latest active receipt per invoice, one row per doc_no so
 # it cannot multiply the bill either. Taking the whole row of the newest
 # receipt (rather than MAX(date), MAX(re_no) independently) keeps the shown
-# date and receipt number from belonging to two different receipts. Status
-# and amounts come from receipt_status, never from this join.
+# date and receipt number from belonging to two different receipts.
 _ACTIVE_PAYMENT_DISPLAY_CTE = """
     active_payment_display AS (
         SELECT doc_no, paid_date, re_no FROM (
@@ -594,8 +593,6 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
 
     A written-off invoice (ตัดหนี้แล้ว, the whole `ar_writeoffs` table) is never
     offered: incoming cash cannot belong to a receivable the accountant retired.
-    Before write-offs were excluded, searching ฿95,704.35 named the วรสวัสดิ์
-    giveaway IV6900401 as the owner of the transfer.
 
     Row shape is the page's contract: customer, customer_code, matched_bills
     [{doc_base, vat_type}], matched_sum, diff (matched − amount), match_count,

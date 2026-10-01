@@ -429,8 +429,6 @@ def test_the_ledger_source_is_named_in_the_column_header(seeded):
     assert 'ยอดค้างตาม ledger' in body
 
 
-# ── receipt-status (ADR 0024): bills are offered by what is still open ────────
-
 def _receive(db_path, doc_no, amount):
     conn = sqlite3.connect(db_path)
     re_id = conn.execute("""INSERT INTO received_payments
@@ -451,6 +449,5 @@ def test_a_part_received_bill_is_offered_by_its_remainder(seeded):
     hits = models.find_payment_candidates(1500.0, tolerance=0)
     assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV002']]
     assert hits[0]['total_outstanding'] == pytest.approx(1000.0 + 1500.0 + 340.25)
-    # 2,500 no longer names IV002 alone; it is now IV001 + what is left of IV002.
     assert [[b['doc_base'] for b in h['matched_bills']]
             for h in models.find_payment_candidates(2500.0, tolerance=0)] == [['IV001', 'IV002']]

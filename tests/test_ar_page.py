@@ -35,7 +35,6 @@ def test_reconciliation_ledger_total_matches_payment_summary(tmp_db):
     import models
     rec = models.get_ar_reconciliation()
     summ = models.get_payment_summary()
-    # the ledger side is the open remainder of every partial and unpaid invoice
     open_remainder = summ['unpaid_remainder'] + summ['partial_remainder']
     assert open_remainder > 0, 'clone has no open invoice; the comparison proves nothing'
     assert rec['ledger_total'] == pytest.approx(open_remainder, abs=0.01)
@@ -296,7 +295,6 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     ''').fetchone()[0]
     conn.close()
     assert billed > 0
-    # each invoice is billed to the satang, so the oracle rounds per invoice too
     assert sum(r['billed'] for r in rows) == pytest.approx(billed, abs=0.01)
 
     # control: the fixture really does contain the multi-link shape
