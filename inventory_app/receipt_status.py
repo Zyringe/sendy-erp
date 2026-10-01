@@ -32,7 +32,8 @@ def rows(conn=None, customer=None, customer_code=None, as_of=None):
 
     Receivable = the engine's population (a doc_base, not a return, not HS)
     with billed > 0. `customer` filters by bill name, `customer_code` by exact
-    code. `as_of` is point-in-time: later invoices and receipts do not count.
+    code. `as_of` is point-in-time: later invoices, receipts, credit notes and
+    write-offs do not count.
 
     An invoice in `ar_writeoffs` (the whole table, collectability reading) is
     written_off unless it was received in full, in which case the write-off
@@ -43,7 +44,9 @@ def rows(conn=None, customer=None, customer_code=None, as_of=None):
     if own:
         conn = get_connection()
     try:
-        written_off = {r[0] for r in conn.execute("SELECT doc_no FROM ar_writeoffs")}
+        written_off = {r[0] for r in conn.execute(
+            "SELECT doc_no FROM ar_writeoffs WHERE ? IS NULL OR writeoff_date <= ?",
+            (as_of, as_of))}
         settled = payments_alloc.invoice_settlement(
             customer=customer, customer_code=customer_code, as_of=as_of, conn=conn)
     finally:
