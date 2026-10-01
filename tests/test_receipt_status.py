@@ -507,3 +507,30 @@ def test_matcher_never_offers_a_satang_remainder(empty_db_conn):
     assert hits[0]['match_count'] == 1
     assert hits[0]['total_unpaid_bills'] == 1
     assert models.find_payment_candidates(0.03, tolerance=0) == []
+
+
+def test_reconcile_flags_an_exact_one_baht_gap_despite_float_noise(empty_db_conn):
+    """32,768.56 − 32,767.56 is 0.99999999999636 in floats: still ฿1.00, so ต่าง."""
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-OPEN', 'A', 'C-A', '2026-07-01', 32768.56)
+    _snapshot_row(c, 'C-A', 'IV-OPEN', 32767.56)
+    c.commit()
+
+    row = {r['customer_code']: r for r in models.get_ar_reconciliation()['rows']}['C-A']
+
+    assert row['diff'] == pytest.approx(1.00)
+    assert row['status'] == 'diff'
+
+
+def test_matcher_offers_a_remainder_of_exactly_one_baht(empty_db_conn):
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-ONE', 'A', 'C-A', '2026-07-01', 32768.56)
+    r = _ins_receipt(c, 'RE-1', 'A', '2026-07-10')
+    _ins_paid(c, r, 'IV-ONE', 32767.56)
+    c.commit()
+
+    assert _rows(c)['IV-ONE']['remainder'] == 1.00
+    hits = models.find_payment_candidates(1.00, tolerance=0)
+    assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV-ONE']]
