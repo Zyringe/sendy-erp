@@ -6,13 +6,18 @@ module docstring for the overall file-split rationale. No URL changes;
 route rules are unchanged, only their endpoint names gain a `sales.`
 prefix.
 """
+import sqlite3
 from datetime import date
 
-from flask import Blueprint, render_template, request, redirect, url_for
+from flask import (Blueprint, render_template, request, redirect, url_for,
+                   flash, session)
 
 import book_registry
+import database
+import line_unit_correction as luc
 import models
 import vat_math
+from blueprints.bsn import import_running
 from paging import paging
 
 bp_sales = Blueprint('sales', __name__)
@@ -83,12 +88,140 @@ def sales_doc(doc_base):
                                entity=f'เอกสาร {doc_base}',
                                back_url=url_for('sales.sales_view')), 404
     total_net = sum(r['net'] or 0 for r in rows)
+    # None on the VAT book: corrections exist in the main book only, and a
+    # document number can exist in both.
+    unit_badges = (luc.badges_for_doc(conn, doc_base)
+                   if book_registry.active_book() == book_registry.DEFAULT_BOOK else None)
     return render_template('sales_doc.html', rows=rows, doc_base=doc_base,
                            total_net=total_net, vat_rate=vat_math.VAT_RATE,
+                           unit_badges=unit_badges,
                            non_stock_codes=sorted(models.NON_STOCK_BSN_CODES),
                            audit_history=models.get_source_doc_audit_history(
                                doc_base, 'sales_transactions', conn=conn),
                            pending_map=len(models.get_pending_mappings(conn=conn)))
+
+
+# ── แก้หน่วยบรรทัด (#692, ADR 0021) ───────────────────────────────────────────
+# Every rule and every number is line_unit_correction's. These routes read the
+# form, call it and show what it said. The VAT book never reaches them: the
+# book guard refuses a non-parity page and any POST before the route runs.
+
+_IMPORT_BUSY = 'กำลังนำเข้าข้อมูลจาก Express อยู่ ลองใหม่อีกครั้งในอีกสักครู่'
+_WACC_FAILED = 'คำนวณต้นทุนไม่สำเร็จ ระบบจึงไม่บันทึกการแก้หน่วย (ดูหน้าแจ้งเตือน)'
+
+
+def _field(source, key):
+    return source[key].strip() if key in source else None
+
+
+def _acting_admin():
+    """Who is really writing: an admin simulating another role (ADR 0003)
+    still reaches these routes, and the record must name the admin."""
+    return session.get('_real_username') or session.get('username')
+
+
+def _unit_correction_page(conn, doc_no, bsn_code, *, chosen_unit=None,
+                          effect=None, refused=None):
+    line = luc.line_view(conn, doc_no, bsn_code)
+    if line is None:
+        return render_template('book_link.html', mode='not_found',
+                               entity=f'บรรทัด {doc_no or ""}',
+                               back_url=url_for('sales.sales_view')), 404
+    corrections = luc.corrections_for_line(conn, doc_no, bsn_code)
+    return render_template(
+        'sales_unit_correction.html', line=line,
+        active=next((c for c in corrections if c['status'] == 'active'), None),
+        history=[c for c in corrections if c['status'] != 'active'],
+        chosen_unit=chosen_unit, effect=effect, refused=refused,
+        min_reason=luc.MIN_REASON)
+
+
+@bp_sales.route('/sales/unit-correction')
+def unit_correction():
+    conn = database.get_connection()
+    try:
+        return _unit_correction_page(conn, _field(request.args, 'doc_no'),
+                                     _field(request.args, 'bsn_code'))
+    finally:
+        conn.close()
+
+
+@bp_sales.route('/sales/unit-correction/preview', methods=['POST'])
+def unit_correction_preview():
+    doc_no, bsn_code = _field(request.form, 'doc_no'), _field(request.form, 'bsn_code')
+    unit = _field(request.form, 'corrected_unit')
+    conn = database.get_connection()
+    try:
+        effect = refused = None
+        try:
+            effect = luc.preview(conn, doc_no, bsn_code, unit)
+        except luc.Refused as exc:
+            refused = str(exc)
+        return _unit_correction_page(conn, doc_no, bsn_code, chosen_unit=unit,
+                                     effect=effect, refused=refused)
+    finally:
+        conn.close()
+
+
+def _attempt(write):
+    """Run `write()`: (its result, None) when it was written, else
+    (None, the message to flash)."""
+    if import_running():
+        return None, _IMPORT_BUSY
+    try:
+        return write(), None
+    except luc.Refused as exc:
+        return None, str(exc)
+    except models.WaccIdentityError:
+        return None, _WACC_FAILED
+    except sqlite3.OperationalError as exc:
+        if 'locked' not in str(exc):
+            raise
+        return None, _IMPORT_BUSY
+
+
+@bp_sales.route('/sales/unit-correction/apply', methods=['POST'])
+def unit_correction_apply():
+    doc_no, bsn_code = _field(request.form, 'doc_no'), _field(request.form, 'bsn_code')
+    unit = _field(request.form, 'corrected_unit')
+    conn = database.get_connection()
+    try:
+        new_id, error = _attempt(lambda: luc.apply(
+            conn, doc_no, bsn_code, unit, _field(request.form, 'stock_mode'),
+            _field(request.form, 'reason'), _acting_admin()))
+        written = luc.correction(conn, new_id) if error is None else None
+    finally:
+        conn.close()
+    if error:
+        flash(error, 'danger')
+        if not doc_no or not bsn_code:
+            return redirect(url_for('sales.sales_view'))
+        return redirect(url_for('sales.unit_correction', doc_no=doc_no, bsn_code=bsn_code))
+    flash(f'แก้หน่วยบรรทัด {doc_no} เป็น "{unit}" แล้ว', 'success')
+    return redirect(url_for('sales.sales_doc', doc_base=written['doc_base']))
+
+
+@bp_sales.route('/sales/unit-correction/cancel', methods=['POST'])
+def unit_correction_cancel():
+    raw_id = _field(request.form, 'correction_id') or ''
+    # isdecimal, not isdigit ('²' is a digit int() refuses); 18 digits is
+    # the most a SQLite integer bind always takes.
+    correction_id = int(raw_id) if raw_id.isdecimal() and len(raw_id) <= 18 else None
+    conn = database.get_connection()
+    try:
+        c = luc.correction(conn, correction_id)
+        _none, error = _attempt(lambda: luc.cancel(
+            conn, correction_id, _field(request.form, 'reason'), _acting_admin()))
+    finally:
+        conn.close()
+    if error:
+        flash(error, 'danger')
+        if c is None:
+            return redirect(url_for('sales.sales_view'))
+        return redirect(url_for('sales.unit_correction',
+                                doc_no=c['doc_no'], bsn_code=c['bsn_code']))
+    flash(f'ยกเลิกการแก้หน่วยบรรทัด {c["doc_no"]} แล้ว', 'success')
+    return redirect(url_for('sales.sales_doc', doc_base=c['doc_base']))
 
 
 # ── Purchases View ────────────────────────────────────────────────────────────

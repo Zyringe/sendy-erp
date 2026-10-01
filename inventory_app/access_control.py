@@ -362,6 +362,9 @@ _ENDPOINT_MODULE = {
     'sales.trade_dashboard': 'trade',
     'sales.sales_view': 'trade',
     'sales.sales_doc': 'trade',
+    'sales.unit_correction': 'trade',
+    # POST, but it renders the page again and must keep the same sidebar.
+    'sales.unit_correction_preview': 'trade',
     'sales.purchases_view': 'trade',
     'sales.purchases_doc': 'trade',
     'partners.customer_list': 'trade',

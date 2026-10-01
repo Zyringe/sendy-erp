@@ -55,7 +55,7 @@
   {% for doc in feed %}
     {% set sev = doc.max_severity %}
     {% set sev_cls = 'danger' if sev == 'high' else ('warning' if sev == 'medium' else 'info') %}
-    <div class="card mb-2 border-{{ sev_cls }} border-start border-3 border-top-0 border-bottom-0 border-end-0">
+    <div class="card mb-2 border-{{ sev_cls }} border-start border-3 border-top-0 border-bottom-0 border-end-0" id="review-doc-{{ doc.doc_base }}">
       <div class="card-body py-2 px-3">
 
         {# header row #}
@@ -88,6 +88,11 @@
                 {{ fl.message_th }}
                 {% if fl.doc_no and fl.doc_no != doc.doc_base %}
                   <span class="text-muted">({{ fl.doc_no }})</span>
+                {% endif %}
+                {# #692: bsn_code is NULL when the flagged sales row is gone. #}
+                {% if is_admin and fl.doc_no and fl.bsn_code %}
+                  <a href="{{ url_for('sales.unit_correction', doc_no=fl.doc_no, bsn_code=fl.bsn_code) }}"
+                     class="text-muted ms-1">แก้หน่วย</a>
                 {% endif %}
               </span>
             </li>

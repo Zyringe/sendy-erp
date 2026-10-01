@@ -326,14 +326,20 @@ def get_review_feed(since_date=None, include_medium=False, limit=None,
         docs = c.execute(sql, params).fetchall()
         out = []
         for d in docs:
+            # bsn_code completes the flagged line's key for the page's
+            # แก้หน่วย link (#692); NULL when that sales row is gone.
             flags = c.execute("""
-                SELECT doc_no, rule_code, severity, message_th, details_json
-                FROM txn_review_flags WHERE doc_base=?
-                ORDER BY CASE severity
+                SELECT f.doc_no, f.rule_code, f.severity, f.message_th,
+                       f.details_json, s.bsn_code
+                FROM txn_review_flags f
+                LEFT JOIN sales_transactions s
+                       ON s.id = f.txn_id AND s.doc_no = f.doc_no
+                WHERE f.doc_base=?
+                ORDER BY CASE f.severity
                     WHEN 'high'   THEN 3
                     WHEN 'medium' THEN 2
                     ELSE 1
-                END DESC, id
+                END DESC, f.id
             """, (d['doc_base'],)).fetchall()
             row = dict(d)
             row['flags'] = [dict(f) for f in flags]

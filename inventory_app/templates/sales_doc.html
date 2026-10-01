@@ -102,7 +102,31 @@
               <span class="text-subtle small">ไม่มีรายการสินค้า</span>
             {% endif %}
           </td>
-          <td class="text-end small">{{ r.qty | fmt_qty }} {{ r.unit }}</td>
+          <td class="text-end small" id="uc-cell-{{ loop.index }}">
+            {{ r.qty | fmt_qty }} {{ r.unit }}
+            {# แก้หน่วยบรรทัด (#692). unit_badges is None on the VAT book:
+               corrections live in the main book only. A line with no BSN
+               code has no line key, so there is nothing to link to. #}
+            {% if unit_badges is not none and r.bsn_code %}
+              {% set uc = unit_badges.get((r.doc_no, r.bsn_code)) %}
+              {% set uc_url = url_for('sales.unit_correction', doc_no=r.doc_no, bsn_code=r.bsn_code) %}
+              {% if uc and uc.status == 'active' %}
+                {% set uc_text = 'แก้หน่วย: ' ~ uc.express_unit_raw ~ ' → ' ~ uc.corrected_unit %}
+                {% set uc_title = 'โดย ' ~ uc.created_by ~ ' เมื่อ ' ~ uc.created_at ~ ': ' ~ uc.reason %}
+                <div>
+                  {% if is_admin %}<a href="{{ uc_url }}" class="badge bg-warning text-dark text-decoration-none" title="{{ uc_title }}">{{ uc_text }}</a>
+                  {% else %}<span class="badge bg-warning text-dark" title="{{ uc_title }}">{{ uc_text }}</span>{% endif %}
+                </div>
+              {% elif uc %}
+                <div>
+                  {% if is_admin %}<a href="{{ uc_url }}" class="text-subtle" style="font-size:0.75rem">เคยแก้หน่วย</a>
+                  {% else %}<span class="text-subtle" style="font-size:0.75rem">เคยแก้หน่วย</span>{% endif %}
+                </div>
+              {% elif is_admin %}
+                <div><a href="{{ uc_url }}" class="text-subtle" style="font-size:0.75rem">แก้หน่วย</a></div>
+              {% endif %}
+            {% endif %}
+          </td>
           <td class="text-end small">{{ r.unit_price | fmt_price }}</td>
           <td class="text-end small text-danger">{{ r.discount or '–' }}</td>
           <td class="text-end small">{{ r.total | fmt_price }}</td>

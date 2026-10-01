@@ -137,7 +137,7 @@ AREAS = {
                               'staff work, and all four endpoints were already manager-gated in the route',
                               msg=ADMIN_OR_MANAGER),
     'review':          Access(OFFICE,     'the bill-checking queue'),
-    'sales':           Access(OFFICE,     'sales and purchase documents; the payment pages are excepted below'),
+    'sales':           Access(OFFICE,     'sales and purchase documents; the unit-correction pages are excepted below'),
     'vat_sub':         Access(OFFICE,     'the VAT sub-book; its four READ pages are excepted below and its '
                               'writes are admin/manager by POST allowlist'),
 }
@@ -258,6 +258,17 @@ PAGES = {
     'vat_sub.product_view': Access(MANAGEMENT, 'cost-sensitive substitution curation', msg=ADMIN_OR_MANAGER),
     'vat_sub.planning':     Access(MANAGEMENT, 'paper-stock planning off the VAT book', msg=ADMIN_OR_MANAGER),
     'vat_sub.group_detail': Access(MANAGEMENT, 'cost-sensitive substitution curation', msg=ADMIN_OR_MANAGER),
+
+    # sales: แก้หน่วยบรรทัด (#692, ADR 0021). Correcting a line moves stock and
+    # can move cost history, so the page and its three POSTs are the admin's.
+    'sales.unit_correction':
+        Access(ADMIN_ONLY, 'the page that corrects one sales line\'s unit', deny=FORBID),
+    'sales.unit_correction_preview':
+        Access(ADMIN_ONLY, 'measures what a unit correction would do', deny=FORBID),
+    'sales.unit_correction_apply':
+        Access(ADMIN_ONLY, 'corrects one sales line\'s unit', deny=FORBID),
+    'sales.unit_correction_cancel':
+        Access(ADMIN_ONLY, 'cancels a unit correction', deny=FORBID),
 
     # ── cost and margin stay off the staff desk ──────────────────────────────
     'products.product_cost_history':
