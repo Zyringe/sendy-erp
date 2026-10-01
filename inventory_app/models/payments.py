@@ -447,7 +447,7 @@ def get_ar_reconciliation():
             status = 'ledger_only'
         elif code not in led:
             status = 'snapshot_only'
-        elif abs(l - s) < receipt_status.SHORT_CLOSE_FLOOR:
+        elif abs(round(l - s, 2)) < receipt_status.SHORT_CLOSE_FLOOR:
             status = 'match'
         else:
             status = 'diff'
