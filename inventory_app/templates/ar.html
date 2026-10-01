@@ -308,11 +308,11 @@
 {# ═══════════════════════════════════════════════════════════════════════════ #}
 {% if tab == 'invoices' %}
 
-{# Summary cards #}
+{# Summary cards: the four receipt statuses add up to บิลทั้งหมด (ADR 0024) #}
 {% if summary %}
 <div class="row g-3 mb-4">
-  <div class="col-sm-6 col-lg-3">
-    <div class="card text-center">
+  <div class="col-6 col-lg-2">
+    <div class="card text-center h-100">
       <div class="card-body py-3">
         <div class="text-subtle small mb-1">บิลทั้งหมด</div>
         <div class="fs-4 fw-bold">{{ '{:,}'.format(summary.total_bills or 0) }}</div>
@@ -320,26 +320,44 @@
       </div>
     </div>
   </div>
-  <div class="col-sm-6 col-lg-3">
-    <div class="card text-center border-success">
+  <div class="col-6 col-lg-2">
+    <div class="card text-center border-success h-100">
       <div class="card-body py-3">
         <div class="text-success small mb-1"><i class="bi bi-check-circle me-1"></i>ชำระแล้ว</div>
-        <div class="fs-4 fw-bold text-success">{{ '{:,}'.format(summary.paid_count or 0) }}</div>
-        <div class="text-subtle small">{{ '{:,.0f}'.format(summary.paid_amount or 0) }} บาท</div>
+        <div class="fs-4 fw-bold text-success" data-summary="paid_count">{{ '{:,}'.format(summary.paid_count or 0) }}</div>
+        <div class="text-subtle small">{{ '{:,.0f}'.format(summary.paid_billed or 0) }} บาท</div>
       </div>
     </div>
   </div>
-  <div class="col-sm-6 col-lg-3">
-    <div class="card text-center border-danger">
+  <div class="col-6 col-lg-2">
+    <div class="card text-center border-warning h-100">
+      <div class="card-body py-3">
+        <div class="text-warning-emphasis small mb-1"><i class="bi bi-hourglass-split me-1"></i>จ่ายบางส่วน</div>
+        <div class="fs-4 fw-bold text-warning-emphasis" data-summary="partial_count">{{ '{:,}'.format(summary.partial_count or 0) }}</div>
+        <div class="text-subtle small">คงเหลือ {{ '{:,.0f}'.format(summary.partial_remainder or 0) }} บาท</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-2">
+    <div class="card text-center border-danger h-100">
       <div class="card-body py-3">
         <div class="text-danger small mb-1"><i class="bi bi-exclamation-circle me-1"></i>ยังไม่ชำระ</div>
-        <div class="fs-4 fw-bold text-danger">{{ '{:,}'.format(summary.unpaid_count or 0) }}</div>
-        <div class="text-subtle small">{{ '{:,.0f}'.format(summary.unpaid_amount or 0) }} บาท</div>
+        <div class="fs-4 fw-bold text-danger" data-summary="unpaid_count">{{ '{:,}'.format(summary.unpaid_count or 0) }}</div>
+        <div class="text-subtle small">คงเหลือ {{ '{:,.0f}'.format(summary.unpaid_remainder or 0) }} บาท</div>
       </div>
     </div>
   </div>
-  <div class="col-sm-6 col-lg-3">
-    <div class="card text-center">
+  <div class="col-6 col-lg-2">
+    <div class="card text-center border-secondary h-100">
+      <div class="card-body py-3">
+        <div class="text-secondary small mb-1"><i class="bi bi-x-circle me-1"></i>ตัดหนี้แล้ว</div>
+        <div class="fs-4 fw-bold text-secondary" data-summary="written_off_count">{{ '{:,}'.format(summary.written_off_count or 0) }}</div>
+        <div class="text-subtle small">ยอดบิล {{ '{:,.0f}'.format(summary.written_off_billed or 0) }} บาท</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-2">
+    <div class="card text-center h-100">
       <div class="card-body py-3">
         <div class="text-subtle small mb-1">อัตราชำระ</div>
         {% if summary.total_bills %}
@@ -368,6 +386,10 @@
              class="btn {{ 'btn-danger' if inv_status == 'unpaid' else 'btn-outline-danger' }}">ยังไม่ชำระ</a>
           <a href="?tab=invoices&status=paid&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
              class="btn {{ 'btn-success' if inv_status == 'paid' else 'btn-outline-success' }}">ชำระแล้ว</a>
+          <a href="?tab=invoices&status=partial&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
+             class="btn {{ 'btn-warning' if inv_status == 'partial' else 'btn-outline-warning' }}">จ่ายบางส่วน</a>
+          <a href="?tab=invoices&status=written_off&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
+             class="btn {{ 'btn-secondary' if inv_status == 'written_off' else 'btn-outline-secondary' }}">ตัดหนี้แล้ว</a>
         </div>
       </div>
       <div class="col-auto">
@@ -400,7 +422,8 @@
           <th>เลขที่บิล</th>
           <th>วันที่</th>
           <th>ลูกค้า</th>
-          <th class="text-end">ยอด</th>
+          <th class="text-end">ยอดบิล</th>
+          <th class="text-end">ยอดคงเหลือ</th>
           <th>สถานะ</th>
         </tr>
       </thead>
@@ -412,20 +435,27 @@
               {{ r.doc_base }}
             </a>
           </td>
-          <td class="text-subtle small">{{ r.bill_date }}</td>
+          <td class="text-subtle small">{{ r.invoice_date }}</td>
           <td>{{ r.customer }}</td>
-          <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(r.total_net or 0) }}</td>
-          <td>
-            {% if r.is_paid %}
+          <td class="text-end fw-bold" data-col="billed">฿{{ '{:,.2f}'.format(r.billed) }}</td>
+          <td class="text-end" data-col="remainder">
+            {% if r.status in ('partial', 'unpaid') %}฿{{ '{:,.2f}'.format(r.remainder) }}{% else %}–{% endif %}
+          </td>
+          <td data-col="status" data-status="{{ r.status }}">
+            {% if r.status == 'paid' %}
             <span class="badge bg-success">จ่ายแล้ว</span>
+            {% elif r.status == 'partial' %}
+            <span class="badge bg-warning text-dark">จ่ายบางส่วน</span>
+            {% elif r.status == 'written_off' %}
+            <span class="badge bg-secondary">ตัดหนี้แล้ว</span>
             {% else %}
-            <span class="badge bg-danger">ค้าง</span>
+            <span class="badge bg-danger">ยังไม่ชำระ</span>
             {% endif %}
           </td>
         </tr>
         {% endfor %}
         {% if not inv_rows %}
-        <tr><td colspan="5" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
+        <tr><td colspan="6" class="text-center text-subtle py-3">ไม่พบข้อมูล</td></tr>
         {% endif %}
       </tbody>
     </table>

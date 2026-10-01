@@ -393,7 +393,7 @@ def test_payment_summary_math_intact(tmp_db):
     import models  # imported here so tmp_db's monkeypatch is active
     row = models.get_payment_summary()
     assert row is not None
-    for k in ('total_bills', 'paid_count', 'unpaid_count', 'paid_amount',
-              'unpaid_amount'):
+    for k in ('total_bills', 'paid_count', 'unpaid_count', 'paid_billed',
+              'unpaid_remainder'):
         assert row[k] is not None, f"{k} returned NULL"
         assert row[k] >= 0, f"{k} negative: {row[k]}"

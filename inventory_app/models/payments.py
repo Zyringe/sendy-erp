@@ -3,12 +3,13 @@
 docstring for the overall file-split rationale. No behavior changes.
 """
 
+import json
 import math
 
 import ar_statement
 from database import get_connection
 import document_kind
-import vat_math
+import receipt_status
 
 
 def parse_payment_csv(filepath):
@@ -345,35 +346,11 @@ def import_payment_records(records, apply_removals=False):
     }
 
 
-# ── Active-receipt payment status (Findings 3 & 4) ──────────────────────────
-#
-# ONE definition of "this invoice has at least one ACTIVE (non-cancelled)
-# receipt link", shared by every legacy status reader so they cannot drift.
-# Two properties are load-bearing:
-#
-#   * DISTINCT collapses the several links one invoice can legitimately carry
-#     (183 invoices live), so joining this can never multiply a bill's count or
-#     its baht. The old link-grain join reported 7,908 paid out of 7,899 total
-#     bills and ฿24,129,799.79 paid (a payment rate above 100%); the same data
-#     at one-invoice grain is 7,723 paid / ฿21,499,826.74.
-#
-#   * the JOIN to received_payments carries `cancelled = 0` INSIDE the CTE. The
-#     old idiom left-joined received_payments and then tested `pi.doc_no IS NOT
-#     NULL` — which stays non-null even when the cancelled-receipt join
-#     produced no row, so a cancelled receipt still marked the invoice paid.
-_ACTIVE_PAID_DOCS_CTE = """
-    active_paid_docs AS (
-        SELECT DISTINCT pi.doc_no
-          FROM paid_invoices pi
-          JOIN received_payments rp ON rp.id = pi.re_id
-         WHERE rp.cancelled = 0
-    )
-"""
-
 # DISPLAY ONLY — the latest active receipt per invoice, one row per doc_no so
 # it cannot multiply the bill either. Taking the whole row of the newest
 # receipt (rather than MAX(date), MAX(re_no) independently) keeps the shown
-# date and receipt number from belonging to two different receipts.
+# date and receipt number from belonging to two different receipts. Status
+# and amounts come from receipt_status, never from this join.
 _ACTIVE_PAYMENT_DISPLAY_CTE = """
     active_payment_display AS (
         SELECT doc_no, paid_date, re_no FROM (
@@ -391,107 +368,67 @@ _ACTIVE_PAYMENT_DISPLAY_CTE = """
 
 
 def get_payment_status(status='all', search='', date_from='', date_to='', page=1, per_page=50):
-    """Get IV invoices with payment status.
-    Uses pre-computed doc_base column + index for performance.
+    """Receivable invoices with their receipt status, newest first, one page.
+
+    Rows are `receipt_status.rows()` plus `paid_date` / `re_no` of the newest
+    active receipt. `status` is one of receipt_status.STATUSES (anything else
+    lists all). `search` matches doc_base or customer, case-insensitively;
+    `date_from` / `date_to` bound the invoice date and never mean as-of.
+    Returns (page_rows, total_matching).
     """
     conn = get_connection()
+    try:
+        rows = receipt_status.rows(conn=conn)
+        display = {r['doc_no']: r for r in conn.execute(
+            f"WITH {_ACTIVE_PAYMENT_DISPLAY_CTE} "
+            "SELECT doc_no, paid_date, re_no FROM active_payment_display")}
+    finally:
+        conn.close()
 
-    # HS is paid on the spot, never a receivable (#514).
-    conds = ["st.doc_base IS NOT NULL", document_kind.not_return_sql('st', 'sales'), "st.doc_base NOT LIKE 'HS%'"]
-    params = []
-
+    if status in receipt_status.STATUSES:
+        rows = [r for r in rows if r['status'] == status]
     if search:
-        conds.append("(st.doc_base LIKE ? OR st.customer LIKE ?)")
-        params += [f'%{search}%', f'%{search}%']
+        needle = search.lower()
+        rows = [r for r in rows
+                if needle in r['doc_base'].lower() or needle in (r['customer'] or '').lower()]
     if date_from:
-        conds.append("st.date_iso >= ?"); params.append(date_from)
+        rows = [r for r in rows if r['invoice_date'] >= date_from]
     if date_to:
-        conds.append("st.date_iso <= ?"); params.append(date_to)
+        rows = [r for r in rows if r['invoice_date'] <= date_to]
+    rows.sort(key=lambda r: (r['invoice_date'], r['doc_base']), reverse=True)
 
-    paid_filter = ''
-    if status == 'paid':
-        paid_filter = 'HAVING is_paid = 1'
-    elif status == 'unpaid':
-        paid_filter = 'HAVING is_paid = 0 AND total_net > 0'
-    else:
-        paid_filter = 'HAVING total_net > 0'
-
-    where = ' AND '.join(conds)
-
-    sql = f"""
-        WITH {_ACTIVE_PAID_DOCS_CTE}, {_ACTIVE_PAYMENT_DISPLAY_CTE}
-        SELECT
-            st.doc_base,
-            MIN(st.date_iso) AS bill_date,
-            st.customer,
-            SUM({vat_math.cash_sql('st')}) AS total_net,
-            MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
-            MAX(apay.paid_date) AS paid_date,
-            MAX(apay.re_no) AS re_no
-        FROM sales_transactions st
-        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
-        LEFT JOIN active_payment_display apay ON apay.doc_no = st.doc_base
-        WHERE {where}
-        GROUP BY st.doc_base
-        {paid_filter}
-        ORDER BY bill_date DESC
-        LIMIT ? OFFSET ?
-    """
-    rows = conn.execute(sql, params + [per_page, (page - 1) * per_page]).fetchall()
-
-    count_sql = f"""
-        WITH {_ACTIVE_PAID_DOCS_CTE}
-        SELECT COUNT(*) FROM (
-            SELECT st.doc_base,
-                MAX(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS is_paid,
-                SUM({vat_math.cash_sql('st')}) AS total_net
-            FROM sales_transactions st
-            LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
-            WHERE {where}
-            GROUP BY st.doc_base
-            {paid_filter}
-        )
-    """
-    total = conn.execute(count_sql, params).fetchone()[0]
-    conn.close()
-    return rows, total
+    start = (page - 1) * per_page
+    page_rows = []
+    for r in rows[start:start + per_page]:
+        d = display.get(r['doc_base'])
+        page_rows.append(dict(r, paid_date=d['paid_date'] if d else None,
+                              re_no=d['re_no'] if d else None))
+    return page_rows, len(rows)
 
 
 def get_payment_summary():
-    """Quick stats for payment status page.
-
-    Invariants (Finding 3): `paid_count + unpaid_count == total_bills` and
-    `paid_count <= total_bills` hold structurally — the inner query is already
-    one row per doc_base, and active_paid_docs is one row per invoice, so no
-    join here can multiply a bill.
+    """Count of receivable invoices per receipt status, with the amounts each
+    card shows: billed for paid and written_off, the remainder still open for
+    partial and unpaid. The four counts add up to total_bills.
     """
-    conn = get_connection()
-    row = conn.execute(f"""
-        WITH {_ACTIVE_PAID_DOCS_CTE}
-        SELECT
-            COUNT(*) AS total_bills,
-            SUM(CASE WHEN apd.doc_no IS NOT NULL THEN 1 ELSE 0 END) AS paid_count,
-            SUM(CASE WHEN apd.doc_no IS NULL THEN 1 ELSE 0 END) AS unpaid_count,
-            SUM(CASE WHEN apd.doc_no IS NOT NULL THEN st.net ELSE 0 END) AS paid_amount,
-            SUM(CASE WHEN apd.doc_no IS NULL THEN st.net ELSE 0 END) AS unpaid_amount
-        FROM (
-            SELECT doc_base,
-                   SUM({vat_math.cash_sql()}) AS net
-            FROM sales_transactions
-            WHERE doc_base IS NOT NULL AND {document_kind.not_return_sql('', 'sales')} AND doc_base NOT LIKE 'HS%'
-            -- HS is paid on the spot, never a receivable (#514)
-            GROUP BY doc_base
-            HAVING SUM({vat_math.cash_sql()}) > 0
-        ) st
-        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
-    """).fetchone()
-    conn.close()
-    return row
+    s = {'total_bills': 0, 'paid_billed': 0.0, 'partial_remainder': 0.0,
+         'unpaid_remainder': 0.0, 'written_off_billed': 0.0}
+    s.update({f'{st}_count': 0 for st in receipt_status.STATUSES})
+    for r in receipt_status.rows():
+        s['total_bills'] += 1
+        s[f"{r['status']}_count"] += 1
+        if r['status'] in (receipt_status.PAID, receipt_status.WRITTEN_OFF):
+            s[f"{r['status']}_billed"] += r['billed']
+        else:
+            s[f"{r['status']}_remainder"] += r['remainder']
+    for k in ('paid_billed', 'partial_remainder', 'unpaid_remainder', 'written_off_billed'):
+        s[k] = round(s[k], 2)
+    return s
 
 
 def get_ar_reconciliation():
     """Per-customer reconcile: chaseable AR (ar_statement.customer_totals) vs
-    Sendy ledger unpaid (sales_transactions minus paid_invoices/received_payments).
+    the Sendy ledger's open remainder (receipt_status partial + unpaid).
     Read-only. Snapshot is the canonical AR; ledger is the live cross-check.
 
     Returns dict with keys:
@@ -506,34 +443,17 @@ def get_ar_reconciliation():
         e = snap.setdefault(t['customer_code'], {'name': t['customer'], 'amount': 0.0})
         e['amount'] = round(e['amount'] + t['outstanding'], 2)
 
-    # Ledger side — unpaid invoice balance per customer, mirroring get_payment_summary().
-    # get_payment_summary groups by doc_base, sums vat-aware net, then marks unpaid
-    # where paid_invoices has no matching row (rp.cancelled=0 check for received_payments).
-    conn = get_connection()
-    led_rows = conn.execute(f"""
-        WITH {_ACTIVE_PAID_DOCS_CTE}
-        SELECT st.customer_code AS code,
-               MAX(st.customer)  AS name,
-               ROUND(SUM(bill_net), 2) AS unpaid
-          FROM (
-              SELECT customer_code, customer, doc_base,
-                     SUM({vat_math.cash_sql()}) AS bill_net
-                FROM sales_transactions
-               WHERE doc_base IS NOT NULL
-                 AND {document_kind.not_return_sql('', 'sales')}
-                 AND doc_base NOT LIKE 'HS%'
-                 -- HS is paid on the spot, never a receivable (#514)
-               GROUP BY doc_base
-              HAVING bill_net > 0
-          ) st
-          LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
-         WHERE apd.doc_no IS NULL
-         GROUP BY st.customer_code
-    """).fetchall()
-    conn.close()
-
-    led = {r['code']: {'name': r['name'], 'amount': r['unpaid'] or 0.0}
-           for r in led_rows if r['code']}
+    # Ledger side — what is still open per code on the Sendy ledger: the
+    # remainder after credit notes and receipts of every partial and unpaid
+    # invoice (decision bA). A written-off invoice is not owed and stays out.
+    led = {}
+    for r in receipt_status.rows():
+        if r['status'] in (receipt_status.PARTIAL, receipt_status.UNPAID) and r['customer_code']:
+            e = led.setdefault(r['customer_code'], {'name': r['customer'], 'amount': 0.0})
+            e['name'] = max(e['name'] or '', r['customer'] or '')
+            e['amount'] += r['remainder']
+    for e in led.values():
+        e['amount'] = round(e['amount'], 2)
 
     rows = []
     for code in set(snap) | set(led):
@@ -667,22 +587,15 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
     coincidence, and rows are ranked so the unambiguous customer wins a tie on
     exactness. See `_MAX_BILLS_PER_MATCH` for which shapes are searched at all.
 
-    Outstanding = Sendy's LEDGER view (sales_transactions minus active
-    paid_invoices), NOT the Express AR snapshot that the rest of /ar treats as
-    the source of truth. The two can disagree; the page says so.
+    Outstanding = Sendy's LEDGER view: each partial or unpaid invoice offered
+    by its remainder after credit notes and receipts (receipt_status, decision
+    bA), NOT the Express AR snapshot that the rest of /ar treats as the source
+    of truth. The two can disagree; the page says so.
 
-    Documents the accountant has written off are dropped regardless of source —
-    incoming cash cannot belong to a receivable that was retired. The whole
-    `ar_writeoffs` table, NOT `sales_filters`\' `excludes_revenue = 1` subset:
-    that flag answers "is this revenue", and 2 of the 5 write-offs in the book
-    on 2026-08-31 carry it as 0 while being just as uncollectable. Before this
-    clause the population held ฿175,113.39 of them, and searching ฿95,704.35
-    named the วรสวัสดิ์ giveaway IV6900401 as the owner of the transfer.
-
-    ⚠ Same NULL hazard cashflow.py:71 documents for its own subquery:
-    `ar_writeoffs.doc_no` must stay NOT NULL (migration 095). One NULL makes
-    `NOT IN (...)` evaluate to NULL for every row and this returns nothing at
-    all — silently, with no error.
+    A written-off invoice (ตัดหนี้แล้ว, the whole `ar_writeoffs` table) is never
+    offered: incoming cash cannot belong to a receivable the accountant retired.
+    Before write-offs were excluded, searching ฿95,704.35 named the วรสวัสดิ์
+    giveaway IV6900401 as the owner of the transfer.
 
     Row shape is the page's contract: customer, customer_code, matched_bills
     [{doc_base, vat_type}], matched_sum, diff (matched − amount), match_count,
@@ -701,32 +614,24 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
     lo, hi = target - tol, target + tol
 
     conn = get_connection()
-    bill_rows = conn.execute(f"""
-        WITH {_ACTIVE_PAID_DOCS_CTE}
-        SELECT st.customer, st.customer_code, st.doc_base,
-               MIN(st.date_iso) AS bill_date,
-               SUM({vat_math.cash_sql('st')}) AS bill_net,
-               MAX(st.vat_type) AS vat_type
-        FROM sales_transactions st
-        LEFT JOIN active_paid_docs apd ON apd.doc_no = st.doc_base
-        WHERE st.doc_base IS NOT NULL
-          AND {document_kind.not_return_sql('st', 'sales')} AND st.doc_base NOT LIKE 'HS%'
-          -- HS is paid on the spot, never a receivable (#514)
-          AND apd.doc_no IS NULL
-          AND st.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)
-        GROUP BY st.customer, st.customer_code, st.doc_base
-        HAVING bill_net > 0
-        ORDER BY st.customer, bill_date, st.doc_base
-    """).fetchall()
-    conn.close()
+    try:
+        bills = [r for r in receipt_status.rows(conn=conn)
+                 if r['status'] in (receipt_status.PARTIAL, receipt_status.UNPAID)]
+        vat_types = dict(conn.execute(
+            "SELECT doc_base, MAX(vat_type) FROM sales_transactions "
+            "WHERE doc_base IN (SELECT value FROM json_each(?)) GROUP BY doc_base",
+            (json.dumps([r['doc_base'] for r in bills]),)).fetchall())
+    finally:
+        conn.close()
+    bills.sort(key=lambda r: (r['customer'] or '', r['invoice_date'], r['doc_base']))
 
     customers = {}
-    for r in bill_rows:
+    for r in bills:
         c = customers.setdefault(r['customer'],
                                  {'customer_code': r['customer_code'], 'bills': []})
         c['bills'].append({'doc_base': r['doc_base'],
-                           'satang': round(r['bill_net'] * 100),
-                           'vat_type': r['vat_type']})
+                           'satang': round(r['remainder'] * 100),
+                           'vat_type': vat_types[r['doc_base']]})
 
     results = []
     for customer, data in customers.items():

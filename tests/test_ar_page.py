@@ -35,8 +35,10 @@ def test_reconciliation_ledger_total_matches_payment_summary(tmp_db):
     import models
     rec = models.get_ar_reconciliation()
     summ = models.get_payment_summary()
-    # ledger reconcile total should be within a small tolerance of the summary unpaid
-    assert abs(rec['ledger_total'] - summ['unpaid_amount']) < max(50.0, 0.02 * summ['unpaid_amount'])
+    # the ledger side is the open remainder of every partial and unpaid invoice
+    open_remainder = summ['unpaid_remainder'] + summ['partial_remainder']
+    assert open_remainder > 0, 'clone has no open invoice; the comparison proves nothing'
+    assert rec['ledger_total'] == pytest.approx(open_remainder, abs=0.01)
 
 
 # ── Task 2 helpers ────────────────────────────────────────────────────────────
@@ -273,15 +275,18 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     import models
     import sqlite3
     s = dict(models.get_payment_summary())
-    assert s['paid_count'] + s['unpaid_count'] == s['total_bills']
+    assert s['paid_count'] + s['partial_count'] + s['unpaid_count'] \
+        + s['written_off_count'] == s['total_bills']
     assert s['paid_count'] <= s['total_bills']
+    rows, total = models.get_payment_status(per_page=10 ** 6)
+    assert total == len(rows) == s['total_bills']
 
     # Conservation of baht: the split must account for every billed satang and
     # invent none. This is the assertion that actually pins "no amount
     # multiplication" — derived independently of get_payment_summary().
     conn = sqlite3.connect(tmp_db)
     billed = conn.execute('''
-        SELECT ROUND(SUM(net), 2) FROM (
+        SELECT ROUND(SUM(ROUND(net, 2)), 2) FROM (
             SELECT SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
               FROM sales_transactions
              WHERE doc_base IS NOT NULL AND doc_base NOT LIKE 'SR%'
@@ -290,7 +295,9 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
             HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0)
     ''').fetchone()[0]
     conn.close()
-    assert s['paid_amount'] + s['unpaid_amount'] == pytest.approx(billed, abs=0.01)
+    assert billed > 0
+    # each invoice is billed to the satang, so the oracle rounds per invoice too
+    assert sum(r['billed'] for r in rows) == pytest.approx(billed, abs=0.01)
 
     # control: the fixture really does contain the multi-link shape
     conn = sqlite3.connect(tmp_db)

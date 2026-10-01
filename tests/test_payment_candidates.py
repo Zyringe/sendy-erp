@@ -427,3 +427,30 @@ def test_the_ledger_source_is_named_in_the_column_header(seeded):
     the two figures legitimately differ. Say which one this column is."""
     body = _admin().get('/ar?tab=match&amount=1000').data.decode()
     assert 'ยอดค้างตาม ledger' in body
+
+
+# ── receipt-status (ADR 0024): bills are offered by what is still open ────────
+
+def _receive(db_path, doc_no, amount):
+    conn = sqlite3.connect(db_path)
+    re_id = conn.execute("""INSERT INTO received_payments
+                              (re_no, date_iso, customer, salesperson, cancelled)
+                            VALUES ('RE-T1', '2026-01-20', 'ทดสอบ ฮาร์ดแวร์', 'S1', 0)""").lastrowid
+    conn.execute("INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, ?, 'IV', ?)",
+                 (re_id, doc_no, amount))
+    conn.commit()
+    conn.close()
+
+
+def test_a_part_received_bill_is_offered_by_its_remainder(seeded):
+    # CONTROL: unpaid, it answers to its full amount.
+    assert models.find_payment_candidates(2500.0, tolerance=0)
+
+    _receive(seeded, 'IV002', 1000.0)
+
+    hits = models.find_payment_candidates(1500.0, tolerance=0)
+    assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV002']]
+    assert hits[0]['total_outstanding'] == pytest.approx(1000.0 + 1500.0 + 340.25)
+    # 2,500 no longer names IV002 alone; it is now IV001 + what is left of IV002.
+    assert [[b['doc_base'] for b in h['matched_bills']]
+            for h in models.find_payment_candidates(2500.0, tolerance=0)] == [['IV001', 'IV002']]

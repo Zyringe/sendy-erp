@@ -101,15 +101,6 @@ DECLARED = {
         'the customer picker\'s search hint, a typeahead aid and not a worklist or '
         'money figure (its own docstring said so before the sweeps existed).'),
     # ── money owed (AR), not money spent ──
-    'models/payments.py::get_payment_status': ({'last date', 'raw money'},
-        'the /ar รายบิล document ledger: one row per bill, billed against paid. An AR '
-        'balance, not a purchase total.'),
-    'models/payments.py::get_ar_reconciliation': ({'raw money'},
-        'the "Ledger (Sendy)" unpaid column of /ar?tab=กระทบยอด, deliberately '
-        'unfiltered so it can be held against the Express snapshot.'),
-    'models/payments.py::find_payment_candidates': ({'last date', 'raw money'},
-        'matches an incoming transfer to a customer\'s unpaid bills (VAT-inclusive '
-        'cash owed). An AR search, not a purchase total.'),
     'payments_alloc.py::_settlement_rows': ({'last date', 'raw money'},
         'per-invoice billed vs collected for AR allocation (VAT-inclusive cash, '
         'credit notes handled by the allocation itself).'),
