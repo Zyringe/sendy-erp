@@ -2,10 +2,11 @@
 keyed on the canonical customer key. One definition, imported by every surface
 (card C, round-3 architecture review).
 
-KEY. The customer code, or, only for a true orphan (a row with no code), the
-bill name: `customer_key_sql`. It is what /call, cross-sell and win-back already
-key on, and it equals `customer_code = ?` for every code on prod (0 padded, 0
-blank, 0 bill names equal to a code; measured on the 2026-09-29 snapshot).
+KEY. The customer code. A row with NO code (a credit note filed without one) takes
+the one code that carries the same exact bill name (A1, Put 2026-09-30, read-time
+only, nothing written); with no such code, or two, the key is the bill name (a true
+orphan, never guessed): `customer_key_sql`. For every row that has a code it equals
+`customer_code = ?` (0 padded, 0 blank on the 2026-09-29 PROD snapshot).
 
 COST. `history()` filters on the key EXPRESSION, which no index serves, so each
 call scans sales_transactions (19-28 ms on 20.6k rows, whatever the customer's
@@ -44,25 +45,59 @@ import sales_filters
 import vat_math
 
 
+# A bill name that maps to exactly ONE customer code (Put A1, 2026-09-30). Unaliased,
+# uncorrelated, so SQLite evaluates it once per statement.
+_ONE_CODE_NAMES = ("SELECT customer FROM sales_transactions "
+                   "WHERE TRIM(COALESCE(customer_code,'')) != '' AND customer IS NOT NULL "
+                   "GROUP BY customer HAVING COUNT(DISTINCT TRIM(customer_code)) = 1")
+
+
 def customer_key_sql(alias='s'):
     """SQL expression of a sales row's canonical customer key: the trimmed
-    customer code, else the bill name. `alias` '' for an unaliased table."""
-    p = '{}.'.format(alias) if alias else ''
-    return "COALESCE(NULLIF(TRIM({p}customer_code),''), {p}customer)".format(p=p)
+    customer code; for a row with NO code, the one code that carries the same exact
+    bill name (a credit note filed without a code belongs to its shop, A1); else the
+    bill name (a true orphan: no twin, or a name shared by two codes: never guessed).
+    `alias` is required (the expression correlates on the row's bill name)."""
+    if not alias:
+        raise ValueError('customer_key_sql needs a table alias')
+    a = alias
+    return ("COALESCE(NULLIF(TRIM({a}.customer_code),''), "
+            "(SELECT MIN(TRIM(k.customer_code)) FROM sales_transactions k "
+            "WHERE k.customer = {a}.customer AND TRIM(COALESCE(k.customer_code,'')) != '' "
+            "GROUP BY k.customer HAVING COUNT(DISTINCT TRIM(k.customer_code)) = 1), "
+            "{a}.customer)").format(a=a)
 
 
-def _scope(key, date_from=None, date_to=None):
+def _key_match():
+    """(sql, params-per-key) matching the rows of ONE key, on unaliased columns:
+    the same answer as `customer_key_sql(..) = ?` without correlating on the outer
+    alias, so it can sit in a WHERE whose FROM is aliased or not."""
+    sql = ("(TRIM(COALESCE(customer_code,'')) = ? "
+           "OR (TRIM(COALESCE(customer_code,'')) = '' AND ("
+           "customer IN (SELECT customer FROM sales_transactions "
+           "WHERE TRIM(COALESCE(customer_code,'')) != '' AND customer IS NOT NULL "
+           "GROUP BY customer HAVING COUNT(DISTINCT TRIM(customer_code)) = 1 "
+           "AND MIN(TRIM(customer_code)) = ?) "
+           "OR (customer = ? AND customer NOT IN ({one}))))) ").format(one=_ONE_CODE_NAMES)
+    return sql.rstrip(), 3
+
+
+def _scope(key, date_from=None, date_to=None, invoiced_in_error=False):
     """WHERE clause (unaliased columns) + params for one customer's counted rows:
-    the key, the optional date window, and not-invoiced-in-error."""
-    conds = ['{} = ?'.format(customer_key_sql(''))]
-    params = [key]
+    the key, the optional date window, and not-invoiced-in-error (unless
+    `invoiced_in_error=True`, which keeps those documents: only the call card's
+    clearance seed asks, it wants everything the customer was handed)."""
+    match, n = _key_match()
+    conds = [match]
+    params = [key] * n
     if date_from:
         conds.append('date_iso >= ?')
         params.append(date_from)
     if date_to:
         conds.append('date_iso <= ?')
         params.append(date_to)
-    conds.append(sales_filters.not_a_sale_clause())
+    if not invoiced_in_error:
+        conds.append(sales_filters.not_a_sale_clause())
     return ' AND '.join(conds), params
 
 
@@ -107,6 +142,12 @@ def customer_documents(conn, where, params, limit=None):
     return docs
 
 
+def documents(conn, key, date_from=None, date_to=None, limit=None):
+    """Just `history()['documents']` (newest first), optionally the first `limit`."""
+    where, params = _scope(key, date_from, date_to)
+    return customer_documents(conn, where, params, limit=limit)
+
+
 def _totals(conn, where, params):
     """The eight `totals` fields for an already-built scope (two statements)."""
     import price_lookup
@@ -135,6 +176,75 @@ def totals(conn, key, date_from=None, date_to=None):
     that renders a count and a sum (/m/customer) and needs nothing else."""
     where, params = _scope(key, date_from, date_to)
     return _totals(conn, where, params)
+
+
+def products(conn, key, date_from=None, date_to=None, counted=False, include_unbought=False,
+             invoiced_in_error=False):
+    """Just `history()['products']`: one statement. For a surface that renders the
+    per-product table and needs nothing else (the call card's rows).
+
+    `counted=True` adds `qty_counted` / `net_counted` to every row: quantity and
+    money over EVERY counted line of the (product, unit), net of credit notes
+    (sales_filters.sales_qty_sql / sales_net_sql, the trade screens' figures), so a
+    free (แถม) line and a line the purchase population drops still count. The call
+    card's ซื้อรวม has always been that figure; `qty` / `net` are the customer
+    page's stricter ones. Same statement, so a removal committed by an import can
+    never leave the two figures describing different rows.
+
+    `include_unbought=True` (only with `counted`) also returns the (product, unit)
+    groups with `times_bought = 0` (only returned, given free or invoiced in error):
+    the call card's clearance panel seeds from everything the customer received.
+
+    `invoiced_in_error=True` also lets in the documents invoiced in error (a flagged
+    giveaway): the customer WAS handed those goods. Only that seed asks; every figure
+    a salesperson reads as ซื้อรวม leaves them out."""
+    import price_lookup
+
+    where, params = _scope(key, date_from, date_to, invoiced_in_error)
+    # Money and quantity are NET of credit notes (#646); times_bought and
+    # last_purchase stay on the purchase half (a credit note is not a purchase,
+    # the invoice it reverses still is). HAVING drops a product that was only
+    # ever returned, given away or invoiced in error. Every CASE says ELSE 0, so
+    # a row outside both halves adds nothing to qty / net (it does to *_counted).
+    having = '' if (counted and include_unbought) else 'HAVING times_bought > 0'
+    rows = [dict(r) for r in conn.execute(f"""
+        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
+               s.unit,
+               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
+                                   THEN s.doc_base END) AS times_bought,
+               MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
+                        THEN s.date_iso END) AS last_purchase,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')} THEN -s.qty
+                        WHEN {price_lookup.purchase_population_filter('s')} THEN s.qty
+                        ELSE 0 END) AS qty,
+               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')} THEN -s.net
+                        WHEN {price_lookup.purchase_population_filter('s')} THEN s.net
+                        ELSE 0 END) AS net,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
+               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
+                                 THEN s.net ELSE 0 END), 0) AS returned_net,
+               SUM({sales_filters.sales_qty_sql('s')}) AS qty_counted,
+               SUM({sales_filters.sales_net_sql('s')}) AS net_counted
+        FROM sales_transactions s
+        LEFT JOIN products p ON p.id = s.product_id
+        WHERE {where}
+        GROUP BY s.product_id, s.unit
+        {having}
+        ORDER BY s.product_id, s.unit
+    """, params).fetchall()]
+    if not counted:
+        for r in rows:
+            del r['qty_counted'], r['net_counted']
+    return rows
+
+
+def has_invoiced_in_error(conn, key):
+    """True if the key has a document invoiced in error (a flagged giveaway)."""
+    where, params = _scope(key, invoiced_in_error=True)
+    return bool(conn.execute(
+        f"SELECT 1 FROM sales_transactions WHERE {where} "
+        f"AND NOT ({sales_filters.not_a_sale_clause()}) LIMIT 1", params).fetchone())
 
 
 def history(conn, key, date_from=None, date_to=None, today=None):
@@ -193,33 +303,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         LIMIT 20
     """, params).fetchall()]
 
-    # Money and quantity are NET of credit notes (#646); times_bought and
-    # last_purchase stay on the purchase half (a credit note is not a purchase,
-    # the invoice it reverses still is). HAVING drops a product that was only
-    # ever returned, given away or invoiced in error.
-    products = [dict(r) for r in conn.execute(f"""
-        SELECT s.product_id, COALESCE(p.product_name, s.product_name_raw) AS name,
-               s.unit,
-               COUNT(DISTINCT CASE WHEN {price_lookup.purchase_population_filter('s')}
-                                   THEN s.doc_base END) AS times_bought,
-               MAX(CASE WHEN {price_lookup.purchase_population_filter('s')}
-                        THEN s.date_iso END) AS last_purchase,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.qty ELSE s.qty END) AS qty,
-               SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                        THEN -s.net ELSE s.net END) AS net,
-               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.qty ELSE 0 END), 0) AS returned_qty,
-               COALESCE(SUM(CASE WHEN {price_lookup.returned_lines_filter('s')}
-                                 THEN s.net ELSE 0 END), 0) AS returned_net
-        FROM sales_transactions s
-        LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where} AND ({price_lookup.purchase_population_filter('s')}
-                           OR {price_lookup.returned_lines_filter('s')})
-        GROUP BY s.product_id, s.unit
-        HAVING times_bought > 0
-        ORDER BY s.product_id, s.unit
-    """, params).fetchall()]
+    products_ = products(conn, key, date_from, date_to)
 
     returned_net_total = conn.execute(f"""
         SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
@@ -235,7 +319,7 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         'monthly': monthly,
         'documents': documents,
         'top_products': top_products,
-        'products': products,
+        'products': products_,
         'returned_net_total': returned_net_total,
         'winback': winback_rows,
     }

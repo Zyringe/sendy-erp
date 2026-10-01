@@ -51,15 +51,18 @@ ALLOWED = {
         'credit note negated in Python. A document total, VAT-inclusive by design. '
         'Moved here from models/customers.py in card C P2 (the owner module holds '
         'the document list, so consumers point at it).'),
-    'purchase_history.py::history': (3,
-        'the per-(product, unit) rows of the customer page, moved from '
-        '_customer_product_cards: qty and money NET of credit notes (#646) as '
-        'CASE expressions over price_lookup.returned_lines_filter, plus '
-        'returned_net. The first two are per-product figures, never the '
-        'customer\'s total (that is purchase_net_sql, MUST_USE_HELPER). The third '
-        'is returned_net_total, the CUSTOMER-level sum of credit notes in the '
-        'window behind the page\'s "returns not shown on a card" footnote: the '
-        'credit notes themselves, deliberately not un-netted sales.'),
+    'purchase_history.py::products': (2,
+        'the per-(product, unit) rows of the customer page and the call card, moved '
+        'from _customer_product_cards: qty and money NET of credit notes (#646) as '
+        'CASE expressions over price_lookup.returned_lines_filter. Per-product '
+        'figures, never the customer\'s total (that is purchase_net_sql, '
+        'MUST_USE_HELPER). Split out of history() in card C P3 so the call card can '
+        'read the rows alone.'),
+    'purchase_history.py::history': (1,
+        'returned_net_total, the CUSTOMER-level sum of credit notes in the window '
+        'behind the page\'s "returns not shown on a card" footnote: the credit '
+        'notes themselves, deliberately not un-netted sales. (The per-product '
+        'figures it used to hold with this one moved to products() in card C P3.)'),
     # ── money owed (AR), not money spent ──
     'blueprints/mobile.py::sales_trip': (1,
         'the sales-trip list\'s outstanding: unpaid invoices per customer, '
@@ -103,10 +106,10 @@ ALLOWED = {
 # census no longer lists them; test_627_sales_returns_coverage.py pins them.
 
 # The surfaces #494 moved onto the helper, and how many aggregates each holds.
-# The call card is not listed: it reads _customer_sales_aggregates through
-# models.get_customer_summary.
+# The call card is not listed: it reads purchase_history.history() (card C P3, which
+# also deleted customers._customer_sales_aggregates, the entry that stood here for
+# "header + monthly"; those two now live in _totals and history below).
 MUST_USE_HELPER = {
-    'models/customers.py::_customer_sales_aggregates': 2,   # header + monthly
     'purchase_history.py::history': 1,                      # card C: monthly
     'purchase_history.py::_totals': 1,                      # card C: header (history() and totals())
     'purchase_history.py::histories': 1,                    # card C: every customer's ยอดซื้อรวม
@@ -170,6 +173,7 @@ SURFACES_ON_THE_MODULE = {
     ('blueprints/mobile.py', 'customer_detail'): 'totals',
     ('blueprints/mobile.py', 'sales_trip'): 'histories',
     ('call_card.py', 'get_call_list'): 'histories',
+    ('call_card.py', 'get_card'): 'history',       # card C P3
 }
 
 

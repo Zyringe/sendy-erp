@@ -211,7 +211,8 @@ def test_call_card_family(conn):
             "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, customer, "
             "qty, unit, net, vat_type) VALUES ('2026-09-01', ?, ?, ?, 'ร้านทดสอบ', 1, ?, ?, 1)",
             (f'IVCC-{i}', f'IVCC{i}', pid, u, 1000 + i))
-    products = call_card._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')
+    # Card C P3: the customer key ('ร้านทดสอบ', a bill name: these rows carry no code) replaces the name list.
+    products = call_card._assemble_products(conn, 'ร้านทดสอบ', None, today='2026-09-29')
     got = sorted((p['unit'], p['base'], p['customer_price']) for p in products)
     want = sorted(((u or ''), b, c) for u, (b, c) in CALL_CARD.items())
     assert got == want

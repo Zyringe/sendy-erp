@@ -190,7 +190,7 @@
             {% if s.top_products and s.top_products[0] %}{{ s.top_products[0].name or '—' }}{% else %}—{% endif %}
           </div></div>
           <div class="cc-stat"><div class="k">เซลล์</div><div class="v" style="font-size:14px">{{ s.salesperson or '—' }}</div></div>
-          <div class="cc-stat"><div class="k">ซื้อครั้งแรก</div><div class="v" style="font-size:14px">{{ (stats.get('first_date') or '')[:7] or '—' }}</div></div>
+          <div class="cc-stat"><div class="k">ซื้อครั้งแรก</div><div class="v" style="font-size:14px">{{ (stats.get('first_purchase_date') or '')[:7] or '—' }}</div></div>
           <div class="cc-stat"><div class="k">ซื้อล่าสุด</div><div class="v" style="font-size:14px">{{ (stats.get('last_purchase_date') or '')[:7] or '—' }}</div></div>
         </div>
         {% else %}

@@ -182,7 +182,10 @@ def test_customer_page_drops_the_giveaway(live_conn):
     """วรสวัสดิ์ never bought those goods, so their customer total must fall by
     exactly the giveaway — no more, no less."""
     import models.customers as customers
-    summary = customers.get_customer_summary('วรสวัสดิ์ ฮาร์ดแวร์')['summary']
+    # Card C P3: the name-keyed get_customer_summary is retired; the same customer is
+    # read by its code (01อ35 carries this bill name and only this one), so `raw`
+    # below is keyed on the code too.
+    summary = customers.get_customer_summary_by_code('01อ35')['summary']
     # Every line, a credit note counted AGAINST the total, as ยอดซื้อรวม counts
     # it (#494), typed out here rather than read from the helper. A raw
     # SUM(net) would add the next credit note วรสวัสดิ์ receives on this side
@@ -190,7 +193,7 @@ def test_customer_page_drops_the_giveaway(live_conn):
     raw = live_conn.execute(
         "SELECT ROUND(COALESCE(SUM(CASE WHEN doc_base LIKE 'SR%' THEN -net "
         "ELSE net END), 0), 2) FROM sales_transactions "
-        "WHERE customer = ?", ('วรสวัสดิ์ ฮาร์ดแวร์',)).fetchone()[0]
+        "WHERE customer_code = ?", ('01อ35',)).fetchone()[0]
     assert round(raw - summary['total_net'], 2) == 154122.80
 
 

@@ -3,7 +3,7 @@
 The OLD side is `tests/_card_c_oracle.py` (c9ef583, frozen). The synthetic shops
 are P1's tie-dense builder, so the same edge cases (same-day SR, freebie-only
 bills, flagged and unflagged write-offs, two units, a NULL-code credit note under
-a coded shop's bill name) now run through get_customers, get_call_list and the
+an orphan bill name; card C P4 moved it off the coded shop's own name) now run through get_customers, get_call_list and the
 sales-trip reader.
 
 One difference is BY DESIGN and pinned in its own test at the bottom: a coded
@@ -65,7 +65,7 @@ def test_get_customers_equals_the_frozen_list_sql(empty_db_conn, search):
 
 def test_the_null_code_group_is_still_one_row_summed_over_its_bill_names(empty_db_conn):
     """P1 review N6: histories() splits the NULL-code lines per bill name; this
-    list keeps them as ONE row until P4, and the sum must survive the split."""
+    list keeps the STILL-orphan ones as ONE row (P4 only retired the resolved names), and the sum must survive the split."""
     import models
     conn = empty_db_conn
     _shops(conn)

@@ -200,8 +200,10 @@ def test_summary_purchase_count_and_date_come_from_ONE_population(tmp_db_conn):
     describe the same set of documents: the newest of the counted documents IS
     the ซื้อล่าสุด the card prints beside the count."""
     _seed(tmp_db_conn)
-    import models
-    s = models.get_customer_summary(NAME)['summary']
+    import call_card
+    # Card C P3: the header is call_card.get_card's own summary now
+    # (get_customer_summary is gone); same figures, same assertions.
+    s = call_card.get_card(tmp_db_conn, CODE)['summary']['summary']
 
     assert s['doc_count'] == 3, \
         'CONTROL: doc_count is the DOCUMENT count (จำนวนเอกสาร) and keeps the SR'

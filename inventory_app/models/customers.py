@@ -42,163 +42,6 @@ def get_customer_documents(key_col, key_value, date_from=None, date_to=None, lim
     return docs
 
 
-def _customer_sales_aggregates(conn, where, params):
-    """The four per-customer sales aggregates, defined ONCE.
-
-    The name-keyed and code-keyed summaries below differ only in their WHERE, and
-    two copies of these queries drift invisibly — the same reason `sales_filters`
-    and `commission_attribution` exist as single definitions.
-
-    `total_net` in summary and monthly is ยอดซื้อรวม: before VAT, credit notes
-    subtracted (sales_filters.purchase_net_sql, #494). The summary's
-    `total_qty` (จำนวนชิ้น) follows the same rule (sales_qty_sql, #627).
-
-    Returns (summary, top_products, monthly, docs).
-    """
-    import price_lookup
-
-    summary = dict(conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_base) AS doc_count,
-               COALESCE(SUM({sales_filters.purchase_net_sql()}), 0) AS total_net,
-               COALESCE(SUM({sales_filters.sales_qty_sql()}), 0) AS total_qty,
-               MIN(date_iso)          AS first_date,
-               MAX(date_iso)          AS last_date
-        FROM sales_transactions
-        WHERE {where}
-    """, params).fetchone())
-
-    # The PURCHASE population (#493, #513): evidence-filtered lines only — never
-    # a credit note (SR), a document invoiced in error, or a free/zero-net line.
-    # ONE query answers both figures, so the count and the date can never come
-    # to describe different sets of documents: the newest of the documents
-    # `purchase_doc_count` counts IS `last_purchase_date`, which is what the
-    # call card prints side by side.
-    #
-    # Deliberately NOT the same thing as `doc_count`/`last_date` above, which
-    # stay raw: the customer page labels them จำนวนเอกสาร and the ช่วงเวลา range
-    # end, and a credit note IS a document and IS activity. Only a surface that
-    # says ซื้อ ("bought") may read these two.
-    purchases = conn.execute(f"""
-        SELECT COUNT(DISTINCT doc_base) AS n,
-               MAX(date_iso)            AS d
-        FROM sales_transactions
-        WHERE {where} AND {price_lookup.purchase_population_filter('')}
-    """, params).fetchone()
-    summary['last_purchase_date'] = purchases['d']
-    summary['purchase_doc_count'] = purchases['n']
-
-    # Money-ordered NET of returns (#627), like the trade screens: the call
-    # card's แบรนด์เด่น reads the first name. A MAPPED line groups on
-    # product_id alone — a credit note prints `product_name_raw` differently
-    # from the invoice it reverses often enough that keeping it in the key
-    # left the return as its own negative row (#627 review). An UNMAPPED line
-    # has no product to group on and keeps the raw name.
-    top_products = conn.execute(f"""
-        SELECT COALESCE(p.product_name, s.product_name_raw) AS name,
-               p.id AS product_id,
-               s.unit,
-               SUM({sales_filters.sales_qty_sql('s')}) AS total_qty,
-               SUM({sales_filters.sales_net_sql('s')}) AS total_net,
-               COUNT(DISTINCT s.doc_base) AS doc_count
-        FROM sales_transactions s
-        LEFT JOIN products p ON p.id = s.product_id
-        WHERE {where}
-        GROUP BY s.product_id,
-                 CASE WHEN s.product_id IS NULL THEN s.product_name_raw END
-        ORDER BY total_net DESC
-        LIMIT 20
-    """, params).fetchall()
-
-    monthly = conn.execute(f"""
-        SELECT strftime('%Y-%m', date_iso) AS month,
-               COUNT(DISTINCT doc_base) AS doc_count,
-               SUM({sales_filters.purchase_net_sql()}) AS total_net
-        FROM sales_transactions
-        WHERE {where}
-        GROUP BY month
-        ORDER BY month
-    """, params).fetchall()
-
-    # Every document (#493 — no 200-LINE cap cutting off old invoices; the old
-    # cap was on `doc_no`, i.e. lines, so it silently dropped whole invoices).
-    docs = purchase_history.customer_documents(conn, where, params)
-
-    return summary, top_products, monthly, docs
-
-
-def get_customer_summary(customer, date_from=None, date_to=None):
-    """
-    Returns summary + top products + monthly trend for a specific customer.
-
-    Keyed on the BILL name. One bill name can span >1 physical company (BUG 2 —
-    ทรัพย์ทวี), so this merges them; `get_customer_summary_by_code` is the
-    unambiguous form and is what the customer page uses. This one survives for
-    `call_card.py`, which only ever has a name.
-    """
-    conn = get_connection()
-    where, params = _customer_sales_scope('customer', customer, date_from, date_to)
-    summary, top_products, monthly, docs = _customer_sales_aggregates(
-        conn, where, params)
-
-    # Pull salesperson from customers MASTER (post-D1 view migration).
-    # 3-way fallback: salespersons.name → customers.salesperson code → '(ไม่กำหนด)'.
-    master_row = conn.execute("""
-        SELECT s.customer_code,
-               c.code AS master_code, c.name AS master_name,
-               c.salesperson AS sp_code,
-               sp.name AS sp_name, sp.is_active AS sp_active
-        FROM sales_transactions s
-        LEFT JOIN customers     c  ON c.code  = s.customer_code
-        LEFT JOIN salespersons  sp ON sp.code = c.salesperson
-        WHERE s.customer = ?
-        LIMIT 1
-    """, [customer]).fetchone()
-
-    customer_info = None
-    customer_code = None
-    salesperson_code = None
-    salesperson_display = None
-    salesperson_orphan = False
-    region_display = None
-
-    if master_row:
-        customer_code = master_row['customer_code']
-        if master_row['master_code']:
-            row = conn.execute(
-                "SELECT * FROM customers WHERE code=?", [master_row['master_code']]
-            ).fetchone()
-            if row:
-                customer_info = dict(row)
-                # #528: ภาค from the address, same source the call card and
-                # every other surface now uses (customer_geo.region_of) —
-                # retires the last remaining เขตการขาย FK read in this file.
-                region_display = customer_geo.region_of(row['address'])
-            salesperson_code = master_row['sp_code']
-            if salesperson_code:
-                if master_row['sp_name']:
-                    salesperson_display = master_row['sp_name']
-                else:
-                    salesperson_display = salesperson_code
-                    salesperson_orphan = True
-
-    conn.close()
-    return {
-        'customer': customer,
-        'customer_code': customer_code,
-        'region': region_display,
-        'salesperson': salesperson_display,
-        'salesperson_code': salesperson_code,
-        'salesperson_orphan': salesperson_orphan,
-        'customer_info': customer_info,
-        'date_from': date_from,
-        'date_to': date_to,
-        'summary': dict(summary),
-        'top_products': [dict(r) for r in top_products],
-        'monthly': [dict(r) for r in monthly],
-        'docs': [dict(r) for r in docs],
-    }
-
-
 def resolve_customer_codes(name):
     """Bill names can span >1 physical company (BUG 2, 2026-08 grilling —
     e.g. 'ทรัพย์ทวี' is both 43ท013 'ร้าน ทรัพย์ทวี' and 01พ14 'บจก. พงศ์ทรัพย์ทวี').
@@ -398,7 +241,7 @@ def _customer_product_cards(conn, where, params, product_rows, include_cost=Fals
     test_a_return_in_a_different_unit_does_not_net_and_says_nothing.
 
     ADDITIVE, not a replacement for `top_products`: the call card
-    (`call_card.py::get_card` → `get_customer_summary`, name-keyed) reads
+    (`call_card.py::get_card`, through `purchase_history.history()`) reads
     `top_products[0].name` as "แบรนด์เด่น", money-ordered — changing that
     query's shape or order would silently change what the call card shows.
     This is its own query, its own field, wired only into the code-keyed
@@ -740,16 +583,15 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
 
 def get_customer_summary_by_code(customer_code, date_from=None, date_to=None,
                                  include_cost=False):
-    """Code-keyed counterpart to get_customer_summary().
+    """The customer page's data, keyed on the customer code.
 
     `include_cost` (#493 slice 3) is the DATA-layer cost gate: the route
     passes True only for admin/manager, and only then do the product cards
     carry a `cost` key (WACC, last purchase cost, margins, badges).
 
-    Unlike get_customer_summary (keyed on the bill name in sales_transactions),
-    this resolves the master row DIRECTLY from `customers` by code, so the
-    2,390 customers with no sales_transactions rows still render, and the two
-    companies that share a bill name (BUG 2) never merge into one page.
+    Keyed on the code, never a bill name, this resolves the master row DIRECTLY
+    from `customers` by code, so the 2,390 customers with no sales_transactions
+    rows still render, and the two companies that share a bill name (BUG 2) never merge into one page.
     Returns the same dict shape; `data['customer']` is the bill name when one
     exists for this code, else the master name.
     """
@@ -1034,6 +876,7 @@ def get_customers(search=None, region=None, page=1, per_page=50,
             newest = max((n for n in null_names if n in orphans),
                          key=lambda n: orphans[n]['last_activity'] or '', default=None)
             r['customer'] = newest or r['customer']
+            r['_drop'] = not mine   # every NULL-code name joined its code (A1): no phantom row
         elif billing and code in hist:
             h = hist[code]
             r['customer'] = h['bill_name'] or r['customer']
@@ -1042,6 +885,7 @@ def get_customers(search=None, region=None, page=1, per_page=50,
             r['last_date'] = h['last_activity']
             r['last_purchase_date'] = h['last_purchase']
         r['region'] = customer_geo.region_of(r.pop('address'))
+    rows = [r for r in rows if not r.pop('_drop', False)]
     if region:
         rows = [r for r in rows if r['region'] == region]
 

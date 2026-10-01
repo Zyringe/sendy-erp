@@ -40,6 +40,31 @@ def _raw_conn(tmp_db):
     return conn
 
 
+def _billing_rows(conn):
+    """Rows the billing half of the list renders: one per distinct customer_code, plus
+    ONE bucket for the code-less lines if any of them is still an orphan. Since card C
+    P4 (A1) a code-less line whose bill name maps to exactly one code joins that code,
+    so the bucket exists only for names with no code or with two."""
+    coded = conn.execute("""
+        SELECT COUNT(DISTINCT customer_code) FROM sales_transactions
+        WHERE COALESCE(doc_base, doc_no) NOT IN (
+            SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+          AND customer_code IS NOT NULL
+    """).fetchone()[0]
+    orphan_bucket = conn.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM sales_transactions s
+            WHERE s.customer_code IS NULL
+              AND COALESCE(s.doc_base, s.doc_no) NOT IN (
+                  SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
+              AND s.customer NOT IN (
+                  SELECT customer FROM sales_transactions
+                  WHERE TRIM(COALESCE(customer_code,'')) != '' AND customer IS NOT NULL
+                  GROUP BY customer HAVING COUNT(DISTINCT TRIM(customer_code)) = 1))
+    """).fetchone()[0]
+    return coded + orphan_bucket
+
+
 def test_default_billing_only_matches_independent_count(tmp_db):
     import models
     conn = _raw_conn(tmp_db)
@@ -47,13 +72,7 @@ def test_default_billing_only_matches_independent_count(tmp_db):
     # customer_code PLUS one bucket for the code-less rows. Deriving it from
     # COUNT(DISTINCT customer_code) would restate the very bug this counts
     # against: SQL's DISTINCT skips NULL, so that misses the bucket entirely.
-    expected = conn.execute("""
-        SELECT COUNT(*) FROM (
-            SELECT 1 FROM sales_transactions
-            WHERE COALESCE(doc_base, doc_no) NOT IN (
-                SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
-            GROUP BY customer_code)
-    """).fetchone()[0]
+    expected = _billing_rows(conn)
     conn.close()
 
     rows, total = models.get_customers()
@@ -64,13 +83,7 @@ def test_default_billing_only_matches_independent_count(tmp_db):
 def test_include_billless_unions_master_rows_with_zero_sales(tmp_db):
     import models
     conn = _raw_conn(tmp_db)
-    billing_count = conn.execute("""
-        SELECT COUNT(*) FROM (
-            SELECT 1 FROM sales_transactions
-            WHERE COALESCE(doc_base, doc_no) NOT IN (
-                SELECT doc_no FROM ar_writeoffs WHERE excludes_revenue = 1)
-            GROUP BY customer_code)
-    """).fetchone()[0]
+    billing_count = _billing_rows(conn)
     billless_master_count = conn.execute("""
         SELECT COUNT(*) FROM customers c
         WHERE NOT EXISTS (SELECT 1 FROM sales_transactions s WHERE s.customer_code = c.code)
@@ -231,14 +244,27 @@ def test_every_customers_page_renders_in_both_modes(tmp_db):
         assert not bad, f'include_billless={flag}: pages {bad} did not render 200'
 
 
+def _plant_true_orphan(tmp_db):
+    """Since card C P4 (A1) the code-less credit notes on the dev DB all join their code, so
+    the NULL-code bucket is empty there. Plant ONE code-less line under a bill name no code
+    carries (a true orphan) so the bucket tests run instead of skipping."""
+    conn = _raw_conn(tmp_db)
+    conn.execute(
+        "INSERT INTO sales_transactions (date_iso, doc_no, doc_base, customer, customer_code,"
+        " qty, unit, unit_price, vat_type, total, net) VALUES"
+        " ('2026-01-05', 'SR9990001-1', 'SR9990001', 'ร้านกำพร้าทดสอบ', NULL, 1, 'ตัว', 10, 1, 10, 10)")
+    conn.commit()
+    conn.close()
+
+
 def test_codeless_row_links_by_name_not_a_broken_code_url(tmp_db):
     """The bucket has no code to link by; it must fall back to the name shim
     (which lands on a /customers search) rather than build an invalid URL."""
     import models, re
+    _plant_true_orphan(tmp_db)
     rows, _ = models.get_customers(per_page=100000)
     codeless = [r for r in rows if not r['customer_code']]
-    if not codeless:
-        import pytest; pytest.skip('no code-less bucket in this snapshot')
+    assert codeless, 'CONTROL: the planted orphan must make the bucket exist'
     target = codeless[0]
     idx = rows.index(target)
     page = idx // 50 + 1
@@ -284,10 +310,10 @@ def test_codeless_bucket_is_counted_not_dropped(tmp_db):
     """The specific row the old count missed. Independent ground truth: it is a
     real row in the result set, so it must be inside `total`."""
     import models
+    _plant_true_orphan(tmp_db)
     rows, total = models.get_customers(per_page=100000)
     codeless = [r for r in rows if not r['customer_code']]
-    if not codeless:
-        import pytest; pytest.skip('no code-less bucket in this snapshot')
+    assert codeless, 'CONTROL: the planted orphan must make the bucket exist'
     assert len(codeless) == 1, 'GROUP BY should collapse them into exactly one row'
     conn = _raw_conn(tmp_db)
     distinct_codes = conn.execute(

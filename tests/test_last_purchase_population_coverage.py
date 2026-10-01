@@ -95,13 +95,6 @@ def _code_only(sql):
 # figure, read off the purchase population.
 ALLOWED = {
     # ── the ซื้อ-labelled surfaces: the purchase population, #493 + #513 ──
-    'models/customers.py::_customer_sales_aggregates': (6, 1,
-        'the customer page. THREE questions live here and only one is ซื้อ: the '
-        'purchase pair (purchase_doc_count + last_purchase_date) is the single '
-        'evidence-filtered query and is what every ซื้อ-labelled surface reads; '
-        'doc_count/last_date stay raw because the page labels them จำนวนเอกสาร '
-        'and the ช่วงเวลา range end, and a credit note IS a document and IS '
-        'activity; monthly and the document list are per-period/per-document.'),
     'models/customers.py::_customer_product_cards': (0, 1,
         'สินค้าที่ซื้อบ่อย: only the PRICE half is left here. The last bill whose '
         'net/qty is rendered to a rep AS A PRICE is price_evidence_filter (#554). '
@@ -115,10 +108,6 @@ ALLOWED = {
         'document-count aggregate of its own; listed so the census covers every '
         'reader of the population, not only the ones holding an aggregate.'),
     # ── per PRODUCT, not per customer ──
-    'call_card.py::_assemble_products': (2, 0,
-        "the call card's ซื้อประจำ table: ล่าสุด and the invoice count for ONE "
-        'PRODUCT. A per-product figure that never becomes the card header\'s '
-        'ซื้อล่าสุด / จำนวนครั้งซื้อ, which read the summary above.'),
     'models/pricing_ap.py::get_product_pricing': (6, 0,
         "one product's price evidence (list prices, per-customer effective "
         'prices, marketplace rows): บิล counts and last-sale dates PER PRICE '
@@ -158,13 +147,19 @@ ALLOWED = {
         'purchase-count query\'s own COUNT and dates); the ONE purchase-population '
         'query yields purchase_count / first_purchase / last_purchase, so the newest '
         'document counted IS the last purchase.'),
-    'purchase_history.py::history': (2, 3,
-        'card C: the one customer-history reader. The raw two are the monthly and '
+    'purchase_history.py::history': (2, 0,
+        'card C: the customer-history reader. The raw two are the monthly and '
         'top-products document counts (per period / per product, not ซื้อ). The '
-        'customer-level totals moved to _totals (below); the per-product '
-        'times_bought / last_purchase are CASEs over the purchase population '
-        '(3 population sites). Pinned by test_purchase_history.py, which has a '
-        'leading freebie so first_purchase differs from first_activity.'),
+        'customer-level totals moved to _totals, the per-product rows to products() '
+        '(card C P3), so it holds no population site of its own now.'),
+    'purchase_history.py::products': (0, 4,
+        'card C: the per-product rows of the customer page and the call card. '
+        'times_bought / last_purchase are CASEs over the purchase population (4 '
+        'population sites: those two plus the qty and net CASEs, which since the '
+        'one-statement rewrite of #699 review W2 say WHEN purchase ... ELSE 0), so a credit note or a freebie is never a purchase and a '
+        'product only ever returned is dropped (HAVING times_bought > 0). Pinned by '
+        'test_purchase_history.py and tests/test_card_c_call_card_history.py. '
+        'Moved out of history() in card C P3.'),
     'purchase_history.py::histories': (1, 1,
         "every customer's raw last_activity (feeds no ซื้อ label) beside the "
         'one purchase-population last_purchase that /call, the sales trip and '
@@ -182,8 +177,7 @@ ALLOWED = {
 # control whose failure NAMES the surface that regressed, where the census
 # above would only report a changed tuple.
 MUST_USE_HELPER = (
-    'models/customers.py::_customer_sales_aggregates',
-    'purchase_history.py::history',
+    'purchase_history.py::products',    # card C P3: was history() (the per-product rows moved)
     'purchase_history.py::histories',
 )
 
