@@ -213,6 +213,19 @@ def test_as_of_ignores_later_receipts(empty_db_conn):
     assert _rows(c)['IV-T']['status'] == 'paid'
 
 
+
+def test_as_of_ignores_a_write_off_recorded_later(empty_db_conn):
+    """IV6701775 was written off on 2026-06-05; as of May it was still unpaid."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-WO-LATE', 'A', 'C-A', '2026-07-01', 1000.0)
+    _write_off(c, 'IV-WO-LATE')                      # writeoff_date 2026-08-01
+    c.commit()
+
+    before = _rows(c, as_of='2026-07-31')['IV-WO-LATE']
+    assert (before['status'], before['written_off']) == ('unpaid', False)
+    on_the_day = _rows(c, as_of='2026-08-01')['IV-WO-LATE']
+    assert (on_the_day['status'], on_the_day['written_off']) == ('written_off', True)
+
 def _seed_random(c, rng, n_invoices):
     """Returns the facts each invoice was built from, so the rules below are
     checked against what was inserted, not against either implementation."""
@@ -383,3 +396,53 @@ def test_matcher_offers_remainders_and_never_a_write_off(four_statuses):
          if h['customer_code'] == 'C-B'][0]
     assert b['total_unpaid_bills'] == 2 and b['total_outstanding'] == pytest.approx(1200.0)
     assert {x['vat_type'] for x in b['matched_bills']} == {1}
+
+
+
+# An import can commit between two reads of one request. Each test injects that
+# write at the seam right after the status rows are read, before the next read.
+
+def _write_after_rows(monkeypatch, sql_statements):
+    import database
+    real = receipt_status.rows
+
+    def rows_then_write(*args, **kwargs):
+        out = real(*args, **kwargs)
+        w = database.get_connection()
+        for sql, params in sql_statements:
+            w.execute(sql, params)
+        w.commit()
+        w.close()
+        return out
+
+    monkeypatch.setattr(receipt_status, 'rows', rows_then_write)
+
+
+def test_matcher_survives_an_invoice_deleted_mid_request(empty_db_conn, monkeypatch):
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-RACE', 'A', 'C-A', '2026-07-01', 420.0)
+    c.commit()
+    _write_after_rows(monkeypatch, [
+        ("DELETE FROM sales_transactions WHERE doc_base = ?", ('IV-RACE',))])
+
+    hits = models.find_payment_candidates(420.0, tolerance=0)
+
+    assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV-RACE']]
+
+
+def test_invoice_list_never_shows_a_receipt_its_status_did_not_see(empty_db_conn, monkeypatch):
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-LATE', 'A', 'C-A', '2026-07-01', 500.0)
+    c.commit()
+    _write_after_rows(monkeypatch, [
+        ("INSERT INTO received_payments (id, re_no, date_iso, customer, salesperson, cancelled)"
+         " VALUES (9001, 'RE-LATE', '2026-07-09', 'A', 'S1', 0)", ()),
+        ("INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount)"
+         " VALUES (9001, 'IV-LATE', 'IV', 500.0)", ())])
+
+    page_rows = models.get_payment_status()[0]
+
+    assert len(page_rows) == 1
+    assert (page_rows[0]['status'], page_rows[0]['re_no']) == ('unpaid', None)
