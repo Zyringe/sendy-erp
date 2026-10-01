@@ -501,6 +501,13 @@ def get_card(conn, customer_code):
 
     # ── 1. Resolve the URL key → canonical customer key ──────────────────────
     canon_code, names = arf_mod._resolve_target(conn, customer_code)
+    # A bill name the resolver sent to a code (it takes ONE of the name's codes) while
+    # the name is itself a /call entry (A1: the name carries two codes, or a code-less
+    # credit note has no twin) is that entry, not the guessed code: the card must show
+    # the history /call lists (#699 review W4).
+    target = (customer_code or '').strip()
+    if canon_code and canon_code != target and purchase_history.is_orphan_name(conn, target):
+        canon_code, names = None, [target]
     primary_name = names[0] if names else customer_code
     # The key every sales read below uses (purchase_history's customer key): the
     # code, or the bill name only for a true orphan. Never `names[0]` — that made
@@ -535,7 +542,7 @@ def get_card(conn, customer_code):
     # Win-back (#497) is always over the customer's full history and scoped by
     # the key, never by bill name (two codes can share one name, BUG 2 /
     # ทรัพย์ทวี): the module owns both rules.
-    hist = purchase_history.history(conn, key, today=_today())
+    hist = purchase_history.history(conn, key, today=_today(), with_products=False)
     summary = _summary(conn, hist, master)
 
     # ── 4. Top products: peer pricing + unit-aware base + promo + price tiers ──

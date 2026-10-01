@@ -84,3 +84,73 @@ def test_call_card_header_matches_the_customer_page(conn):
     card = call_card.get_card(conn, X)['summary']['summary']
     page = ph.history(conn, X)['totals']
     assert card['total_net'] == 800 == page['purchase_total']
+
+
+# ── P5: the call card agrees with /call (#699 review W4), the empty key (nit) ──
+
+def test_the_card_of_a_two_code_name_is_the_orphan_not_a_guessed_code(conn):
+    """/call lists M at -50 (its code-less SR); the card used to resolve the name to
+    ONE of its codes (LIMIT 1) and show that code's whole history."""
+    listed = ph.histories(conn)[M]['purchase_total']
+    shown = call_card.get_card(conn, M)['summary']['summary']['total_net']
+    assert listed == -50 and shown == listed
+
+
+def test_a_second_code_on_a_resolved_name_detaches_the_card_too(conn):
+    """N's SR joined X because N carried one code. Give N a second code and the SR is
+    an orphan again: /call lists N at -200, and the card of N must say the same."""
+    p = conn.execute("SELECT id FROM products LIMIT 1").fetchone()[0]
+    add_line(conn, doc_base='IV-N2', date_iso='2026-01-20', pid=p, qty=1, net=40,
+             customer=N, code='ZP4X2')
+    conn.commit()
+    assert ph.histories(conn)[N]['purchase_total'] == -200
+    assert call_card.get_card(conn, N)['summary']['summary']['total_net'] == -200
+    assert call_card.get_card(conn, X)['summary']['summary']['total_net'] == 1000, \
+        'CONTROL: X no longer carries the credit note'
+
+
+def test_the_empty_key_matches_no_row(conn):
+    """`history('')` used to return EVERY code-less row (11 docs, -34,686 on PROD)."""
+    for key in ('', None):
+        h = ph.history(conn, key)
+        assert h['totals']['doc_count'] == 0 and h['documents'] == [] and h['products'] == []
+        assert ph.totals(conn, key)['doc_count'] == 0
+        assert ph.documents(conn, key) == [] and ph.products(conn, key) == []
+        assert ph.has_invoiced_in_error(conn, key) is False
+
+
+# ── P5: speed, pinned as statement counts (a timing assertion would flake) ──────
+
+class _Counting:
+    """A connection that records every statement; everything else is the real one."""
+
+    def __init__(self, inner):
+        self.inner, self.sql = inner, []
+
+    def execute(self, sql, *args):
+        self.sql.append(sql)
+        return self.inner.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+_A1_LOOKUP = 'HAVING COUNT(DISTINCT TRIM(k.customer_code))'    # customer_key_sql's own text
+
+
+def test_history_looks_the_a1_rule_up_once_not_once_per_statement(conn):
+    """#699 review W3: history() issued ~9 statements and each rebuilt the attached-name
+    list; PROD went 23 -> 44 ms. Once per call, whatever the statement count."""
+    c = _Counting(conn)
+    ph.history(c, X)
+    assert sum(_A1_LOOKUP in q for q in c.sql) == 1, 'the A1 lookup is not once per call'
+    assert len(c.sql) >= 8, 'CONTROL: history() still issues its statements'
+    ph.totals(c, X)
+    assert sum(_A1_LOOKUP in q for q in c.sql) == 2, 'totals() adds exactly its own lookup'
+
+
+def test_the_call_card_computes_the_product_rows_once(conn):
+    c = _Counting(conn)
+    call_card.get_card(c, X)
+    assert sum('AS net_counted' in q for q in c.sql) == 1, \
+        'get_card read the per-product rows more than once'
