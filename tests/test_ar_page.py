@@ -338,3 +338,11 @@ def test_ar_invoice_page_valid_value_still_paginates(tmp_db):
     """Control: the clamp must not pin every request to page 1."""
     body = _admin(tmp_db).get('/ar?tab=invoices&page=2').get_data(as_text=True)
     assert 'หน้า 2/' in body
+
+
+def test_invoices_tab_uses_one_word_per_receipt_status(tmp_db):
+    """CONTEXT.md terms on cards, filter buttons and badges alike (ADR 0024)."""
+    body = _admin(tmp_db).get('/ar?tab=invoices').data.decode()
+    for word in ('จ่ายแล้ว', 'จ่ายบางส่วน', 'ยังไม่ชำระ', 'ตัดหนี้แล้ว'):
+        assert body.count(f'>{word}<') >= 1 or body.count(f'</i>{word}<') >= 1, word
+    assert 'ชำระแล้ว' not in body

@@ -323,7 +323,7 @@
   <div class="col-6 col-lg-2">
     <div class="card text-center border-success h-100">
       <div class="card-body py-3">
-        <div class="text-success small mb-1"><i class="bi bi-check-circle me-1"></i>ชำระแล้ว</div>
+        <div class="text-success small mb-1"><i class="bi bi-check-circle me-1"></i>จ่ายแล้ว</div>
         <div class="fs-4 fw-bold text-success" data-summary="paid_count">{{ '{:,}'.format(summary.paid_count or 0) }}</div>
         <div class="text-subtle small">{{ '{:,.0f}'.format(summary.paid_billed or 0) }} บาท</div>
       </div>
@@ -385,7 +385,7 @@
           <a href="?tab=invoices&status=unpaid&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
              class="btn {{ 'btn-danger' if inv_status == 'unpaid' else 'btn-outline-danger' }}">ยังไม่ชำระ</a>
           <a href="?tab=invoices&status=paid&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
-             class="btn {{ 'btn-success' if inv_status == 'paid' else 'btn-outline-success' }}">ชำระแล้ว</a>
+             class="btn {{ 'btn-success' if inv_status == 'paid' else 'btn-outline-success' }}">จ่ายแล้ว</a>
           <a href="?tab=invoices&status=partial&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
              class="btn {{ 'btn-warning' if inv_status == 'partial' else 'btn-outline-warning' }}">จ่ายบางส่วน</a>
           <a href="?tab=invoices&status=written_off&q={{ inv_search }}&date_from={{ date_from }}&date_to={{ date_to }}"
