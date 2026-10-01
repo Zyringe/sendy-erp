@@ -193,6 +193,17 @@
   _Avoid_: calling it an AR figure, or "days late" — it runs from the invoice date, not from
   the end of the credit term.
 
+- **receipt status (สถานะรับชำระ)** — whether one Sendy-ledger invoice has been received:
+  **จ่ายแล้ว** (received in full, or cleared by credit notes), **จ่ายบางส่วน** (some received,
+  a remainder left), **ยังไม่ชำระ** (nothing received), or **ตัดหนี้แล้ว** (in `ar_writeoffs`
+  and not received in full; a write-off on a fully received invoice forgave nothing, so it
+  stays จ่ายแล้ว). Shown on `/ar?tab=invoices`; the remainder after credit notes and receipts
+  is what the reconcile tab's ledger column and the transfer matcher use. One module,
+  `receipt_status.py` (ADR 0024). It is **not AR**: it reads the Sendy ledger, never the
+  Express snapshot, and a remainder here is not money anyone is chased for — that is
+  **chaseable**.
+  _Avoid_: "settled" for this — in commission, **settled** means the commission was paid out.
+
 - **เจ้าหนี้ (AP)** — outstanding money the business still owes its ผู้จำหน่าย (money-owed
   sense of ผู้จำหน่าย). _Avoid_: "AP / ซัพพลายเออร์" (old label that named the data source
   era, not the concept).

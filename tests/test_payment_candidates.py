@@ -233,7 +233,7 @@ def test_match_tab_shows_an_exact_hit(seeded):
 
 def test_match_tab_honours_a_custom_tolerance(seeded):
     tight = _admin().get('/ar?tab=match&amount=1005&tol=0').data.decode()
-    assert 'ไม่พบชุดบิลค้าง' in tight
+    assert 'ไม่พบชุดบิลที่ยังรับไม่ครบ' in tight
     loose = _admin().get('/ar?tab=match&amount=1005&tol=10').data.decode()
     assert 'IV001' in loose and '-5.00' in loose
 
@@ -246,7 +246,7 @@ def test_match_tab_survives_a_non_numeric_amount(seeded):
 
 def test_match_tab_reports_no_hit_rather_than_an_empty_table(seeded):
     body = _admin().get('/ar?tab=match&amount=999999').data.decode()
-    assert 'ไม่พบชุดบิลค้าง' in body
+    assert 'ไม่พบชุดบิลที่ยังรับไม่ครบ' in body
 
 
 # ── ambiguity is reported, not hidden ────────────────────────────────────────
@@ -426,4 +426,28 @@ def test_the_ledger_source_is_named_in_the_column_header(seeded):
     """The other /ar tabs serve the Express snapshot under the same words, and
     the two figures legitimately differ. Say which one this column is."""
     body = _admin().get('/ar?tab=match&amount=1000').data.decode()
-    assert 'ยอดค้างตาม ledger' in body
+    assert 'ยอดที่ยังไม่ได้รับตาม ledger' in body
+
+
+def _receive(db_path, doc_no, amount):
+    conn = sqlite3.connect(db_path)
+    re_id = conn.execute("""INSERT INTO received_payments
+                              (re_no, date_iso, customer, salesperson, cancelled)
+                            VALUES ('RE-T1', '2026-01-20', 'ทดสอบ ฮาร์ดแวร์', 'S1', 0)""").lastrowid
+    conn.execute("INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?, ?, 'IV', ?)",
+                 (re_id, doc_no, amount))
+    conn.commit()
+    conn.close()
+
+
+def test_a_part_received_bill_is_offered_by_its_remainder(seeded):
+    # CONTROL: unpaid, it answers to its full amount.
+    assert models.find_payment_candidates(2500.0, tolerance=0)
+
+    _receive(seeded, 'IV002', 1000.0)
+
+    hits = models.find_payment_candidates(1500.0, tolerance=0)
+    assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV002']]
+    assert hits[0]['total_outstanding'] == pytest.approx(1000.0 + 1500.0 + 340.25)
+    assert [[b['doc_base'] for b in h['matched_bills']]
+            for h in models.find_payment_candidates(2500.0, tolerance=0)] == [['IV001', 'IV002']]

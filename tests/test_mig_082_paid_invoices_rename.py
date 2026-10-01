@@ -381,7 +381,7 @@ def test_init_db_idempotent_on_post_mig_schema(tmp_db, monkeypatch):
 
 
 def test_payment_summary_math_intact(tmp_db):
-    """Spot-check: get_payment_summary still runs and returns non-NULL,
+    """Spot-check: the invoices-tab summary still runs and returns non-NULL,
     non-negative aggregates after the schema rename.
 
     Note: paid_count + unpaid_count != total_bills in general — paid_count
@@ -391,9 +391,9 @@ def test_payment_summary_math_intact(tmp_db):
     mig 082 contract is "column names changed, aggregates unchanged"; we
     verify it didn't crash or return NULLs."""
     import models  # imported here so tmp_db's monkeypatch is active
-    row = models.get_payment_summary()
+    row = models.get_payment_status()[2]
     assert row is not None
-    for k in ('total_bills', 'paid_count', 'unpaid_count', 'paid_amount',
-              'unpaid_amount'):
+    for k in ('total_bills', 'paid_count', 'unpaid_count', 'paid_billed',
+              'unpaid_remainder'):
         assert row[k] is not None, f"{k} returned NULL"
         assert row[k] >= 0, f"{k} negative: {row[k]}"

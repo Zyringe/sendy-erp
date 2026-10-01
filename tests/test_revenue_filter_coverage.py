@@ -46,17 +46,6 @@ ALLOWED = {
         'Sums SR (credit-note) rows for AR allocation, not revenue.',
     # 'call_card.py' left this list in card C P3: it no longer sums net off
     # sales_transactions itself (purchase_history does, behind not_a_sale_clause).
-    'models/payments.py':
-        'AR-balance surfaces, not revenue reports. get_payment_status and '
-        'get_payment_summary are the document ledger behind /ar?tab=รายบิล — '
-        'same stance as models/sales.py, every document that exists must show. '
-        'get_ar_reconciliation is deliberately UNFILTERED: it IS the '
-        '"Ledger (Sendy)" column that /ar?tab=กระทบยอด holds up against the '
-        'filtered Express snapshot, so guarding it would make the comparison '
-        'compare nothing. find_payment_candidates carries a STRICTER guard of '
-        'its own — the whole ar_writeoffs table rather than the '
-        'revenue-only subset — because it recommends where incoming cash '
-        'belongs (2026-08-31).',
     'models/marketplace.py':
         'set_amount_review sums one marketplace order\'s own billed lines to '
         'compare against that order\'s payout — a per-order figure for IV '
@@ -168,9 +157,6 @@ def test_the_surfaces_that_must_be_guarded_are():
 # `ar_diagnostic` / `_settlement_rows` as the deliberate ones. Same shape as
 # the ALLOWED sweep above: silently leaving one unswept is the failure mode.
 HS_EXCLUSION_ALLOWED = {
-    'models/payments.py':
-        'AR-balance surfaces (payment-status, unpaid bills, customer debt) — '
-        'HS is paid on the spot, never a receivable (#514).',
     'payments_alloc.py':
         'Invoice settlement / cash allocation — the issue names '
         '_settlement_rows explicitly as keep-excluded (#514).',

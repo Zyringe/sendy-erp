@@ -31,12 +31,16 @@ def test_get_ar_reconciliation_shape_and_totals(tmp_db):
         assert r['status'] in ('match', 'diff', 'snapshot_only', 'ledger_only')
 
 
-def test_reconciliation_ledger_total_matches_payment_summary(tmp_db):
+def test_reconcile_ledger_and_summary_cards_share_one_status_set(tmp_db):
+    """Both read receipt_status rows; this proves they keep the same open
+    statuses (partial + unpaid), not that either amount is right. The amounts
+    are tied to an independent SQL oracle in the live-clone invariants test."""
     import models
     rec = models.get_ar_reconciliation()
-    summ = models.get_payment_summary()
-    # ledger reconcile total should be within a small tolerance of the summary unpaid
-    assert abs(rec['ledger_total'] - summ['unpaid_amount']) < max(50.0, 0.02 * summ['unpaid_amount'])
+    summ = models.get_payment_status()[2]
+    open_remainder = summ['unpaid_remainder'] + summ['partial_remainder']
+    assert open_remainder > 0, 'clone has no open invoice; the comparison proves nothing'
+    assert rec['ledger_total'] == pytest.approx(open_remainder, abs=0.01)
 
 
 # ── Task 2 helpers ────────────────────────────────────────────────────────────
@@ -72,7 +76,7 @@ def test_overview_has_no_ledger_card_and_reconcile_keeps_its_own(tmp_db):
     assert 'Express snapshot (books)' in overview            # control: the card row rendered
     assert 'Ledger unpaid (Sendy transactions)' not in overview
     reconcile = c.get('/ar?tab=reconcile').data.decode()
-    assert 'รวม Ledger unpaid (Sendy)' in reconcile
+    assert 'ยอดที่ยังไม่ได้รับตาม Ledger (Sendy)' in reconcile
 
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────
@@ -115,7 +119,7 @@ def test_invoices_tab_unpaid_count(tmp_db):
     c = _admin(tmp_db)
     r = c.get('/ar?tab=invoices')
     assert r.status_code == 200
-    assert str(models.get_payment_summary()['unpaid_count']) in r.data.decode()
+    assert str(models.get_payment_status()[2]['unpaid_count']) in r.data.decode()
 
 
 # ── Task 5 ────────────────────────────────────────────────────────────────────
@@ -272,16 +276,18 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     is what used to report MORE paid bills than total bills."""
     import models
     import sqlite3
-    s = dict(models.get_payment_summary())
-    assert s['paid_count'] + s['unpaid_count'] == s['total_bills']
+    rows, total, s = models.get_payment_status(per_page=10 ** 6)
+    assert s['paid_count'] + s['partial_count'] + s['unpaid_count'] \
+        + s['written_off_count'] == s['total_bills']
     assert s['paid_count'] <= s['total_bills']
+    assert total == len(rows) == s['total_bills']
 
     # Conservation of baht: the split must account for every billed satang and
     # invent none. This is the assertion that actually pins "no amount
-    # multiplication" — derived independently of get_payment_summary().
+    # multiplication" — derived independently of the summary.
     conn = sqlite3.connect(tmp_db)
     billed = conn.execute('''
-        SELECT ROUND(SUM(net), 2) FROM (
+        SELECT ROUND(SUM(ROUND(net, 2)), 2) FROM (
             SELECT SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) AS net
               FROM sales_transactions
              WHERE doc_base IS NOT NULL AND doc_base NOT LIKE 'SR%'
@@ -290,7 +296,41 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
             HAVING SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END) > 0)
     ''').fetchone()[0]
     conn.close()
-    assert s['paid_amount'] + s['unpaid_amount'] == pytest.approx(billed, abs=0.01)
+    assert billed > 0
+    assert sum(r['billed'] for r in rows) == pytest.approx(billed, abs=0.01)
+
+    # The four cards conserve the same oracle: billed on the paid and
+    # written-off cards plus the billed of every open invoice.
+    open_rows = [r for r in rows if r['status'] in ('partial', 'unpaid')]
+    assert open_rows, 'clone has no open invoice; the card split is untested'
+    assert s['paid_billed'] + s['written_off_billed'] \
+        + sum(r['billed'] for r in open_rows) == pytest.approx(billed, abs=0.01)
+    assert s['partial_remainder'] + s['unpaid_remainder'] \
+        == pytest.approx(sum(r['remainder'] for r in open_rows), abs=0.01)
+
+    # The remainder cards against SQL written here, not the engine: billed
+    # minus active receipt amounts minus credit notes, per open invoice.
+    conn = sqlite3.connect(tmp_db)
+    conn.execute('CREATE TEMP TABLE open_docs (doc TEXT PRIMARY KEY)')
+    conn.executemany('INSERT INTO open_docs VALUES (?)', [(r['doc_base'],) for r in open_rows])
+    oracle = dict(conn.execute('''
+        SELECT o.doc,
+               ROUND((SELECT SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END)
+                        FROM sales_transactions WHERE doc_base = o.doc), 2)
+             - COALESCE((SELECT SUM(pi.amount) FROM paid_invoices pi
+                           JOIN received_payments rp ON rp.id = pi.re_id
+                          WHERE rp.cancelled = 0 AND pi.doc_kind = 'IV'
+                            AND pi.doc_no = o.doc), 0)
+             - COALESCE((SELECT SUM(credited_amount) FROM credit_note_amounts
+                          WHERE ref_invoice = o.doc), 0)
+          FROM open_docs o
+    ''').fetchall())
+    conn.close()
+    moved = [d for d, rem in oracle.items()
+             if round(rem, 2) != next(r['billed'] for r in open_rows if r['doc_base'] == d)]
+    assert moved, 'no open invoice has a receipt or credit note; remainder untested'
+    assert s['partial_remainder'] + s['unpaid_remainder'] \
+        == pytest.approx(sum(oracle.values()), abs=0.01)
 
     # control: the fixture really does contain the multi-link shape
     conn = sqlite3.connect(tmp_db)
@@ -316,8 +356,7 @@ def test_invoices_tab_payment_rate_never_exceeds_100(tmp_db):
 def test_invoices_tab_pagination_count_matches_summary(tmp_db):
     """The paginated total and the summary must count the same population."""
     import models
-    _rows, total = models.get_payment_status()
-    s = dict(models.get_payment_summary())
+    _rows, total, s = models.get_payment_status()
     assert total == s['total_bills']
 
 
@@ -334,3 +373,11 @@ def test_ar_invoice_page_valid_value_still_paginates(tmp_db):
     """Control: the clamp must not pin every request to page 1."""
     body = _admin(tmp_db).get('/ar?tab=invoices&page=2').get_data(as_text=True)
     assert 'หน้า 2/' in body
+
+
+def test_invoices_tab_uses_one_word_per_receipt_status(tmp_db):
+    """CONTEXT.md terms on cards, filter buttons and badges alike (ADR 0024)."""
+    body = _admin(tmp_db).get('/ar?tab=invoices').data.decode()
+    for word in ('จ่ายแล้ว', 'จ่ายบางส่วน', 'ยังไม่ชำระ', 'ตัดหนี้แล้ว'):
+        assert body.count(f'>{word}<') >= 1 or body.count(f'</i>{word}<') >= 1, word
+    assert 'ชำระแล้ว' not in body

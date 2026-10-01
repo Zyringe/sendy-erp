@@ -483,6 +483,20 @@ def immediate(conn):
             raise
 
 
+
+@contextlib.contextmanager
+def read_snapshot():
+    """A fresh connection inside one read transaction, rolled back and closed
+    on exit. Every query in the block sees the same committed state (WAL), so
+    an import that commits mid-request cannot split one page's figures."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()
+
 def _list_migration_files():
     """Return numbered .sql files in data/migrations/ sorted by name.
     Excludes .rollback.sql files."""

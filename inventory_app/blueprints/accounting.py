@@ -18,7 +18,7 @@ import ar_statement
 import book_registry
 import commission_attribution
 import models
-from database import get_connection
+from database import get_connection, read_snapshot
 from paging import paging
 import cashflow as cf_mod
 import revenue as rev_mod
@@ -333,12 +333,11 @@ def ar_dashboard():
         date_from = request.args.get('date_from', '').strip()
         date_to = request.args.get('date_to', '').strip()
         page, per_page = paging(request.args)
-        rows, total = models.get_payment_status(
+        rows, total, summ = models.get_payment_status(
             status=inv_status, search=inv_search,
             date_from=date_from, date_to=date_to,
             page=page, per_page=per_page,
         )
-        summ = models.get_payment_summary()
         total_pages = max(1, (total + per_page - 1) // per_page)
         ctx.update(
             inv_rows=rows, inv_total=total,
@@ -385,7 +384,11 @@ def ar_dashboard():
         )
 
     elif tab == 'reconcile':
-        rec = models.get_ar_reconciliation()
+        # One read transaction for the reconcile table and the credit section,
+        # so an import landing mid-request cannot put them out of step.
+        with read_snapshot() as conn:
+            rec = models.get_ar_reconciliation(conn=conn)
+            all_credit_rows = pa_mod.customer_credit_rows(threshold=0.0, conn=conn)
         ctx['reconcile'] = rec
 
         # Customer-credit-balance section — moved here verbatim from
@@ -395,7 +398,6 @@ def ar_dashboard():
         # separate calls could produce in a concurrent import.
         show_all_credit  = request.args.get('show_all') in ('1', 'true', 'on')
         credit_threshold = 0.0 if show_all_credit else 5.0
-        all_credit_rows  = pa_mod.customer_credit_rows(threshold=0.0)
         credit_rows = (all_credit_rows if show_all_credit
                        else [r for r in all_credit_rows
                              if r['credit'] >= credit_threshold])

@@ -45,15 +45,6 @@ _CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b|customer_key_sql', r
 # ยอดซื้อรวม, so it keeps its own definition on purpose.
 ALLOWED = {
     # ── money owed (AR), not money spent ──
-    'models/payments.py::get_payment_status': (1,
-        'the /ar รายบิล document ledger: one row per bill, VAT-inclusive billed '
-        'against paid. An AR balance, not a purchase total.'),
-    'models/payments.py::get_ar_reconciliation': (1,
-        'the "Ledger (Sendy)" unpaid column of /ar?tab=กระทบยอด, deliberately '
-        'unfiltered so it can be held against the Express snapshot.'),
-    'models/payments.py::find_payment_candidates': (1,
-        'matches an incoming transfer to a customer\'s unpaid bills '
-        '(VAT-inclusive cash owed). An AR search, not a purchase total.'),
     'payments_alloc.py::_settlement_rows': (1,
         'per-invoice billed vs collected for AR allocation (VAT-inclusive cash, '
         'credit notes handled by the allocation itself).'),

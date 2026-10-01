@@ -86,15 +86,6 @@ ALLOWED = {
     'models/financial_health.py::_trailing_margin': (2,
         'financial-health margin: revenue and base-unit COGS over revenue_filter(), SR dropped.'),
     # ── AR / settlement: a credit note is handled as a credit on purpose ──
-    'models/payments.py::get_payment_status': (2,
-        'the /ar รายบิล document ledger: one row per bill, billed vs paid. AR.'),
-    'models/payments.py::get_payment_summary': (4,
-        'the /ar รายบิล summary over IV bills (SR and HS excluded: HS is paid '
-        'on the spot, #514). AR, not ยอดขาย.'),
-    'models/payments.py::get_ar_reconciliation': (1,
-        'the "Ledger (Sendy)" unpaid column held against the Express snapshot. AR.'),
-    'models/payments.py::find_payment_candidates': (1,
-        'matches an incoming transfer to unpaid bills (VAT-inclusive cash owed). AR.'),
     'payments_alloc.py::_settlement_rows': (3,
         'per-invoice billed vs collected: SR summed ON PURPOSE as the credit it '
         'is (authoritative amounts from credit_note_amounts). AR allocation.'),

@@ -835,14 +835,14 @@ def test_summary_counts_a_multi_receipt_invoice_once(empty_db_conn):
     _ins_paid(c, r2, doc, 400.0)
     c.commit()
 
-    summary = dict(models.get_payment_summary())
+    summary = dict(models.get_payment_status()[2])
 
     assert summary['total_bills'] == 1
     assert summary['paid_count'] == 1
     assert summary['unpaid_count'] == 0
     assert summary['paid_count'] + summary['unpaid_count'] == summary['total_bills']
     assert summary['paid_count'] <= summary['total_bills']
-    assert summary['paid_amount'] == pytest.approx(1000.0)
+    assert summary['paid_billed'] == pytest.approx(1000.0)
 
 
 def test_invoice_list_does_not_multiply_amount_across_receipts(empty_db_conn):
@@ -856,12 +856,12 @@ def test_invoice_list_does_not_multiply_amount_across_receipts(empty_db_conn):
     _ins_paid(c, r2, doc, 400.0)
     c.commit()
 
-    rows, total = models.get_payment_status()
+    rows, total, _summary = models.get_payment_status()
 
     assert total == 1, 'pagination count multiplied by receipt links'
     assert len(rows) == 1
-    assert rows[0]['total_net'] == pytest.approx(1000.0)
-    assert rows[0]['is_paid'] == 1
+    assert rows[0]['billed'] == pytest.approx(1000.0)
+    assert rows[0]['status'] == 'paid'
     assert rows[0]['re_no'] in ('RE-M1', 'RE-M2')
 
 
@@ -875,15 +875,15 @@ def test_cancelled_only_receipt_leaves_invoice_unpaid_everywhere(empty_db_conn):
     c.commit()
 
     # 1. get_payment_summary
-    summary = dict(models.get_payment_summary())
+    summary = dict(models.get_payment_status()[2])
     assert summary['paid_count'] == 0
     assert summary['unpaid_count'] == 1
-    assert summary['unpaid_amount'] == pytest.approx(1000.0)
+    assert summary['unpaid_remainder'] == pytest.approx(1000.0)
 
     # 2. get_payment_status — both the row flag and the unpaid filter
-    rows, _ = models.get_payment_status()
-    assert rows[0]['is_paid'] == 0
-    unpaid_rows, unpaid_total = models.get_payment_status(status='unpaid')
+    rows, _, _summary = models.get_payment_status()
+    assert rows[0]['status'] == 'unpaid'
+    unpaid_rows, unpaid_total, _summary = models.get_payment_status(status='unpaid')
     assert unpaid_total == 1 and unpaid_rows[0]['doc_base'] == doc
 
     # 3. get_ar_reconciliation — the ledger side must still owe this
@@ -910,14 +910,14 @@ def test_mixed_cancelled_and_active_receipt_stays_paid(empty_db_conn):
     _ins_paid(c, ra, doc, 1000.0)
     c.commit()
 
-    summary = dict(models.get_payment_summary())
+    summary = dict(models.get_payment_status()[2])
     assert summary['total_bills'] == 1
     assert summary['paid_count'] == 1
     assert summary['unpaid_count'] == 0
-    assert summary['paid_amount'] == pytest.approx(1000.0)
+    assert summary['paid_billed'] == pytest.approx(1000.0)
 
-    rows, total = models.get_payment_status()
-    assert total == 1 and rows[0]['is_paid'] == 1
+    rows, total, _summary = models.get_payment_status()
+    assert total == 1 and rows[0]['status'] == 'paid'
     assert rows[0]['re_no'] == 'RE-ACTIVE', 'display picked the cancelled receipt'
     assert rows[0]['paid_date'] == '2026-07-06', 'display showed the cancelled receipt date'
 
@@ -944,14 +944,14 @@ def test_summary_invariants_hold_on_a_mixed_population(empty_db_conn):
     _ins_paid(c, rc, 'IV-U2', 400.0)
     c.commit()
 
-    s = dict(models.get_payment_summary())
+    s = dict(models.get_payment_status()[2])
     assert s['total_bills'] == 4
     assert s['paid_count'] == 2
     assert s['unpaid_count'] == 2
     assert s['paid_count'] + s['unpaid_count'] == s['total_bills']
     assert s['paid_count'] <= s['total_bills']
-    assert s['paid_amount'] == pytest.approx(300.0)
-    assert s['unpaid_amount'] == pytest.approx(700.0)
+    assert s['paid_billed'] == pytest.approx(300.0)
+    assert s['unpaid_remainder'] == pytest.approx(700.0)
 
 
 def test_display_payment_picks_the_NEWEST_receipt_not_the_max_string(empty_db_conn):
@@ -971,9 +971,9 @@ def test_display_payment_picks_the_NEWEST_receipt_not_the_max_string(empty_db_co
     _ins_paid(c, ra, doc, 600.0)
     c.commit()
 
-    rows, total = models.get_payment_status()
+    rows, total, _summary = models.get_payment_status()
 
     assert total == 1
     assert rows[0]['re_no'] == 'RE-A', 'display took MAX(re_no), not the newest receipt'
     assert rows[0]['paid_date'] == '2026-07-09'
-    assert rows[0]['total_net'] == pytest.approx(1000.0)
+    assert rows[0]['billed'] == pytest.approx(1000.0)
