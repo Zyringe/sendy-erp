@@ -9,8 +9,8 @@ orphan, never guessed): `customer_key_sql`. For every row that has a code it equ
 `customer_code = ?` (0 padded, 0 blank on the 2026-09-29 PROD snapshot).
 
 COST. `history()` filters on the key, which no index serves, so each call scans
-sales_transactions (measured on the 2026-09-29 PROD snapshot, 20.6k rows: about
-23 ms for `history()`, 14 ms for `histories()`, whatever the customer's size) and
+sales_transactions (measured on the 2026-09-29 PROD snapshot, 20.6k rows: 25-28 ms
+for `history()` (44 ms before the single A1 lookup), 15 ms for `histories()`, whatever the customer's size) and
 grows with the table. The A1 rule is looked up ONCE per call (the bill names that
 resolve to the key), then every statement filters on those names as literals. One
 key per request is fine; any loop over keys MUST use `histories()`, one pass for

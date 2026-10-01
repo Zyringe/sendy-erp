@@ -44,7 +44,7 @@ credit notes and freebie-only bills as purchases, and it read documents invoiced
   test red naming the function.
 - If an import ever gives a bill name that A1 resolved a second code, that name's credit notes detach and
   the twin's ยอดซื้อรวม jumps back up, silently. By design (never guess); worth a data-quality alert later.
-- `history()` filters on the key, which no index serves: each call scans `sales_transactions` (about 23 ms
+- `history()` filters on the key, which no index serves: each call scans `sales_transactions` (25-28 ms
   on 20.6k rows). A loop over keys must use `histories()`. Upgrade path: an expression index on
   `customer_key_sql('')`.
 - Not covered by the test: SQL built from separate variables, and a figure computed in Python from fetched
