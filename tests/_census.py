@@ -131,10 +131,13 @@ def per_function(src, pattern, table, keep=None):
     return counts
 
 
-def app_counts(pattern, table, keep=None, include_scripts=False):
-    """{'file::function': hits} across the whole tree."""
+def app_counts(pattern, table, keep=None, include_scripts=False, skip=()):
+    """{'file::function': hits} across the whole tree. `skip` names files (relative
+    paths) the sweep leaves to another owner."""
     out = {}
     for rel, path in py_files(include_scripts):
+        if rel in skip:
+            continue
         for func, n in per_function(read(path), pattern, table, keep).items():
             out[f'{rel}::{func}'] = n
     return out

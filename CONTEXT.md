@@ -291,6 +291,11 @@
 
 ### Customer page (`/customer/code/<code>` — #493)
 
+- **Owner of these figures** — `inventory_app/purchase_history.py` (ADR 0022). A surface calls it
+  and holds no history aggregate of its own (the sales trip keeps its AR outstanding, which is a
+  different question). Its key is the customer code; a credit note filed without a code joins the one
+  code that carries the same exact bill name (decision A1), else it is an orphan keyed by the bill name.
+
 - **ยอดรวมเอกสาร (document total)** — the sum of a document's lines, plus 7% VAT when the
   document is แยก VAT (`vat_type=2`). A credit note's ยอดรวมเอกสาร is **negative**. This is
   what the customer page's document list shows per row — never a raw `SUM(net)`, which
@@ -317,6 +322,11 @@
 
 - **ครั้งที่ซื้อ (times bought)** — the number of invoices carrying a *paid* line (net > 0)
   of a product. A freebie-only invoice or a credit note does not count.
+
+- **ซื้อครั้งแรก (first purchase date)** — the earliest date with a paid invoice line, on the
+  same purchase population as ซื้อล่าสุด; never a credit note or a freebie-only document (Put,
+  2026-09-30, decision E1). The call card's header shows it. Distinct from "ช่วงเวลา", the raw
+  first/last activity.
 
 - **ซื้อล่าสุด (last purchase date)** — the latest date with a paid invoice line; never a
   credit note or a freebie-only document. Computed over the PURCHASE population

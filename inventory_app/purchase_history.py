@@ -8,11 +8,14 @@ only, nothing written); with no such code, or two, the key is the bill name (a t
 orphan, never guessed): `customer_key_sql`. For every row that has a code it equals
 `customer_code = ?` (0 padded, 0 blank on the 2026-09-29 PROD snapshot).
 
-COST. `history()` filters on the key EXPRESSION, which no index serves, so each
-call scans sales_transactions (19-28 ms on 20.6k rows, whatever the customer's
-size) and grows with the table. One key per request is fine; any loop over
-keys MUST use `histories()`, one pass for all of them. Upgrade path if a
-single call ever matters: an expression index on `customer_key_sql('')`.
+COST. `history()` filters on the key, which no index serves, so each call scans
+sales_transactions (measured on the 2026-09-29 PROD snapshot, 20.6k rows: 25-36 ms
+for `history()` (44 ms before the single A1 lookup), 15 ms for `histories()`, whatever the customer's size) and
+grows with the table. The A1 rule is looked up once per `history()` call (the bill names that
+resolve to the key), then every statement filters on those names as bound parameters. One
+key per request is fine; any loop over keys MUST use `histories()`, one pass for
+all of them. Upgrade path if a single call ever matters: an expression index on
+`customer_key_sql('')`.
 
 WINDOWS. `history(date_from, date_to)` bounds every field EXCEPT `winback`, which
 is always all-time. `histories(total_since)` bounds `purchase_total` only. A
@@ -45,19 +48,15 @@ import sales_filters
 import vat_math
 
 
-# A bill name that maps to exactly ONE customer code (Put A1, 2026-09-30). Unaliased,
-# uncorrelated, so SQLite evaluates it once per statement.
-_ONE_CODE_NAMES = ("SELECT customer FROM sales_transactions "
-                   "WHERE TRIM(COALESCE(customer_code,'')) != '' AND customer IS NOT NULL "
-                   "GROUP BY customer HAVING COUNT(DISTINCT TRIM(customer_code)) = 1")
-
-
 def customer_key_sql(alias='s'):
     """SQL expression of a sales row's canonical customer key: the trimmed
     customer code; for a row with NO code, the one code that carries the same exact
     bill name (a credit note filed without a code belongs to its shop, A1); else the
     bill name (a true orphan: no twin, or a name shared by two codes: never guessed).
-    `alias` is required (the expression correlates on the row's bill name)."""
+    `alias` is required (the expression correlates on the row's bill name).
+
+    This is the ONLY statement of the A1 rule. Everything else (`_key_scope`,
+    `is_orphan_name`) asks it, so the encodings cannot drift apart."""
     if not alias:
         raise ValueError('customer_key_sql needs a table alias')
     a = alias
@@ -68,28 +67,49 @@ def customer_key_sql(alias='s'):
             "{a}.customer)").format(a=a)
 
 
-def _key_match():
-    """(sql, params-per-key) matching the rows of ONE key, on unaliased columns:
-    the same answer as `customer_key_sql(..) = ?` without correlating on the outer
-    alias, so it can sit in a WHERE whose FROM is aliased or not."""
-    sql = ("(TRIM(COALESCE(customer_code,'')) = ? "
-           "OR (TRIM(COALESCE(customer_code,'')) = '' AND ("
-           "customer IN (SELECT customer FROM sales_transactions "
-           "WHERE TRIM(COALESCE(customer_code,'')) != '' AND customer IS NOT NULL "
-           "GROUP BY customer HAVING COUNT(DISTINCT TRIM(customer_code)) = 1 "
-           "AND MIN(TRIM(customer_code)) = ?) "
-           "OR (customer = ? AND customer NOT IN ({one}))))) ").format(one=_ONE_CODE_NAMES)
-    return sql.rstrip(), 3
+def _code_less_names(conn, key):
+    """The bill names whose CODE-LESS rows have `key` as their canonical key (A1):
+    the names attached to a code, or `[key]` itself for a true orphan name. One
+    statement, answered by `customer_key_sql`; it correlates only on the code-less
+    rows (a handful on PROD), the rest are skipped by the first predicate."""
+    return [r[0] for r in conn.execute(
+        f"SELECT DISTINCT s.customer FROM sales_transactions s "
+        f"WHERE TRIM(COALESCE(s.customer_code,'')) = '' AND s.customer IS NOT NULL "
+        f"AND {customer_key_sql('s')} = ?", (key,))]
 
 
-def _scope(key, date_from=None, date_to=None, invoiced_in_error=False):
+def is_orphan_name(conn, name):
+    """True if `name` is itself a customer key: some code-less row filed under it
+    resolves to no code (A1: no twin, or two). The call card asks it to tell a bill
+    name that IS a /call entry from one that merely leads to a code."""
+    return bool(name) and name in _code_less_names(conn, name)
+
+
+def _key_scope(conn, key):
+    """(sql, params) matching the rows of ONE key, on unaliased columns: its coded
+    rows, plus the code-less rows of the names `_code_less_names` found. An empty or
+    missing key matches nothing (a code-less row has no code to equal)."""
+    if not key:
+        return '0', []
+    names = _code_less_names(conn, key)
+    sql = "NULLIF(TRIM(customer_code),'') = ?"
+    params = [key]
+    if names:
+        sql += (" OR (TRIM(COALESCE(customer_code,'')) = '' AND customer IN (%s))"
+                % ','.join('?' * len(names)))
+        params += names
+    return '(%s)' % sql, params
+
+
+def _scope(conn, key, date_from=None, date_to=None, invoiced_in_error=False, key_scope=None):
     """WHERE clause (unaliased columns) + params for one customer's counted rows:
     the key, the optional date window, and not-invoiced-in-error (unless
     `invoiced_in_error=True`, which keeps those documents: only the call card's
-    clearance seed asks, it wants everything the customer was handed)."""
-    match, n = _key_match()
+    clearance seed asks, it wants everything the customer was handed).
+    `key_scope` is a `_key_scope` result a caller already holds (one lookup per call)."""
+    match, params = key_scope if key_scope is not None else _key_scope(conn, key)
     conds = [match]
-    params = [key] * n
+    params = list(params)
     if date_from:
         conds.append('date_iso >= ?')
         params.append(date_from)
@@ -144,7 +164,7 @@ def customer_documents(conn, where, params, limit=None):
 
 def documents(conn, key, date_from=None, date_to=None, limit=None):
     """Just `history()['documents']` (newest first), optionally the first `limit`."""
-    where, params = _scope(key, date_from, date_to)
+    where, params = _scope(conn, key, date_from, date_to)
     return customer_documents(conn, where, params, limit=limit)
 
 
@@ -174,12 +194,12 @@ def _totals(conn, where, params):
 def totals(conn, key, date_from=None, date_to=None):
     """Just `history()['totals']`: two statements instead of eight. For a surface
     that renders a count and a sum (/m/customer) and needs nothing else."""
-    where, params = _scope(key, date_from, date_to)
+    where, params = _scope(conn, key, date_from, date_to)
     return _totals(conn, where, params)
 
 
 def products(conn, key, date_from=None, date_to=None, counted=False, include_unbought=False,
-             invoiced_in_error=False):
+             invoiced_in_error=False, key_scope=None):
     """Just `history()['products']`: one statement. For a surface that renders the
     per-product table and needs nothing else (the call card's rows).
 
@@ -200,7 +220,7 @@ def products(conn, key, date_from=None, date_to=None, counted=False, include_unb
     a salesperson reads as ซื้อรวม leaves them out."""
     import price_lookup
 
-    where, params = _scope(key, date_from, date_to, invoiced_in_error)
+    where, params = _scope(conn, key, date_from, date_to, invoiced_in_error, key_scope)
     # Money and quantity are NET of credit notes (#646); times_bought and
     # last_purchase stay on the purchase half (a credit note is not a purchase,
     # the invoice it reverses still is). HAVING drops a product that was only
@@ -241,13 +261,13 @@ def products(conn, key, date_from=None, date_to=None, counted=False, include_unb
 
 def has_invoiced_in_error(conn, key):
     """True if the key has a document invoiced in error (a flagged giveaway)."""
-    where, params = _scope(key, invoiced_in_error=True)
+    where, params = _scope(conn, key, invoiced_in_error=True)
     return bool(conn.execute(
         f"SELECT 1 FROM sales_transactions WHERE {where} "
         f"AND NOT ({sales_filters.not_a_sale_clause()}) LIMIT 1", params).fetchone())
 
 
-def history(conn, key, date_from=None, date_to=None, today=None):
+def history(conn, key, date_from=None, date_to=None, today=None, with_products=True):
     """Everything one customer page / call card needs. The window applies to
     every field EXCEPT 'winback' (always all-time). `today` pins win-back's clock.
 
@@ -264,11 +284,16 @@ def history(conn, key, date_from=None, date_to=None, today=None):
                                          # product_id, unit
        'returned_net_total': float,      # all countable credit notes in the window
        'winback': [...]}                 # all-time
+
+    `with_products=False` skips the per-product statement and returns `'products':
+    None`: for a caller that reads the rows itself with other options (the call card
+    wants them `counted`), so they are not computed twice.
     """
     import price_lookup
     import winback
 
-    where, params = _scope(key, date_from, date_to)
+    ks = _key_scope(conn, key)          # the A1 lookup, once for the whole call
+    where, params = _scope(conn, key, date_from, date_to, key_scope=ks)
 
     totals = _totals(conn, where, params)
 
@@ -303,14 +328,15 @@ def history(conn, key, date_from=None, date_to=None, today=None):
         LIMIT 20
     """, params).fetchall()]
 
-    products_ = products(conn, key, date_from, date_to)
+    products_ = (products(conn, key, date_from, date_to, key_scope=ks)
+                 if with_products else None)
 
     returned_net_total = conn.execute(f"""
         SELECT COALESCE(SUM(s.net), 0) FROM sales_transactions s
         WHERE {where} AND {price_lookup.returned_lines_filter('s')}
     """, params).fetchone()[0]
 
-    wb_where, wb_params = _scope(key)
+    wb_where, wb_params = _scope(conn, key, key_scope=ks)
     winback_rows = winback.compute_winback(conn, wb_where, wb_params, today=today)
 
     return {

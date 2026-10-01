@@ -21,7 +21,7 @@ WINDOWS = [(None, None), ('2026-02-01', None), (None, '2026-03-15'),
            ('2026-02-10', '2026-05-01')]
 
 
-def _build_shop(conn, rng, code, pids, marketplace=0.08):
+def _build_shop(conn, rng, code, pids, marketplace=0.08, attach=True):
     name = 'ร้าน%s' % code
     docs = []
     for i in range(rng.randint(3, 10)):
@@ -42,6 +42,14 @@ def _build_shop(conn, rng, code, pids, marketplace=0.08):
     # make this old-vs-new equality false on purpose.)
     add_line(conn, doc_base='SRNC%s' % code, date_iso='2026-04-04', pid=pids[0], qty=1,
              net=77, customer=name + ' (ไม่มีรหัส)', code=None)
+    # A code-less credit note under the shop's OWN bill name (this shop is the only
+    # code that name carries): it attaches to `code` (card C P4 / A1). Half the seeds
+    # have one, so the attach path of both SQL encodings of the rule is exercised on
+    # randomised, tie-dense data and not only on the hand-built P4 cases (#699 W5).
+    if attach and rng.random() < 0.5:
+        add_line(conn, doc_base='SRA%s' % code, date_iso=rng.choice(DATES), pid=rng.choice(pids),
+                 qty=rng.choice([1, 2, 6]), net=rng.choice([0, 50, 120, 400]),
+                 customer=name, code=rng.choice([None, None, '', '  ']))
     for doc in docs:
         r = rng.random()
         if r < 0.1:
@@ -50,13 +58,25 @@ def _build_shop(conn, rng, code, pids, marketplace=0.08):
             writeoff(conn, doc, 0, code)
 
 
+def _scope(code, date_from, date_to):
+    """The frozen scope (c9ef583) widened by the one A1 rule, spelled for THIS corpus
+    and nothing else: each shop's bill name carries exactly one code, so the code-less
+    rows under that name are the shop's. Independent of customer_key_sql."""
+    from tests import _card_c_oracle as c
+    where, params = c.customer_sales_scope('customer_code', code, date_from, date_to)
+    where = where.replace(
+        'customer_code = ?',
+        "(customer_code = ? OR (TRIM(COALESCE(customer_code,'')) = '' AND customer = ?))", 1)
+    return where, [code, 'ร้าน%s' % code] + params[1:]
+
+
 def _old(conn, code, date_from, date_to):
     import winback
     from tests import _card_c_oracle as c
-    where, params = c.customer_sales_scope('customer_code', code, date_from, date_to)
+    where, params = _scope(code, date_from, date_to)
     summary, top, monthly, docs = c.customer_sales_aggregates(conn, where, params)
     cards = c.product_rows(conn, where, params)
-    wb_where, wb_params = c.customer_sales_scope('customer_code', code, None, None)
+    wb_where, wb_params = _scope(code, None, None)
     return {
         'summary': dict(summary),
         'top': [dict(r) for r in top],
@@ -94,7 +114,6 @@ def _same_top(old, new, msg):
 def test_history_equals_the_code_it_replaces_on_random_shops(empty_db_conn):
     import price_lookup
     import purchase_history
-    from tests import _card_c_oracle as c_oracle
     conn = empty_db_conn
     pids = [mk_product(conn, 'สินค้า%d' % i) for i in range(4)]
     for seed in SEEDS:
@@ -119,8 +138,7 @@ def test_history_equals_the_code_it_replaces_on_random_shops(empty_db_conn):
             assert t['purchase_count'] == s['purchase_doc_count'], msg
             # first_purchase has no page-side oracle: an independent MIN over the
             # same population (P1 review W2)
-            where, params = c_oracle.customer_sales_scope(
-                'customer_code', code, date_from, date_to)
+            where, params = _scope(code, date_from, date_to)
             first = conn.execute(
                 'SELECT MIN(date_iso) FROM sales_transactions WHERE %s AND %s'
                 % (where, price_lookup.purchase_population_filter('')), params).fetchone()[0]
@@ -157,6 +175,9 @@ def test_history_equals_the_code_it_replaces_on_random_shops(empty_db_conn):
 
 
 def test_histories_equals_history_totals_for_every_key(empty_db_conn):
+    """Every key `histories()` returns, resolved orphan names included (#699 W5): the
+    two SQL encodings of A1 (`customer_key_sql` and the name lookup `history()` uses)
+    must give the same totals."""
     import purchase_history
     conn = empty_db_conn
     pids = [mk_product(conn, 'สินค้า%d' % i) for i in range(4)]
@@ -165,8 +186,10 @@ def test_histories_equals_history_totals_for_every_key(empty_db_conn):
     conn.commit()
     hs = purchase_history.histories(conn)
     hs_since = purchase_history.histories(conn, total_since='2026-03-01')
-    for seed in SEEDS[:60]:
-        code = 'R%d' % seed
+    orphans = [k for k in hs if not k.startswith('R')]
+    assert len(orphans) >= 30, 'CONTROL: the corpus has true orphan keys to check'
+    assert len(hs) == 60 + len(orphans), 'CONTROL: 60 shop codes + the orphan names, no more'
+    for code in hs:
         t = purchase_history.history(conn, code, today=TODAY)['totals']
         assert hs[code]['doc_count'] == t['doc_count'], code
         assert _close(hs[code]['purchase_total'], t['purchase_total']), code
@@ -174,6 +197,13 @@ def test_histories_equals_history_totals_for_every_key(empty_db_conn):
         assert hs[code]['last_purchase'] == t['last_purchase'], code
         w = purchase_history.history(conn, code, date_from='2026-03-01', today=TODAY)
         assert _close(hs_since[code]['purchase_total'], w['totals']['purchase_total']), code
+    # the attach actually happened: the shop's own code-less rows are in its figure
+    attached = [s for s in SEEDS[:60]
+                if conn.execute("SELECT 1 FROM sales_transactions WHERE doc_base = ?",
+                                ('SRA%s' % ('R%d' % s),)).fetchone()]
+    assert len(attached) >= 15, 'CONTROL: A1-attached rows exist in the corpus'
+    assert not [k for k in hs if k.startswith('ร้านR') and 'ไม่มีรหัส' not in k], \
+        'the shop-name keys joined their codes'
 
 
 def test_histories_survives_a_key_committed_between_its_two_reads(empty_db_conn):
