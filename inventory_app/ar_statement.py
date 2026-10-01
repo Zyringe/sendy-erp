@@ -1,9 +1,7 @@
 """Chaseable BSN AR: the one module that answers "what does this customer owe".
 
-Every chase-facing page reads its money through here (ADR 0023): the customer
-page, `/m/customer`, `/express/ar/customer`, the dunning detail, the call card,
-the `/call` badges, the sales trip and the `/ar` overview. Each page sorts the
-rows in its own view; none of them re-types the population.
+Every chase-facing page reads its money through here (ADR 0023). Each page sorts
+the rows in its own view; none of them re-types the population.
 
 Source: `express_ar_outstanding` at the latest BSN snapshot, filtered by
 `BSN_AR_PREDICATE` (ADR 0012). Ages count from the snapshot date on every page.

@@ -91,7 +91,6 @@ def customer_detail(customer_code):
     if not data['exists']:
         abort(404)
 
-    # Chaseable bills (ADR 0023), newest first, credit rows left off the list.
     statement = ar_statement.customer_statement(customer_code)
     unpaid_bills = sorted(statement['bills'], key=lambda b: b['doc_date_iso'] or '',
                           reverse=True)

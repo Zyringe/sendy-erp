@@ -230,9 +230,8 @@ def resolve_customer_target(target: str,
     else the newest surviving log name, else the code itself, so a
     since-corrected typo does not get re-frozen onto every new follow-up row.
 
-    The form used to post `customer` and `customer_code` as independent hidden
-    fields, so a stale tab or a tampered request could file collection history
-    against a different customer. Callers resolve identity here and ignore those.
+    Callers resolve identity here and ignore any posted `customer` /
+    `customer_code` fields.
     """
     code = (target or '').strip()
     if not code:

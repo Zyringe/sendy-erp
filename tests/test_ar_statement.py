@@ -24,8 +24,8 @@ CHASEABLE = {
     'ZZSTM-CR': (5, 0, -120.00, False),     # credit row: chaseable, not a bill
 }
 EXCLUDED = {
-    'ZZSTM-WO': (20, 0, 700.00, True),      # writeoff
-    'ZZSTM-RE': (15, 1, 300.00, False),     # re
+    'ZZSTM-WO': (20, 0, 700.00, True),
+    'ZZSTM-RE': (15, 1, 300.00, False),
 }
 LEGACY_DOC = 'ZZSTM-OLD'                    # pre-2024 legacy
 

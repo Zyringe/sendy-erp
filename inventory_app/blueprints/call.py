@@ -46,7 +46,6 @@ def call_list():
         quiet=quiet,
     )
 
-    # AR badge — ONE call for all rows, then map by code
     ar_map = _ar_badge_map(conn)
     for r in rows:
         r['badges']['ar'] = ar_map.get(r['customer_code'], 0)

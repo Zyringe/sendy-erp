@@ -127,7 +127,6 @@ def customer_detail(customer_code):
     # from the customers row, so a code without one shows none of them, the same
     # rule as the desktop code page.
     pay_speed = payments_alloc.payment_speed(customer_code) if customer else None
-    # Chaseable bills (ADR 0023), newest first; the phone shows the first five.
     statement = ar_statement.customer_statement(customer_code)
     unpaid_full = sorted(statement['bills'], key=lambda b: b['doc_date_iso'] or '',
                          reverse=True)
@@ -193,8 +192,6 @@ def sales_trip():
     region = (request.args.get('region') or '').strip() or None
 
     conn = get_connection()
-    # The last sale (ล่าสุด, a customer's last PURCHASE, #513) is added below
-    # from purchase_history.histories(), the same reader /customers and /call use.
     sql = f"""
         SELECT c.code, c.name, c.zone, c.phone, COALESCE(c.address, '') AS address,
                COALESCE(sp.name, c.salesperson) AS salesperson,

@@ -49,10 +49,7 @@ def express_ar_customer(customer_code):
     statement = ar_statement.customer_statement(customer_code, conn=conn)
     snapshot_date = statement['snapshot_date']
     rows = sorted(statement['chaseable'], key=lambda r: r['doc_date_iso'] or '')
-    # The complement: this customer's snapshot rows that are NOT chaseable, and
-    # why (ADR 0012, #468).
     excluded_docs = statement['excluded']
-    # How OLD the balance below is (Finding 1, 2026-08-15).
     aging = statement['freshness']
 
     # "No chaseable bills" is NOT "no such customer". 33 of the 60 customers in
