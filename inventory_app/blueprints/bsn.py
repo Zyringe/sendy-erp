@@ -1634,9 +1634,13 @@ def express_dbf_upload():
                         rr.scan_docs(per_type['sales'].get('unit_correction_docs'))
                     except Exception as _scan_exc:
                         flashes.append(('warning', f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}'))
-                # These three registers still run in-request. The slow GL,
-                # sales-order and cheque registers are absent from per_type and
-                # will report through results['registers'] instead.
+                # Each register is isolated from the money import, so one that
+                # refused leaves the ledger above perfectly fine while that
+                # register silently keeps YESTERDAY's rows. The green summary
+                # flash means "the money landed" and must not be read as "all
+                # datasets landed" — so say the difference out loud. GL, sales
+                # orders and cheques are not in per_type: they run detached
+                # (#676) and report through results['registers'].
                 for _register in express_registers.REGISTERS:
                     _err = (per_type.get(_register.key) or {}).get('error')
                     if _err:

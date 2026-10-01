@@ -347,7 +347,10 @@ def commit_express_registers(dataset_dir, db_path, book):
     """Replace the three reference registers that do not feed the money path.
 
     Each register remains isolated: a failed or incomplete source reports its
-    own error and leaves the previously stored register untouched.
+    own error and leaves the previously stored register untouched. The GL is
+    windowed by whole calendar years (see gl_cutoff), unlike the ledger's
+    rolling since_days. The BSN upload runs this detached (#676); the VAT book
+    builder, already a subprocess, calls it inline.
     """
     import bsn_units
     import express_dbf_source as eds
@@ -552,8 +555,10 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # current — but it is never SILENT: the error rides the result dict up to
     # the upload page, because a silently stale AR is the exact bug this
     # feature exists to end.
-    # ใบวางบิล stays in-request: cashflow reads it for AR due buckets, and the
-    # full table costs only a small fraction of the upload.
+    # ใบวางบิล. Whole table, no window (the bills open invoices point at run back
+    # to 2014), and isolated like the snapshots: it is reference data, so a
+    # failure must not make a committed ledger import read as failed. It stays
+    # in-request (#676): cashflow reads it for AR due buckets, and it is cheap.
     try:
         arbil = _open_optional(eds, dataset_dir, "ARBIL")
         if arbil is None:
