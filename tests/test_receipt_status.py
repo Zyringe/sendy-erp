@@ -534,3 +534,30 @@ def test_matcher_offers_a_remainder_of_exactly_one_baht(empty_db_conn):
     assert _rows(c)['IV-ONE']['remainder'] == 1.00
     hits = models.find_payment_candidates(1.00, tolerance=0)
     assert [[b['doc_base'] for b in h['matched_bills']] for h in hits] == [['IV-ONE']]
+
+
+def test_reconcile_reads_snapshot_and_ledger_from_one_snapshot(empty_db_conn, monkeypatch):
+    """An invoice imported between the snapshot read and the ledger read must not
+    show on the ledger side of a page whose snapshot side never saw it."""
+    import ar_statement
+    import database
+    import models
+    c = empty_db_conn
+    _ins_sale(c, 'IV-OPEN', 'A', 'C-A', '2026-07-01', 100.00)
+    _snapshot_row(c, 'C-A', 'IV-OPEN', 100.00)
+    c.commit()
+    real = ar_statement.customer_totals
+
+    def totals_then_import(*args, **kwargs):
+        out = real(*args, **kwargs)
+        w = database.get_connection()
+        _ins_sale(w, 'IV-NEW', 'A', 'C-A', '2026-07-02', 50.00)
+        w.commit()
+        w.close()
+        return out
+
+    monkeypatch.setattr(ar_statement, 'customer_totals', totals_then_import)
+
+    row = {r['customer_code']: r for r in models.get_ar_reconciliation()['rows']}['C-A']
+
+    assert (row['ledger_amount'], row['status']) == (100.00, 'match')
