@@ -18,8 +18,8 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session, jsonify, abort)
 
 import access_control
+import ar_statement
 import call_card as cc
-import cashflow
 import customer_geo
 import models
 import payments_alloc
@@ -91,18 +91,17 @@ def customer_detail(customer_code):
     if not data['exists']:
         abort(404)
 
-    unpaid_bills, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
-    unpaid_total = sum(b['total_net'] or 0 for b in unpaid_bills)
-
-    # The bills REMOVED from that total. Since #465 `unpaid_bills` is the
-    # chaseable population, so a forgiven / already-paid / pre-2024 bill simply
-    # vanished from this page — the person on the phone who remembers it had no
-    # way to see what happened to it (ADR 0012, #468). Same code key as the list
-    # above: `get_customer_unpaid_bills_by_code` TRIMs for this reason.
-    excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs_by_code(customer_code)
-    # The บิลค้างชำระ card below is the Express AR snapshot, so this page owes
-    # the same freshness warning the other AR surfaces carry.
-    aging = cashflow.ar_aging()
+    statement = ar_statement.customer_statement(customer_code)
+    unpaid_bills = sorted(statement['bills'], key=lambda b: b['doc_date_iso'] or '',
+                          reverse=True)
+    unpaid_total = sum(b['outstanding'] for b in unpaid_bills)
+    unpaid_snapshot_date = statement['snapshot_date']
+    # The bills REMOVED from that total, so a forgiven / already-paid / pre-2024
+    # bill does not simply vanish from this page (ADR 0012, #468).
+    excluded_docs = statement['excluded']
+    # The บิลค้างชำระ card is the Express AR snapshot, so this page owes the
+    # same freshness warning the other AR surfaces carry.
+    aging = statement['freshness']
 
     master = models.get_customer_master(customer_code)
 

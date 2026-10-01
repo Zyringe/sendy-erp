@@ -23,10 +23,9 @@ Outreach workspace:
 
 Public surface
 ──────────────
-- customer_ranking(...)           — per-customer roll-up sorted by outstanding DESC
-- get_customer_ar_detail(...)     — CHASEABLE invoices for one customer + age
-- get_customer_excluded_docs(...) — the same customer's NOT-chaseable docs + why
-- get_customer_followups(...)     — outreach history for one customer (newest first)
+- customer_ranking(...)           — ar_statement.customer_totals + last outreach
+- resolve_customer_target(...)    — a customer CODE to the identity a log row stores
+- get_customer_followups(...)     — outreach history for one code (newest first)
 - list_overdue_followups(...)     — followups whose next_action_date has passed
 - log_outreach(...)               — insert an outreach attempt
 - update_outreach(...)            — edit one
@@ -39,13 +38,9 @@ from datetime import date
 from typing import Optional, List
 import sqlite3
 
+import ar_statement
 import config
 import payments_alloc as pa   # kept as diagnostic — do not remove
-import cashflow
-from cashflow import BSN_AR_PREDICATE
-
-
-_AGE_BUCKETS = ('0-30', '31-60', '61-90', '90+')
 
 # Terminal outreach results — once any of these is the latest log for a
 # customer the account is considered closed and is not reported as overdue
@@ -76,34 +71,13 @@ class _ConnCtx:
         return False
 
 
-def _bucket_of(age: int) -> str:
-    if age <= 30:
-        return '0-30'
-    if age <= 60:
-        return '31-60'
-    if age <= 90:
-        return '61-90'
-    return '90+'
-
-
-def _bsn_snapshot_date(conn) -> Optional[str]:
-    """Return the latest snapshot_date_iso for BSN, or None if table is empty."""
-    row = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS snap FROM express_ar_outstanding"
-        " WHERE entity='BSN'"
-    ).fetchone()
-    return row['snap'] if row else None
-
-
 # ── ranking ─────────────────────────────────────────────────────────────────
 
 def customer_ranking(conn: Optional[sqlite3.Connection] = None,
                      db_path: Optional[str] = None,
                      min_outstanding: float = 0.0) -> List[dict]:
-    """Per-customer outstanding roll-up sourced from Express BSN snapshot.
-
-    Aging is computed from doc_date_iso to the snapshot date (point-in-time,
-    matches Express's own published date — not from today).
+    """`ar_statement.customer_totals()` (positive chaseable balances, largest
+    first) with each customer's latest outreach joined on.
 
     Each row:
       {
@@ -118,60 +92,8 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
       }
     """
     with _ConnCtx(conn, db_path) as c:
-        snap = _bsn_snapshot_date(c)
-        if not snap:
-            return []
-
-        snap_date = date.fromisoformat(snap)
-
-        rows = c.execute(f"""
-            SELECT
-                ao.customer_code,
-                COALESCE(cust.name, ao.customer_name) AS customer_name,
-                ao.doc_date_iso,
-                ao.outstanding_amount
-            FROM express_ar_outstanding ao
-            LEFT JOIN customers cust ON cust.code = ao.customer_code
-            WHERE ao.entity = 'BSN'
-              AND ao.snapshot_date_iso = ?
-              AND {BSN_AR_PREDICATE}
-        """, (snap,)).fetchall()
-        # NB: do NOT filter `outstanding_amount > 0` at the row level. Express
-        # lists un-applied credit notes / overpayments as separate NEGATIVE
-        # rows; a customer's true chaseable balance is the NET across all their
-        # rows (matches Express's own per-customer subtotal). Filtering rows
-        # would overstate mixed customers — e.g. ทรงพลเทรดดิ้ง would show
-        # ฿284,863 gross instead of ฿164,323 net (฿120,540 of credits ignored).
-
-        agg = {}
-        for r in rows:
-            code = (r['customer_code'] or '').strip()
-            name = r['customer_name'] or ''
-            key = code or name
-            entry = agg.setdefault(key, {
-                'customer': name,
-                'customer_code': code or None,
-                'invoice_count': 0,
-                'outstanding': 0.0,
-                'oldest_age_days': 0,
-                'age_buckets': {b: 0.0 for b in _AGE_BUCKETS},
-            })
-            entry['invoice_count'] += 1
-            amt = round(float(r['outstanding_amount'] or 0), 2)
-            entry['outstanding'] = round(entry['outstanding'] + amt, 2)
-
-            if r['doc_date_iso']:
-                try:
-                    age = (snap_date - date.fromisoformat(r['doc_date_iso'])).days
-                except (ValueError, TypeError):
-                    age = 0
-                age = max(age, 0)
-                if age > entry['oldest_age_days']:
-                    entry['oldest_age_days'] = age
-                bucket = _bucket_of(age)
-                entry['age_buckets'][bucket] = round(
-                    entry['age_buckets'][bucket] + amt, 2
-                )
+        agg = {(e['customer_code'] or e['customer']): e
+               for e in ar_statement.customer_totals(conn=c)}
 
         # Attach last outreach (newest per group) if the log table exists.
         if _has_log_table(c):
@@ -204,12 +126,7 @@ def customer_ranking(conn: Optional[sqlite3.Connection] = None,
             entry.setdefault('last_log_result', None)
             entry.setdefault('next_action_date', None)
 
-        # Only customers whose NET balance is positive owe us money (net-zero
-        # or net-credit customers are not chased).
-        out = [e for e in agg.values()
-               if e['outstanding'] > 0.005 and e['outstanding'] >= min_outstanding]
-        out.sort(key=lambda e: -e['outstanding'])
-        return out
+        return [e for e in agg.values() if e['outstanding'] >= min_outstanding]
 
 
 def _customer_group(conn, customer: str) -> tuple:
@@ -301,203 +218,52 @@ def _resolve_target(conn, target: str) -> tuple:
 def resolve_customer_target(target: str,
                             conn: Optional[sqlite3.Connection] = None,
                             db_path: Optional[str] = None) -> Optional[dict]:
-    """Resolve ONE stable key to the canonical identity to store on a log row.
+    """Resolve a customer CODE to the canonical identity to store on a log row.
 
-    `target` is the `customer_key` the detail page routes on — a customer_code
-    (preferred, stable) or a legacy name. Returns
-    ``{'customer_code': str|None, 'customer': str}``, or ``None`` when no
-    customer / snapshot / log evidence exists for the key.
+    Returns ``{'customer_code': str, 'customer': str}``, or ``None`` when the
+    key is not a code: no row in the snapshot, the sales ledger, the log or the
+    customer master carries it as a code. A bare bill name is refused, so no
+    log row is ever written without a code (ADR 0023). A code like 038ก01,
+    with real AR rows and no name anywhere, is still a code (Put, 2026-08-15).
 
     Name preference: the CURRENT master name, else the newest snapshot name,
-    else the newest surviving log name — so a since-corrected typo does not get
-    re-frozen onto every new follow-up row.
+    else the newest surviving log name, else the code itself, so a
+    since-corrected typo does not get re-frozen onto every new follow-up row.
 
-    Why this exists: the outreach form used to post `customer` and
-    `customer_code` as independent hidden fields, so a stale tab or a tampered
-    request could file collection history against a different customer group.
-    Callers must resolve identity here and ignore those posted fields.
+    Callers resolve identity here and ignore any posted `customer` /
+    `customer_code` fields.
     """
-    if not target or not target.strip():
+    code = (target or '').strip()
+    if not code:
         return None
-    target = target.strip()
     with _ConnCtx(conn, db_path) as c:
-        code, names = _resolve_target(c, target)
-        if not code:
-            # A code that exists only in the customer master (no sales,
-            # snapshot or log yet) is still a real customer.
-            row = c.execute(
-                "SELECT code, name FROM customers WHERE code = ?", (target,)
-            ).fetchone()
-            if row:
-                code = row['code']
-                names = [row['name']] if row['name'] else []
-        if not code:
-            # …and so is a code whose name is BLANK everywhere. _resolve_target
-            # builds its name union with `customer_name != ''`, so a code like
-            # 038ก01 — real AR rows, empty snapshot name, no master row —
-            # resolves to nothing there. Refusing it would make a genuine
-            # customer un-loggable; Put ruled 2026-08-15 that every code
-            # present in Express is legitimate.
-            for sql in (
-                "SELECT 1 FROM express_ar_outstanding"
-                " WHERE TRIM(customer_code) = ? LIMIT 1",
-                "SELECT 1 FROM sales_transactions"
-                " WHERE TRIM(customer_code) = ? LIMIT 1",
-                "SELECT 1 FROM ar_followup_log"
-                " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL LIMIT 1",
-            ):
-                if c.execute(sql, (target,)).fetchone():
-                    code, names = target, []
-                    break
-
-        if code:
-            row = c.execute(
-                "SELECT name FROM customers"
-                " WHERE code = ? AND name IS NOT NULL AND TRIM(name) != ''",
-                (code,)).fetchone()
-            if row:
-                return {'customer_code': code, 'customer': row['name']}
-            row = c.execute(
-                "SELECT customer_name FROM express_ar_outstanding"
-                " WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL"
-                "   AND TRIM(customer_name) != ''"
-                " ORDER BY snapshot_date_iso DESC, id DESC LIMIT 1",
-                (code,)).fetchone()
-            if row:
-                return {'customer_code': code, 'customer': row['customer_name']}
-            row = c.execute(
-                "SELECT customer FROM ar_followup_log"
-                " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL"
-                "   AND customer IS NOT NULL AND TRIM(customer) != ''"
-                " ORDER BY log_date DESC, id DESC LIMIT 1",
-                (code,)).fetchone()
-            if row:
-                return {'customer_code': code, 'customer': row['customer']}
-            if names:
-                return {'customer_code': code, 'customer': names[0]}
-            # Real code, no name anywhere — display the code rather than trust
-            # whatever the form posted.
-            return {'customer_code': code, 'customer': code}
-
-        # Orphan / walk-in keyed by name — accept ONLY with real evidence, so a
-        # typo'd or invented key cannot open a new history group.
-        for sql in (
-            "SELECT 1 FROM customers WHERE name = ? LIMIT 1",
-            "SELECT 1 FROM express_ar_outstanding WHERE customer_name = ? LIMIT 1",
-            "SELECT 1 FROM sales_transactions WHERE customer = ? LIMIT 1",
+        if not any(c.execute(sql, (code,)).fetchone() for sql in (
+            "SELECT 1 FROM express_ar_outstanding WHERE TRIM(customer_code) = ? LIMIT 1",
+            "SELECT 1 FROM sales_transactions WHERE TRIM(customer_code) = ? LIMIT 1",
             "SELECT 1 FROM ar_followup_log"
-            " WHERE customer = ? AND deleted_at IS NULL LIMIT 1",
+            " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL LIMIT 1",
+            "SELECT 1 FROM customers WHERE code = ? LIMIT 1",
+        )):
+            return None
+        for sql in (
+            "SELECT name FROM customers"
+            " WHERE code = ? AND name IS NOT NULL AND TRIM(name) != ''",
+            "SELECT customer_name FROM express_ar_outstanding"
+            " WHERE TRIM(customer_code) = ? AND customer_name IS NOT NULL"
+            "   AND TRIM(customer_name) != ''"
+            " ORDER BY snapshot_date_iso DESC, id DESC LIMIT 1",
+            "SELECT customer FROM ar_followup_log"
+            " WHERE TRIM(customer_code) = ? AND deleted_at IS NULL"
+            "   AND customer IS NOT NULL AND TRIM(customer) != ''"
+            " ORDER BY log_date DESC, id DESC LIMIT 1",
+            "SELECT customer FROM sales_transactions"
+            " WHERE TRIM(customer_code) = ? AND customer IS NOT NULL"
+            "   AND TRIM(customer) != '' LIMIT 1",
         ):
-            if c.execute(sql, (target,)).fetchone():
-                return {'customer_code': None, 'customer': target}
-        return None
-
-
-def get_customer_ar_detail(customer: str,
-                            conn: Optional[sqlite3.Connection] = None,
-                            db_path: Optional[str] = None) -> List[dict]:
-    """Outstanding invoices for one customer from the Express BSN snapshot.
-
-    Returns per-invoice rows sorted by age DESC (oldest first). Each row:
-      doc_no, doc_date_iso (= invoice_date), customer, customer_code,
-      outstanding, bill_amount, paid_amount, age_days, salesperson_code.
-
-    `customer` may be a customer_code OR a name — `_resolve_target` figures
-    it out and pulls invoices across every name in the customer group.
-    """
-    with _ConnCtx(conn, db_path) as c:
-        snap = _bsn_snapshot_date(c)
-        if not snap:
-            return []
-        snap_date = date.fromisoformat(snap)
-        code, _names = _resolve_target(c, customer)
-
-        if code:
-            rows = c.execute("""
-                SELECT
-                    ao.doc_no,
-                    ao.doc_date_iso,
-                    COALESCE(cust.name, ao.customer_name) AS customer,
-                    ao.customer_code,
-                    ao.bill_amount,
-                    ao.paid_amount,
-                    ao.outstanding_amount AS outstanding,
-                    ao.salesperson_code
-                FROM express_ar_outstanding ao
-                LEFT JOIN customers cust ON cust.code = ao.customer_code
-                WHERE ao.entity = 'BSN'
-                  AND ao.snapshot_date_iso = ?
-                  AND {BSN_AR_PREDICATE}
-                  AND TRIM(ao.customer_code) = ?
-            """.format(BSN_AR_PREDICATE=BSN_AR_PREDICATE), (snap, code)).fetchall()
-        else:
-            # Orphan / walk-in: match by customer_name
-            target_name = customer.strip()
-            rows = c.execute("""
-                SELECT
-                    ao.doc_no,
-                    ao.doc_date_iso,
-                    ao.customer_name AS customer,
-                    ao.customer_code,
-                    ao.bill_amount,
-                    ao.paid_amount,
-                    ao.outstanding_amount AS outstanding,
-                    ao.salesperson_code
-                FROM express_ar_outstanding ao
-                WHERE ao.entity = 'BSN'
-                  AND ao.snapshot_date_iso = ?
-                  AND {BSN_AR_PREDICATE}
-                  AND ao.customer_name = ?
-            """.format(BSN_AR_PREDICATE=BSN_AR_PREDICATE), (snap, target_name)).fetchall()
-
-        out = []
-        for r in rows:
-            age = None
-            if r['doc_date_iso']:
-                try:
-                    age = (snap_date - date.fromisoformat(r['doc_date_iso'])).days
-                    age = max(age, 0)
-                except (ValueError, TypeError):
-                    age = None
-            out.append({
-                'doc_no': r['doc_no'],
-                'doc_base': r['doc_no'],        # alias kept for template compat
-                'invoice_date': r['doc_date_iso'],
-                'customer': r['customer'],
-                'customer_code': r['customer_code'],
-                'bill_amount': round(float(r['bill_amount'] or 0), 2),
-                'paid_amount': round(float(r['paid_amount'] or 0), 2),
-                'outstanding': round(float(r['outstanding'] or 0), 2),
-                'age_days': age,
-                'salesperson_code': r['salesperson_code'],
-            })
-        out.sort(key=lambda x: -(x['age_days'] or 0))
-        return out
-
-
-def get_customer_excluded_docs(customer: str,
-                               conn: Optional[sqlite3.Connection] = None,
-                               db_path: Optional[str] = None) -> List[dict]:
-    """The counterpart of `get_customer_ar_detail`: the snapshot rows for this
-    customer that are NOT chaseable, so the dunning page can say what happened
-    to a bill instead of letting it disappear (ADR 0012).
-
-    Exists here rather than at the call site so the code-or-name fork is made
-    ONCE, by the same `_resolve_target` the chaseable side uses, and so each
-    branch reaches the matcher that mirrors `get_customer_ar_detail`'s own —
-    TRIM'd code, or the snapshot name exactly. Keying the two sides differently
-    is how a page ends up showing a document on neither list, or an excluded
-    section belonging to a customer the list above it did not match. Returns the
-    rows only — the snapshot date is already on the page from the chaseable side.
-    """
-    with _ConnCtx(conn, db_path) as c:
-        code, _names = _resolve_target(c, customer)
-        if code:
-            rows, _snap = cashflow.bsn_ar_excluded_docs_by_code(code, conn=c)
-        else:
-            rows, _snap = cashflow.bsn_ar_excluded_docs_by_snapshot_name(
-                customer.strip(), conn=c)
-    return rows
+            row = c.execute(sql, (code,)).fetchone()
+            if row:
+                return {'customer_code': code, 'customer': row[0]}
+        return {'customer_code': code, 'customer': code}
 
 
 # ── outreach log CRUD ───────────────────────────────────────────────────────
@@ -599,30 +365,16 @@ def delete_outreach(log_id: int,
         return cur.rowcount == 1
 
 
-def get_customer_followups(customer: str,
+def get_customer_followups(customer_code: str,
                            conn: Optional[sqlite3.Connection] = None,
                            db_path: Optional[str] = None) -> List[dict]:
-    """All outreach rows for one customer, newest log_date first (id tiebreak).
-
-    `customer` may be a customer_code OR a name — `_resolve_target` figures
-    it out and pulls history across every name in the customer group.
-    """
+    """All outreach rows for one customer code, newest log_date first (id tiebreak)."""
     with _ConnCtx(conn, db_path) as c:
-        code, names = _resolve_target(c, customer)
-        if code:
-            placeholders = ','.join('?' * len(names))
-            rows = c.execute(f"""
-                SELECT * FROM ar_followup_log
-                WHERE (TRIM(customer_code) = ? OR customer IN ({placeholders}))
-                  AND deleted_at IS NULL
-                ORDER BY log_date DESC, id DESC
-            """, (code, *names)).fetchall()
-        else:
-            rows = c.execute("""
-                SELECT * FROM ar_followup_log
-                WHERE customer = ? AND deleted_at IS NULL
-                ORDER BY log_date DESC, id DESC
-            """, (customer,)).fetchall()
+        rows = c.execute("""
+            SELECT * FROM ar_followup_log
+            WHERE TRIM(customer_code) = ? AND deleted_at IS NULL
+            ORDER BY log_date DESC, id DESC
+        """, ((customer_code or '').strip(),)).fetchall()
         return [dict(r) for r in rows]
 
 

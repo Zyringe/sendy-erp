@@ -2,9 +2,9 @@
    Included by EVERY page that serves the authoritative collection balance:
    /ar (all four tabs), the AR follow-up detail page, and /cashflow's AR card.
    One copy on purpose — three hand-maintained copies would drift, and the
-   threshold text is rendered from cashflow.AR_SNAPSHOT_STALE_AFTER_DAYS so
+   threshold text is rendered from ar_statement.AR_SNAPSHOT_STALE_AFTER_DAYS so
    the copy cannot disagree with the contract.
-   Expects `aging` = cashflow.ar_aging().
+   Expects `aging` = ar_statement.freshness() or cashflow.ar_aging().
 #}
 {% if aging and aging.is_stale %}
 <div class="alert alert-danger d-flex flex-wrap align-items-center gap-2 mb-3" role="alert">

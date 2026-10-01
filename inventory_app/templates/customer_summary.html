@@ -415,18 +415,12 @@
         {% for b in unpaid_bills %}
         <tr>
           <td class="ps-3 fw-medium">
-            <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_base) }}" class="text-decoration-none">
-              {% if b.vat_type == 2 %}
-                <span class="badge bg-info-subtle text-info">{{ b.doc_base }}</span>
-              {% elif b.vat_type == 1 %}
-                <span class="badge bg-success-subtle text-success">{{ b.doc_base }}</span>
-              {% else %}
-                <span class="badge bg-secondary-subtle text-secondary">{{ b.doc_base }}</span>
-              {% endif %}
+            <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_no) }}" class="text-decoration-none">
+              <span class="badge bg-secondary-subtle text-secondary">{{ b.doc_no }}</span>
             </a>
           </td>
-          <td class="text-subtle">{{ b.bill_date }}</td>
-          <td class="text-end pe-3 text-danger fw-medium">{{ b.total_net | fmt_price }}</td>
+          <td class="text-subtle">{{ b.doc_date_iso }}</td>
+          <td class="text-end pe-3 text-danger fw-medium">{{ b.outstanding | fmt_price }}</td>
         </tr>
         {% endfor %}
       </tbody>

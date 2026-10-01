@@ -6,9 +6,9 @@ then became invisible: a person on the phone who remembers an invoice has no way
 to see what happened to it.
 
 This file pins the seam that gives them back — the per-document complement of
-`cashflow.BSN_AR_PREDICATE`, scoped to one customer:
+`ar_statement.BSN_AR_PREDICATE`, scoped to one customer:
 
-    cashflow.bsn_ar_excluded_docs_by_code(code)  -> (rows, snapshot_date)
+    ar_statement.customer_statement(code)['excluded']
 
 Vocabulary (CONTEXT.md): **outstanding** = what the snapshot says is unpaid.
 **chaseable** = outstanding minus ar_writeoffs, minus is_anomalous, minus
@@ -19,11 +19,10 @@ every row the customer has in the latest snapshot, with no overlap. Anything
 weaker lets a document fall out of both lists and become invisible — which is
 the failure this whole ticket exists to prevent, in mirror image.
 
-⚠ The chaseable side of that partition comes from `ar_followup.get_customer_ar_detail`
-(an existing helper that applies the imported predicate and nothing else), NOT
-from a re-typed query, and NOT from `models.get_customer_unpaid_bills_by_code` — it
-carries an extra `outstanding_amount > 0` clause on purpose (ADR 0012) and is a
-deliberately smaller set than the predicate alone.
+⚠ The chaseable side of that partition is the statement's `chaseable` rows (the
+imported predicate and nothing else), NOT its `bills`, which carry an extra
+`outstanding_amount > 0` choice on purpose (ADR 0012) and are a deliberately
+smaller set than the predicate alone.
 
 ⚠ `tmp_db` clones the live dev DB WITH its data, so every row asserted on here is
 FORCED, never inherited: the fixture deletes its own keys first, then inserts
@@ -38,9 +37,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-import cashflow
-import ar_followup
-import models
+import ar_statement
 
 
 CODE = 'ZZEXCL1'
@@ -69,7 +66,7 @@ ONLY_EXCL_NAME = 'ทดสอบ ลูกหนี้ที่ตัดหม�
 PAD_CODE = 'ZZEXCL4'
 PAD_NAME = 'ทดสอบ รหัสมีช่องว่างท้าย'
 
-# A CHASEABLE credit row (outstanding < 0). `_unpaid_bills` drops it on purpose
+# A CHASEABLE credit row (outstanding < 0). The bill list drops it on purpose
 # (ADR 0012 — a per-customer bill list should not render a credit) while the
 # excluded helper does not filter on the amount at all. That one clause is the
 # whole legitimate gap between the two, and it needs a customer that actually
@@ -187,6 +184,16 @@ def _seed(db_path):
         conn.close()
 
 
+def _excluded(code, db_path):
+    st = ar_statement.customer_statement(code, db_path=db_path)
+    return st['excluded'], st['snapshot_date']
+
+
+def _bills(code, db_path):
+    """What /customer/code/<code> lists above its excluded section."""
+    return ar_statement.customer_statement(code, db_path=db_path)['bills']
+
+
 def _by_doc(rows):
     return {r['doc_no']: r for r in rows}
 
@@ -195,7 +202,7 @@ def _by_doc(rows):
 
 def test_returns_every_excluded_doc_and_never_the_chaseable_one(tmp_db):
     _seed(tmp_db)
-    rows, snap = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, snap = _excluded(CODE, db_path=tmp_db)
 
     docs = sorted(r['doc_no'] for r in rows)
     # COUNT FIRST. An empty result makes every "is not in" below vacuous.
@@ -206,7 +213,7 @@ def test_returns_every_excluded_doc_and_never_the_chaseable_one(tmp_db):
 
 def test_snapshot_date_is_the_latest_bsn_snapshot(tmp_db):
     snap = _seed(tmp_db)
-    _rows, returned = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    _rows, returned = _excluded(CODE, db_path=tmp_db)
     assert returned == snap
 
 
@@ -228,7 +235,7 @@ def test_only_the_latest_snapshot_is_returned(tmp_db):
     finally:
         conn.close()
 
-    rows, _snap = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _snap = _excluded(CODE, db_path=tmp_db)
     docs = [r['doc_no'] for r in rows]
     # Control: the current-snapshot rows are still there, so a bare "STALE not
     # in docs" cannot pass by the function returning nothing.
@@ -240,7 +247,7 @@ def test_only_the_latest_snapshot_is_returned(tmp_db):
 
 def test_each_row_carries_exactly_one_reason_and_it_is_the_right_one(tmp_db):
     _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _ = _excluded(CODE, db_path=tmp_db)
     assert len(rows) == len(EXPECTED)
 
     got = {r['doc_no']: r['excluded_by'] for r in rows}
@@ -253,7 +260,7 @@ def test_a_writeoff_that_is_also_pre_2024_is_counted_once_as_legacy(tmp_db):
     window so the buckets stay disjoint. This function must copy that, not
     re-invent it — otherwise ZZEX-OLDWO appears twice or in the wrong bucket."""
     _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _ = _excluded(CODE, db_path=tmp_db)
 
     hits = [r for r in rows if r['doc_no'] == 'ZZEX-OLDWO']
     assert len(hits) == 1, f'ZZEX-OLDWO appeared {len(hits)} times — buckets overlap'
@@ -262,7 +269,7 @@ def test_a_writeoff_that_is_also_pre_2024_is_counted_once_as_legacy(tmp_db):
 
 def test_writeoff_rows_carry_their_type_date_and_reason(tmp_db):
     _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _ = _excluded(CODE, db_path=tmp_db)
     by_doc = _by_doc(rows)
     assert len(by_doc) == len(EXPECTED)
 
@@ -275,7 +282,7 @@ def test_writeoff_rows_carry_their_type_date_and_reason(tmp_db):
 def test_a_writeback_is_reported_as_writeback_not_folded_into_expense(tmp_db):
     """A reversed decision must not read as a forgiven bill."""
     _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _ = _excluded(CODE, db_path=tmp_db)
     by_doc = _by_doc(rows)
     # Control: the expense write-off is present in the same result, so this
     # cannot pass because the function dropped every write-off.
@@ -285,7 +292,7 @@ def test_a_writeback_is_reported_as_writeback_not_folded_into_expense(tmp_db):
 
 def test_re_and_legacy_rows_carry_no_writeoff_metadata(tmp_db):
     _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _ = _excluded(CODE, db_path=tmp_db)
     by_doc = _by_doc(rows)
     # Control: a row that SHOULD carry metadata does, in the same result.
     assert by_doc['ZZEX-WOFF']['writeoff_date'] is not None
@@ -299,7 +306,7 @@ def test_re_and_legacy_rows_carry_no_writeoff_metadata(tmp_db):
 
 def test_rows_carry_the_amounts_and_identity_the_page_renders(tmp_db):
     _seed(tmp_db)
-    rows, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    rows, _ = _excluded(CODE, db_path=tmp_db)
     r = _by_doc(rows)['ZZEX-ANOM']
     assert r['doc_date_iso'] == '2025-03-04'
     assert r['customer_code'] == CODE
@@ -321,8 +328,8 @@ def test_chaseable_and_excluded_partition_the_customers_snapshot(tmp_db):
     """
     _seed(tmp_db)
 
-    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
-    chaseable = ar_followup.get_customer_ar_detail(CODE, db_path=tmp_db)
+    excluded, _ = _excluded(CODE, db_path=tmp_db)
+    chaseable = ar_statement.customer_statement(CODE, db_path=tmp_db)['chaseable']
 
     exc_docs = {r['doc_no'] for r in excluded}
     cha_docs = {r['doc_no'] for r in chaseable}
@@ -352,8 +359,8 @@ def test_the_complement_is_not_a_hand_typed_copy_of_the_predicate():
     the docstring first, and keep a control so a strip that ate everything fails
     loudly instead of passing."""
     import inspect
-    src = inspect.getsource(cashflow._excluded_docs)
-    body = src.replace(cashflow._excluded_docs.__doc__ or '', '')
+    src = inspect.getsource(ar_statement._excluded_docs)
+    body = src.replace(ar_statement._excluded_docs.__doc__ or '', '')
 
     # Control: the SQL survived the strip, so the assertions below have a subject.
     assert 'SELECT ao.doc_no' in body, 'docstring strip removed the query itself'
@@ -387,41 +394,6 @@ def test_one_writeoff_decision_per_doc_is_a_db_invariant(tmp_db):
             """, (CODE, NAME))
     finally:
         conn.close()
-
-
-# ── ar_followup: the code-or-name fork the dunning page goes through ─────────
-
-def test_dunning_helper_resolves_a_code_to_the_same_rows(tmp_db):
-    _seed(tmp_db)
-    rows = ar_followup.get_customer_excluded_docs(CODE, db_path=tmp_db)
-    docs = sorted(r['doc_no'] for r in rows)
-    assert len(docs) == len(EXPECTED), docs
-    assert docs == sorted(EXPECTED)
-
-
-def test_dunning_helper_resolves_an_orphan_name(tmp_db):
-    """The dunning page keys by code OR name. Resolving the excluded side
-    differently from the chaseable side is how a doc ends up on neither list,
-    so both go through the same `_resolve_target`."""
-    _seed(tmp_db)
-    rows = ar_followup.get_customer_excluded_docs(ORPHAN_NAME, db_path=tmp_db)
-    docs = sorted(r['doc_no'] for r in rows)
-    assert len(docs) == len(EXPECTED), docs
-    assert docs == sorted(d + '-O' for d in EXPECTED)
-
-
-def test_dunning_helper_and_chaseable_helper_partition_the_orphan_too(tmp_db):
-    """The partition must hold on the NAME branch as well — it is a different
-    query in both helpers."""
-    _seed(tmp_db)
-    excluded = ar_followup.get_customer_excluded_docs(ORPHAN_NAME, db_path=tmp_db)
-    chaseable = ar_followup.get_customer_ar_detail(ORPHAN_NAME, db_path=tmp_db)
-
-    exc = {r['doc_no'] for r in excluded}
-    cha = {r['doc_no'] for r in chaseable}
-    assert exc and cha, 'one side is empty — the assertions below would be vacuous'
-    assert exc & cha == set()
-    assert exc | cha == {d + '-O' for d in _SEEDED}
 
 
 # ── the dunning page renders it ──────────────────────────────────────────────
@@ -480,39 +452,6 @@ def test_dunning_page_omits_the_section_when_nothing_was_excluded(tmp_db):
 
 
 # ── the two sides of a page must key IDENTICALLY ─────────────────────────────
-
-def test_dunning_helper_does_not_out_match_its_own_chaseable_query(tmp_db):
-    """A customer renamed in the master, with no sales history under the new
-    name, resolves to NO code — so the dunning page falls to its orphan branch
-    and matches on the snapshot name only. An excluded query that ALSO matched
-    through `customers.name` would render a section for a customer the list
-    above it did not recognise. Both sides must see the same customer or neither.
-    """
-    _seed(tmp_db)
-    conn = sqlite3.connect(tmp_db)
-    try:
-        # The master calls this code NEW_NAME; the snapshot still says NAME, and
-        # nothing outside the snapshot knows NEW_NAME at all.
-        conn.execute("DELETE FROM customers WHERE code = ?", (CODE,))
-        conn.execute("INSERT INTO customers (code, name) VALUES (?, ?)",
-                     (CODE, 'ทดสอบ ชื่อใหม่ในทะเบียน'))
-        conn.commit()
-    finally:
-        conn.close()
-
-    chaseable = ar_followup.get_customer_ar_detail('ทดสอบ ชื่อใหม่ในทะเบียน', db_path=tmp_db)
-    excluded = ar_followup.get_customer_excluded_docs('ทดสอบ ชื่อใหม่ในทะเบียน', db_path=tmp_db)
-
-    # Control: the snapshot name still finds the customer through BOTH helpers,
-    # so an "everything is empty" bug cannot make this test pass.
-    assert len(ar_followup.get_customer_ar_detail(NAME, db_path=tmp_db)) == 1
-    assert len(ar_followup.get_customer_excluded_docs(NAME, db_path=tmp_db)) == len(EXPECTED)
-
-    assert chaseable == [], 'fixture wrong — the chaseable side was supposed to miss'
-    assert excluded == [], (
-        'the excluded side matched a customer the chaseable side did not — '
-        'the two are keyed differently')
-
 
 # ── links that would 404 are not rendered as links ───────────────────────────
 
@@ -689,14 +628,14 @@ def test_customer_summary_shows_the_section_even_with_no_chaseable_bills(tmp_db)
 
 
 def test_customer_summary_keys_both_of_its_lists_the_same_way(tmp_db):
-    """`_unpaid_bills` matched `ao.customer_code = ?` while the excluded wrapper
+    """The bill list once matched `ao.customer_code = ?` while the excluded wrapper
     TRIMs. A code stored with stray whitespace therefore landed on one list and
     not the other — ADR 0012's defect in miniature, one page instead of two."""
     _seed(tmp_db)
-    chaseable, _ = models.get_customer_unpaid_bills_by_code(PAD_CODE)
-    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(PAD_CODE, db_path=tmp_db)
+    chaseable = _bills(PAD_CODE, tmp_db)
+    excluded, _ = _excluded(PAD_CODE, db_path=tmp_db)
 
-    assert [r['doc_base'] for r in chaseable] == ['ZZEX-PAD-OK'], (
+    assert [r['doc_no'] for r in chaseable] == ['ZZEX-PAD-OK'], (
         'the chaseable side did not match a code stored with a trailing space')
     assert [r['doc_no'] for r in excluded] == ['ZZEX-PAD-RE']
 
@@ -704,16 +643,16 @@ def test_customer_summary_keys_both_of_its_lists_the_same_way(tmp_db):
 def test_customer_summary_lists_partition_the_positive_snapshot_rows(tmp_db):
     """chaseable ∪ excluded == every row this customer has, disjoint.
 
-    ⚠ Scoped to `outstanding_amount > 0`, because `_unpaid_bills` drops credit
+    ⚠ Scoped to `outstanding_amount > 0`, because the bill list drops credit
     rows on purpose (ADR 0012). This test does NOT pin that clause — every
     chaseable row on this fixture is positive, so the filter never fires here
     and deleting it leaves this green. The test below owns that gap.
     """
     _seed(tmp_db)
-    chaseable, _ = models.get_customer_unpaid_bills_by_code(CODE)
-    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(CODE, db_path=tmp_db)
+    chaseable = _bills(CODE, tmp_db)
+    excluded, _ = _excluded(CODE, db_path=tmp_db)
 
-    cha = {r['doc_base'] for r in chaseable}
+    cha = {r['doc_no'] for r in chaseable}
     exc_positive = {r['doc_no'] for r in excluded if float(r['outstanding']) > 0}
     # Control: both sides non-empty, or "disjoint" and "union" are free.
     assert cha and exc_positive
@@ -728,7 +667,7 @@ def test_customer_summary_lists_partition_the_positive_snapshot_rows(tmp_db):
 
 
 def test_the_only_gap_between_this_pages_two_lists_is_a_credit_row(tmp_db):
-    """`_unpaid_bills` keeps `outstanding_amount > 0` deliberately (ADR 0012 — a
+    """The bill list keeps `outstanding_amount > 0` deliberately (ADR 0012 — a
     per-customer bill list should not render a credit) while the excluded helper
     does not filter on amount at all. A CHASEABLE credit row therefore appears on
     NEITHER list: ~3 rows / −฿346 on the prod snapshot. That is the one
@@ -740,10 +679,10 @@ def test_the_only_gap_between_this_pages_two_lists_is_a_credit_row(tmp_db):
     above stayed green with the clause deleted. Verified by mutation 2026-09-09.
     """
     _seed(tmp_db)
-    chaseable, _ = models.get_customer_unpaid_bills_by_code(CREDIT_CODE)
-    excluded, _ = cashflow.bsn_ar_excluded_docs_by_code(CREDIT_CODE, db_path=tmp_db)
+    chaseable = _bills(CREDIT_CODE, tmp_db)
+    excluded, _ = _excluded(CREDIT_CODE, db_path=tmp_db)
 
-    cha = {r['doc_base'] for r in chaseable}
+    cha = {r['doc_no'] for r in chaseable}
     exc = {r['doc_no'] for r in excluded}
     # Control: both sides found the customer, so the set arithmetic below has a
     # subject. The chaseable side must hold the positive bill and NOT the credit.

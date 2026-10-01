@@ -166,8 +166,11 @@
   customer about: outstanding minus all three of Put's standing rulings — bills recorded in
   `ar_writeoffs` (forgiven, and permanently so — the write-off survives the next snapshot
   import), bills marked anomalous (`ลูกหนี้จ่ายแล้ว` — already paid), and debt dated before
-  the Sendy era (pre-2024). Every chase-facing screen shows this one: the AR dashboard, the
-  per-customer pages, and the dunning detail page a person opens before making the call.
+  the Sendy era (pre-2024). Every chase-facing screen shows this one, and only this one, as
+  money owed: the AR dashboard, the per-customer pages, the dunning detail page a person opens
+  before making the call, the call card and `/call` badges, and the sales trip. One module reads
+  it: `inventory_app/ar_statement.py` (ADR 0023), keyed by customer code only, with ages counted
+  from the snapshot date on every page.
 
   > **These are two different questions and must be named, never assumed.** A reader that
   > does not say which one it wants gets whichever the author happened to type, which is how
@@ -292,8 +295,8 @@
 ### Customer page (`/customer/code/<code>` — #493)
 
 - **Owner of these figures** — `inventory_app/purchase_history.py` (ADR 0022). A surface calls it
-  and holds no history aggregate of its own (the sales trip keeps its AR outstanding, which is a
-  different question). Its key is the customer code; a credit note filed without a code joins the one
+  and holds no history aggregate of its own (the sales trip's ฿ figure is chaseable AR from
+  `ar_statement`, a different question). Its key is the customer code; a credit note filed without a code joins the one
   code that carries the same exact bill name (decision A1), else it is an orphan keyed by the bill name.
 
 - **ยอดรวมเอกสาร (document total)** — the sum of a document's lines, plus 7% VAT when the
@@ -313,9 +316,8 @@
   customer's document list does not sum to its ยอดซื้อรวม once it holds a แยก VAT bill; and
   revenue (`/revenue`, `/accounting`), which leaves returns (SR) out instead of subtracting
   them but counts HS same as an invoice (a cash sale is revenue and price evidence, #514) —
-  AR and settlement (`payments_alloc._settlement_rows`, `models/payments.py`, the mobile
-  sales-trip outstanding subquery) still exclude HS, since a cash sale is paid on the spot
-  and is never a receivable.
+  AR and settlement (`payments_alloc._settlement_rows`, `models/payments.py`) still exclude
+  HS, since a cash sale is paid on the spot and is never a receivable.
   > Known imprecision, left alone: a credit-note line's amount is carried **before** that
   > credit note's bill-level discount, while an invoice line's is after its own. ยอดซื้อรวม
   > subtracts the same credit-note amount the document list shows.

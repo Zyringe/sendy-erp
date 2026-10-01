@@ -5,10 +5,10 @@ docstring for the overall file-split rationale. No behavior changes.
 
 import math
 
+import ar_statement
 from database import get_connection
 import document_kind
 import vat_math
-from cashflow import BSN_AR_PREDICATE
 
 
 def parse_payment_csv(filepath):
@@ -489,45 +489,8 @@ def get_payment_summary():
     return row
 
 
-def get_customer_debt_summary(search=''):
-    """สรุปหนี้ค้างชำระรายลูกค้า เรียงตามยอดค้างมากสุด.
-
-    Sourced from express_ar_outstanding (latest snapshot) — same data as
-    /express/ar — filtered to doc_date_iso >= 2024-01-01 (Sendy import
-    window). Per Put 2026-05-02: BSN sync และ Express ใช้แหล่งเดียวกัน,
-    ใช้ Express snapshot เป็น source of truth, จำกัดช่วงเดียวกับ Sendy
-    import (2024-01-01 ถึงปัจจุบัน) เพื่อไม่นับ legacy debt ก่อนยุคนั้น.
-    """
-    conn = get_connection()
-    cond = ""
-    params = []
-    if search:
-        cond = "AND (ao.customer_name LIKE ? OR ao.customer_code LIKE ?)"
-        params += [f'%{search}%', f'%{search}%']
-
-    rows = conn.execute(f"""
-        SELECT
-            COALESCE(c.name, ao.customer_name) AS customer,
-            ao.customer_code,
-            COUNT(*)                           AS unpaid_bills,
-            ROUND(SUM(ao.outstanding_amount), 2) AS outstanding_amount
-        FROM express_ar_outstanding ao
-        LEFT JOIN customers c ON c.code = ao.customer_code
-        WHERE ao.entity = 'BSN'
-          AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
-          AND {BSN_AR_PREDICATE}
-          {cond}
-        GROUP BY ao.customer_code
-        HAVING outstanding_amount > 0
-        ORDER BY outstanding_amount DESC
-    """, params).fetchall()
-
-    conn.close()
-    return rows
-
-
 def get_ar_reconciliation():
-    """Per-customer reconcile: Express snapshot (get_customer_debt_summary) vs
+    """Per-customer reconcile: chaseable AR (ar_statement.customer_totals) vs
     Sendy ledger unpaid (sales_transactions minus paid_invoices/received_payments).
     Read-only. Snapshot is the canonical AR; ledger is the live cross-check.
 
@@ -536,11 +499,12 @@ def get_ar_reconciliation():
                      diff, status}  sorted by abs(diff) desc.
       snapshot_total, ledger_total, diff_total (floats).
     """
-    # Snapshot side (canonical) — reuse the existing helper so totals match exactly.
-    snap_rows = get_customer_debt_summary()
-    snap = {r['customer_code']: {'name': r['customer'],
-                                 'amount': r['outstanding_amount'] or 0.0}
-            for r in snap_rows}
+    # Snapshot side (canonical): the same per-customer totals /ar shows. Every
+    # blank-code customer shares the one None key, as the ledger side's would.
+    snap = {}
+    for t in ar_statement.customer_totals():
+        e = snap.setdefault(t['customer_code'], {'name': t['customer'], 'amount': 0.0})
+        e['amount'] = round(e['amount'] + t['outstanding'], 2)
 
     # Ledger side — unpaid invoice balance per customer, mirroring get_payment_summary().
     # get_payment_summary groups by doc_base, sums vat-aware net, then marks unpaid
@@ -829,76 +793,3 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
     results.sort(key=lambda x: (abs(round(x['diff'] * 100)), x['match_count'],
                                 len(x['matched_bills']), x['customer']))
     return results[:max_results]
-
-
-def _unpaid_bills(match_sql, match_params):
-    """Outstanding-bill rows for one customer, defined ONCE.
-
-    Returns the CHASEABLE population (CONTEXT.md): outstanding minus the three
-    exclusions in `cashflow.BSN_AR_PREDICATE` — written-off docs, `is_anomalous`
-    ("ลูกหนี้จ่ายแล้ว"), and pre-2024 legacy debt. Both code-keyed customer
-    pages are chase-facing, so they must agree with `/ar` rather than showing a
-    superset of it.
-
-    ⚠ The predicate is IMPORTED, never re-typed. Re-typing it here is exactly
-    how this surface drifted from `/ar` and showed forgiven bills as chaseable.
-
-    `match_sql` is the caller's code identity predicate — a literal chosen at
-    the call site, never user input; its placeholders are filled from
-    `match_params`.
-
-    Returns (rows, snapshot_date) — snapshot_date is the latest BSN AR snapshot
-    date (same value other AR widgets show as "ณ {snapshot_date}", e.g.
-    cashflow.ar_aging()['as_of']), so callers can disclose data freshness
-    instead of leaving it unstated.
-    """
-    conn = get_connection()
-    snapshot_date = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
-    ).fetchone()['d']
-    rows = conn.execute(f"""
-        SELECT
-            ao.doc_no                    AS doc_base,
-            ao.doc_date_iso              AS bill_date,
-            COALESCE(c.name, ao.customer_name) AS customer,
-            ao.customer_code,
-            NULL                         AS vat_type,    -- placeholder; Express totals are already as-billed
-            ao.outstanding_amount        AS total_net,
-            ao.bill_amount,
-            ao.paid_amount,
-            ao.is_anomalous,
-            ao.has_warning
-        FROM express_ar_outstanding ao
-        LEFT JOIN customers c ON c.code = ao.customer_code
-        WHERE ao.entity = 'BSN'
-          AND ao.snapshot_date_iso = (SELECT MAX(snapshot_date_iso) FROM express_ar_outstanding WHERE entity = 'BSN')
-          AND {BSN_AR_PREDICATE}
-          AND {match_sql}
-          AND ao.outstanding_amount > 0
-        ORDER BY ao.doc_date_iso DESC
-    """, match_params).fetchall()
-    conn.close()
-    return rows, snapshot_date
-
-
-def get_customer_unpaid_bills_by_code(customer_code):
-    """Outstanding BSN bills for one customer code.
-
-    Matches express_ar_outstanding.customer_code directly instead of by name,
-    so two companies that share a bill name (BUG 2, e.g. ทรัพย์ทวี = 43ท013 +
-    01พ14) never merge each other's outstanding bills. Same return shape.
-
-    Verified 2026-08-01 on the live snapshot: all 114 outstanding rows carry a
-    customer_code that exists in `customers`, and zero rows match by name only —
-    so this loses no bill the name path would have found.
-
-    ⚠ TRIMs the snapshot's code, matching `cashflow.bsn_ar_excluded_docs_by_code`
-    and `ar_followup.get_customer_ar_detail`. `/customer/code/<code>` renders both
-    lists on one page, and two lists keyed differently is ADR 0012's defect in
-    miniature: a code stored with stray whitespace would land on one and not the
-    other, with nothing on the page saying so. Measured 2026-09-09 on the dev
-    snapshot: zero rows in `express_ar_outstanding` differ from their own TRIM,
-    all-time — so this widens the match without changing a single current row,
-    and it fails SAFE (a padded code would show its bills rather than none).
-    """
-    return _unpaid_bills("TRIM(ao.customer_code) = ?", [customer_code])

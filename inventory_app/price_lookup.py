@@ -80,7 +80,7 @@ _UNIT_REBASE_SOURCES = (
 #   revenue          -> the FLAG only (`excludes_revenue = 1`, 3 rows on prod).
 #                       Bad debt WAS a sale and keeps its revenue.
 #                       Owner: sales_filters.revenue_filter. Do not change it.
-#   collectability   -> the WHOLE table. Owner: cashflow.BSN_AR_PREDICATE.
+#   collectability   -> the WHOLE table. Owner: ar_statement.BSN_AR_PREDICATE.
 #   price evidence   -> the WHOLE table. `price_evidence_filter` below. A bill
 #                       the accountant wrote off is not a price the market
 #                       agreed to: prod carried a ฿1.00 written-off line

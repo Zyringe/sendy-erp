@@ -6,39 +6,22 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
                    flash, session)
 
 from database import get_connection
+import ar_statement
 import call_card as cc
-import cashflow as cf_mod
 import models
-import ar_followup as arf_mod
 from customer_geo import REGION_ORDER
 
 bp_call = Blueprint('call', __name__)
 
 
 def _ar_badge_map(conn):
-    """Return {customer_key: outstanding_amount} for customers with outstanding > 0.
+    """{customer_code: chaseable outstanding} for every customer that owes.
 
-    Uses arf_mod.customer_ranking() — one query for all customers.
-    Keys: customer_code when present, else customer name (mirrors call_card canonical key).
-    We show the badge whenever outstanding > 0.
+    Keyed by code only: two customers who share a bill name each get their own
+    balance, never one of them for both.
     """
-    try:
-        ranking = arf_mod.customer_ranking(conn=conn, min_outstanding=0)
-    except Exception:
-        return {}
-    result = {}
-    for row in ranking:
-        outstanding = row.get('outstanding') or 0
-        if outstanding and float(outstanding) > 0:
-            # Prefer customer_code as key (canonical); fall back to name for orphans
-            key = row.get('customer_code') or row.get('customer') or ''
-            if key:
-                result[key] = float(outstanding)
-            # Also index by name so we can match either way
-            name = row.get('customer') or ''
-            if name and name != key:
-                result[name] = float(outstanding)
-    return result
+    return {t['customer_code']: t['outstanding']
+            for t in ar_statement.customer_totals(conn=conn) if t['customer_code']}
 
 
 @bp_call.route('/call')
@@ -63,12 +46,9 @@ def call_list():
         quiet=quiet,
     )
 
-    # AR badge — ONE call for all rows, then map by customer name
     ar_map = _ar_badge_map(conn)
     for r in rows:
-        # ar_aging keys on customer name; try both name and code
-        overdue = ar_map.get(r['name']) or ar_map.get(r['customer_code']) or 0
-        r['badges']['ar'] = round(overdue, 2) if overdue else 0
+        r['badges']['ar'] = ar_map.get(r['customer_code'], 0)
 
     salespersons = models.get_active_salespersons()
     conn.close()
@@ -90,11 +70,11 @@ def call_list():
 def call_card(customer_code):
     conn = get_connection()
     data = cc.get_card(conn, customer_code)
-    # Read the snapshot age BEFORE the connection closes. `d.ar` is the Express
-    # AR snapshot (via ar_followup.get_customer_ar_detail), and this is the page
-    # someone is looking at while the phone is ringing — the worst place to show
-    # a chase figure without saying how old it is.
-    aging = cf_mod.ar_aging(conn=conn)
+    # Read the snapshot age BEFORE the connection closes. `d.ar` is chaseable AR
+    # from the Express snapshot, and this is the page someone is looking at
+    # while the phone is ringing — the worst place to show a chase figure
+    # without saying how old it is.
+    aging = ar_statement.freshness(conn=conn)
     conn.close()
     if not data:
         flash('ไม่พบลูกค้า', 'warning')

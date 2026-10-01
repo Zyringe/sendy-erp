@@ -16,11 +16,12 @@ import pytest
 # ── Task 1 ────────────────────────────────────────────────────────────────────
 
 def test_get_ar_reconciliation_shape_and_totals(tmp_db):
+    import ar_statement
     import models
     rec = models.get_ar_reconciliation()
     assert set(rec) >= {'rows', 'snapshot_total', 'ledger_total', 'diff_total'}
-    # snapshot_total must equal the snapshot AR helper sum (same source)
-    snap = sum(r['outstanding_amount'] or 0 for r in models.get_customer_debt_summary())
+    # snapshot_total must equal the per-customer chaseable totals (same source)
+    snap = sum(t['outstanding'] for t in ar_statement.customer_totals())
     assert abs(rec['snapshot_total'] - snap) < 0.01
     # diff_total == ledger_total - snapshot_total
     assert abs(rec['diff_total'] - (rec['ledger_total'] - rec['snapshot_total'])) < 0.01
@@ -52,15 +53,26 @@ def _admin(tmp_db):
 # ── Task 2 ────────────────────────────────────────────────────────────────────
 
 def test_ar_overview_renders_and_totals_match(tmp_db):
-    import models
+    import ar_statement
     c = _admin(tmp_db)
     r = c.get('/ar')                      # default tab=overview
     assert r.status_code == 200
     body = r.data.decode()
     assert 'ภาพรวม' in body and 'กระทบยอด' in body          # tab bar present
-    # snapshot headline number appears (formatted with comma)
-    snap = sum(x['outstanding_amount'] or 0 for x in models.get_customer_debt_summary())
-    assert f"{snap:,.0f}".split('.')[0][:3] in body          # leading digits present
+    totals = ar_statement.customer_totals()
+    assert totals, 'the dev DB copy needs chaseable AR for this test to mean anything'
+    snap = sum(t['outstanding'] for t in totals)
+    assert f"฿{snap:,.0f}</div>" in body
+    assert f"{len(totals):,} ราย" in body
+
+
+def test_overview_has_no_ledger_card_and_reconcile_keeps_its_own(tmp_db):
+    c = _admin(tmp_db)
+    overview = c.get('/ar').data.decode()
+    assert 'Express snapshot (books)' in overview            # control: the card row rendered
+    assert 'Ledger unpaid (Sendy transactions)' not in overview
+    reconcile = c.get('/ar?tab=reconcile').data.decode()
+    assert 'รวม Ledger unpaid (Sendy)' in reconcile
 
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────
@@ -158,9 +170,9 @@ def test_overview_snapshot_count_is_dynamic_not_hardcoded(tmp_db):
     hardcoded literal would never move, and would keep showing the OLD
     (pre-insert) count text no matter what the DB says."""
     import sqlite3
-    import models
+    import ar_statement
 
-    before_count = len(models.get_customer_debt_summary())
+    before_count = len(ar_statement.customer_totals())
 
     conn = sqlite3.connect(tmp_db)
     snap, batch_id = conn.execute("""

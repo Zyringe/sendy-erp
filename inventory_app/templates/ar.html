@@ -96,33 +96,6 @@
       </div>
     </div>
   </div>
-  {# Ledger card #}
-  <div class="col-sm-6">
-    <div class="card h-100 border-primary-subtle">
-      <div class="card-body">
-        <div class="text-subtle small mb-1">
-          <i class="bi bi-receipt me-1 text-primary"></i>
-          Ledger unpaid (Sendy transactions)
-        </div>
-        <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(ledger_unpaid) }}</div>
-        <div class="text-subtle small mt-1">
-          {{ '{:,}'.format(unpaid_count) }} ใบค้าง · คำนวณสดจาก sales + การรับชำระ
-        </div>
-        {% if diff_amount != 0 %}
-        <div class="mt-2">
-          <span class="badge bg-warning text-dark">
-            {% if diff_amount > 0 %}
-            มากกว่า snapshot ฿{{ '{:,.0f}'.format(diff_amount) }}
-            {% else %}
-            น้อยกว่า snapshot ฿{{ '{:,.0f}'.format(-diff_amount) }}
-            {% endif %}
-            — ดูแท็บ "กระทบยอด"
-          </span>
-        </div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
 </div>
 
 {# Aging bar #}
@@ -186,8 +159,8 @@
             {{ c.customer }}
             <span class="text-subtle small">{{ c.customer_code }}</span>
           </td>
-          <td class="text-end fw-bold">฿{{ '{:,.0f}'.format(c.outstanding_amount or 0) }}</td>
-          <td class="text-end">{{ c.unpaid_bills }}</td>
+          <td class="text-end fw-bold">฿{{ '{:,.0f}'.format(c.outstanding) }}</td>
+          <td class="text-end">{{ c.invoice_count }}</td>
           <td>
             <a href="{{ url_for('accounting.ar_dashboard', tab='customers') }}" class="btn btn-sm btn-outline-primary py-0">ทวง →</a>
           </td>
@@ -277,16 +250,16 @@
         {% for r in customer_rows %}
         <tr>
           <td>
-            {% if may_see('accounting.ar_followup_customer') %}
-            <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
+            {% if r.customer_code and may_see('accounting.ar_followup_customer') %}
+            <a href="{{ url_for('accounting.ar_followup_customer', customer_key=r.customer_code) }}"
                class="text-decoration-none fw-bold">{{ r.customer }}</a>
             {% else %}
             <span class="fw-bold">{{ r.customer }}</span>
             {% endif %}
             <span class="text-subtle small ms-1">{{ r.customer_code }}</span>
           </td>
-          <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(r.outstanding or r.get('outstanding_amount') or 0) }}</td>
-          <td class="text-end">{{ r.invoice_count or r.get('unpaid_bills') }}</td>
+          <td class="text-end fw-bold">฿{{ '{:,.2f}'.format(r.outstanding) }}</td>
+          <td class="text-end">{{ r.invoice_count }}</td>
           <td>
             {% set age = r.get('oldest_age_days', 0) or 0 %}
             {% if age >= 90 %}
@@ -300,8 +273,8 @@
             {% endif %}
           </td>
           <td>
-            {% if may_see('accounting.ar_followup_customer') %}
-            <a href="{{ url_for('accounting.ar_followup_customer', customer_key=(r.customer_code or r.customer)) }}"
+            {% if r.customer_code and may_see('accounting.ar_followup_customer') %}
+            <a href="{{ url_for('accounting.ar_followup_customer', customer_key=r.customer_code) }}"
                class="btn btn-sm btn-outline-secondary py-0">ดูบิล/ทวง</a>
             {% endif %}
           </td>

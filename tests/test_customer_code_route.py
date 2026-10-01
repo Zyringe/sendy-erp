@@ -221,24 +221,18 @@ def test_reassign_redirect_destination_actually_renders(tmp_db):
     assert len(r.history) == 1 and r.history[0].status_code == 302
 
 
-# ── get_customer_unpaid_bills_by_code ───────────────────────────────────────
+# ── ar_statement.customer_statement, by code ───────────────────────────────
 
-def test_unpaid_bills_by_code_returns_the_owned_customer(tmp_db):
-    import models
+def test_statement_by_code_returns_the_owned_customer(tmp_db):
+    import ar_statement
 
     expected_snapshot = _seed_unpaid_bill(tmp_db)
-    rows, snapshot = models.get_customer_unpaid_bills_by_code(AR_CODE)
+    st = ar_statement.customer_statement(AR_CODE)
 
-    assert snapshot == expected_snapshot
-    assert len(rows) == 1
-    assert rows[0]['doc_base'] == AR_DOC
-    assert rows[0]['customer_code'] == AR_CODE
-
-
-def test_unpaid_bills_by_code_returns_list_for_customer_with_no_ar(tmp_db):
-    import models
-    rows, _snap = models.get_customer_unpaid_bills_by_code('43ท013')
-    assert isinstance(rows, list)
+    assert st['snapshot_date'] == expected_snapshot
+    assert len(st['bills']) == 1
+    assert st['bills'][0]['doc_no'] == AR_DOC
+    assert st['bills'][0]['customer_code'] == AR_CODE
 
 
 # ── three-nav-surfaces: _ENDPOINT_MODULE + break-it-once ───────────────────

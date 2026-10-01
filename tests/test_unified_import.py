@@ -16,7 +16,7 @@ def test_ar_readers_pin_bsn_entity(empty_db):
     The AR readers must pin entity='BSN' rather than MAX(snapshot_date_iso) across
     all entities (which would flip to SD once an SD snapshot is the newest)."""
     import sqlite3
-    import models
+    import ar_statement
     c = sqlite3.connect(empty_db)
     c.execute("PRAGMA foreign_keys = OFF")  # skip express_import_log FK for the seed
 
@@ -33,7 +33,7 @@ def test_ar_readers_pin_bsn_entity(empty_db):
     c.commit()
     c.close()
 
-    codes = {r['customer_code'] for r in models.get_customer_debt_summary()}
+    codes = {r['customer_code'] for r in ar_statement.customer_totals()}
     assert 'BSNC' in codes, "BSN AR must remain visible"
     assert 'SDC' not in codes, "a newer SD snapshot must not clobber the BSN AR view"
 

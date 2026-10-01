@@ -56,80 +56,52 @@ def test_mobile_sales_trip_renders(admin_client):
     assert resp.status_code == 200, resp.data[:500]
 
 
-def test_sales_trip_outstanding_ignores_cancelled_receipts(tmp_db):
-    """/m/sales-trip shows a customer-facing amount owed. Its old
-    `LEFT JOIN paid_invoices ... IS NULL` had no received_payments join at all,
-    so a cancelled receipt erased real debt from it."""
+def _seed_trip(db_path, customers, snapshot_rows, writeoffs=()):
+    """Force customers (code, name) with an ภาคตะวันออก address, and their rows
+    in the latest BSN AR snapshot: (code, doc_no, doc_date_iso, is_anomalous,
+    outstanding). tmp_db is a clone of the live DB, so delete first."""
     import sqlite3
-    conn = sqlite3.connect(tmp_db)
-    conn.execute("DELETE FROM customers WHERE code='C-MOB'")
-    # #528: grouped/filtered by ภาค (customer_geo.region_of), not region_id —
-    # an address that parses to ภาคตะวันออก scopes the request to a small,
-    # deterministic group instead of relying on a row-count cap.
-    conn.execute(
-        "INSERT INTO customers (code, name, address) VALUES ('C-MOB','ร้านมือถือทดสอบ','123 ถ.สุขุมวิท ชลบุรี')")
-    conn.execute("""INSERT INTO sales_transactions
-                      (date_iso, doc_no, doc_base, customer, customer_code,
-                       qty, unit, unit_price, vat_type, total, net)
-                    VALUES ('2026-07-01','IV-MOB-1','IV-MOB','ร้านมือถือทดสอบ','C-MOB',
-                            1,'ตัว',900.0,1,900.0,900.0)""")
-    cur = conn.execute("""INSERT INTO received_payments
-                            (re_no, date_iso, customer, salesperson, cancelled, total)
-                          VALUES ('RE-MOB-CANCELLED','2026-07-05','ร้านมือถือทดสอบ','S1',1,900.0)""")
-    conn.execute("INSERT INTO paid_invoices (re_id, doc_no, doc_kind, amount) VALUES (?,?,?,?)",
-                 (cur.lastrowid, 'IV-MOB', 'IV', 900.0))
-    conn.commit()
-    conn.close()
+    conn = sqlite3.connect(db_path)
+    try:
+        snap, batch_id = conn.execute(
+            "SELECT snapshot_date_iso, batch_id FROM express_ar_outstanding"
+            " WHERE entity='BSN' ORDER BY snapshot_date_iso DESC LIMIT 1").fetchone()
+        for code, name in customers:
+            conn.execute("DELETE FROM customers WHERE code = ?", (code,))
+            conn.execute("DELETE FROM express_ar_outstanding WHERE TRIM(customer_code) = ?",
+                         (code,))
+            # ภาคตะวันออก (customer_geo.region_of on the address) scopes the
+            # request to a small deterministic group.
+            conn.execute("INSERT INTO customers (code, name, address)"
+                         " VALUES (?, ?, '123 ถ.สุขุมวิท ชลบุรี')", (code, name))
+        for code, doc, d, anom, out in snapshot_rows:
+            conn.execute("DELETE FROM ar_writeoffs WHERE doc_no = ?", (doc,))
+            conn.execute("""
+                INSERT INTO express_ar_outstanding
+                    (batch_id, snapshot_date_iso, customer_code, customer_name, doc_no,
+                     doc_date_iso, is_anomalous, bill_amount, paid_amount,
+                     outstanding_amount, entity)
+                VALUES (?, ?, ?, '', ?, ?, ?, ?, 0, ?, 'BSN')
+            """, (batch_id, snap, code, doc, d, anom, out, out))
+        for doc, code in writeoffs:
+            conn.execute("""
+                INSERT INTO ar_writeoffs (doc_no, customer_code, customer_name, amount,
+                                          type, writeoff_date, reason, excludes_revenue)
+                VALUES (?, ?, '', 0, 'expense', '2026-06-05', 'trip fixture', 0)
+            """, (doc, code))
+        conn.commit()
+    finally:
+        conn.close()
 
+
+def _trip_page(url_region='ภาคตะวันออก'):
+    from urllib.parse import quote
     from app import app
     app.config['TESTING'] = True
     c = app.test_client()
     with c.session_transaction() as sess:
         sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
-    from urllib.parse import quote
-    body = c.get(f"/m/sales-trip?region={quote('ภาคตะวันออก')}").get_data(as_text=True)
-
-    assert 'ร้านมือถือทดสอบ' in body, 'control — the seeded customer is on the page'
-    assert '900' in body, 'a cancelled receipt erased a real debt from /m/sales-trip'
-
-
-def test_sales_trip_outstanding_still_excludes_hs_cash_sale(tmp_db):
-    """#514: HS is a cash sale, paid on the spot — this AR-facing 'outstanding'
-    figure keeps excluding it on purpose (money is revenue, not receivable).
-    Control: a real unpaid IV for a second customer still shows its debt, so
-    the assertion below proves the HS exclusion, not a broken query."""
-    import sqlite3
-    conn = sqlite3.connect(tmp_db)
-    conn.execute("DELETE FROM customers WHERE code IN ('C-MOB-HS514','C-MOB-IV514')")
-    conn.execute(
-        "INSERT INTO customers (code, name, address) VALUES "
-        "('C-MOB-HS514','ร้านทดสอบเงินสด514','123 ถ.สุขุมวิท ชลบุรี'),"
-        "('C-MOB-IV514','ร้านทดสอบค้างชำระ514','456 ถ.สุขุมวิท ชลบุรี')")
-    conn.execute("""INSERT INTO sales_transactions
-                      (date_iso, doc_no, doc_base, customer, customer_code,
-                       qty, unit, unit_price, vat_type, total, net)
-                    VALUES ('2026-07-01','HS-MOB514-1','HS-MOB514','ร้านทดสอบเงินสด514','C-MOB-HS514',
-                            1,'ตัว',7777.0,1,7777.0,7777.0)""")
-    conn.execute("""INSERT INTO sales_transactions
-                      (date_iso, doc_no, doc_base, customer, customer_code,
-                       qty, unit, unit_price, vat_type, total, net)
-                    VALUES ('2026-07-01','IV-MOB514-1','IV-MOB514','ร้านทดสอบค้างชำระ514','C-MOB-IV514',
-                            1,'ตัว',5555.0,1,5555.0,5555.0)""")
-    conn.commit()
-    conn.close()
-
-    from app import app
-    app.config['TESTING'] = True
-    c = app.test_client()
-    with c.session_transaction() as sess:
-        sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
-    from urllib.parse import quote
-    body = c.get(f"/m/sales-trip?region={quote('ภาคตะวันออก')}").get_data(as_text=True)
-
-    assert 'ร้านทดสอบเงินสด514' in body, 'control — the HS customer is on the page'
-    assert 'ร้านทดสอบค้างชำระ514' in body, 'control — the IV customer is on the page'
-    assert '7,777' not in body, 'HS cash sale must never render as outstanding debt'
-    assert '5,555' in body, 'a real unpaid IV must still render as outstanding debt'
+    return c, f"/m/sales-trip?region={quote(url_region)}"
 
 
 def _trip_due(html, customer_name):
@@ -156,6 +128,23 @@ def _trip_due(html, customer_name):
     return float(m.group(1).replace(',', '')) if m else None
 
 
+def test_sales_trip_figure_is_the_codes_chaseable_snapshot_total(tmp_db):
+    """ADR 0023: the trip shows chaseable AR, the figure the customer screen
+    shows. Anomalous and pre-2024 rows are not chaseable; a credit row nets."""
+    _seed_trip(tmp_db, [('C-TRIP1', 'ร้านทดสอบทริป1'), ('C-TRIP0', 'ร้านทดสอบทริป0')], [
+        ('C-TRIP1', 'IV-TRIP1-A', '2026-07-01', 0, 900.0),
+        ('C-TRIP1', 'SR-TRIP1-C', '2026-07-02', 0, -100.0),
+        ('C-TRIP1', 'RE-TRIP1-X', '2026-07-03', 1, 5000.0),
+        ('C-TRIP1', 'IV-TRIP1-OLD', '2023-07-03', 0, 7000.0),
+        ('C-TRIP0', 'RE-TRIP0-X', '2026-07-03', 1, 3000.0),
+    ])
+    c, url = _trip_page()
+    body = c.get(url).get_data(as_text=True)
+    assert _trip_due(body, 'ร้านทดสอบทริป1') == 800.0
+    # Only non-chaseable rows: the row renders with no figure.
+    assert _trip_due(body, 'ร้านทดสอบทริป0') is None
+
+
 def test_sales_trip_outstanding_excludes_written_off_bill(tmp_db):
     """#568: /m/sales-trip's outstanding is what a rep is told the shop owes
     before walking in, so it must drop documents the accountant wrote off —
@@ -176,34 +165,12 @@ def test_sales_trip_outstanding_excludes_written_off_bill(tmp_db):
     the disappearance is pinned to THAT row and not to some other filter.
     """
     import sqlite3
+    # Two chaseable-shaped snapshot rows. The only difference is the write-off.
+    _seed_trip(tmp_db, [('C-WO568', 'ร้านทดสอบตัดหนี้568'), ('C-OK568', 'ร้านทดสอบค้างจริง568')], [
+        ('C-WO568', 'IV-WO568', '2026-07-01', 0, 12345.0),
+        ('C-OK568', 'IV-OK568', '2026-07-01', 0, 6789.0),
+    ], writeoffs=[('IV-WO568', 'C-WO568')])
     conn = sqlite3.connect(tmp_db)
-    # Force the state; never inherit it — tmp_db is a clone of the live DB.
-    conn.execute("DELETE FROM customers WHERE code IN ('C-WO568','C-OK568')")
-    conn.execute("DELETE FROM sales_transactions WHERE doc_base IN ('IV-WO568','IV-OK568')")
-    conn.execute("DELETE FROM ar_writeoffs WHERE doc_no IN ('IV-WO568','IV-OK568')")
-    # ภาคตะวันออก (customer_geo.region_of on the address) scopes the request to
-    # a small deterministic group, same trick as the tests above.
-    conn.execute(
-        "INSERT INTO customers (code, name, address) VALUES "
-        "('C-WO568','ร้านทดสอบตัดหนี้568','123 ถ.สุขุมวิท ชลบุรี'),"
-        "('C-OK568','ร้านทดสอบค้างจริง568','456 ถ.สุขุมวิท ชลบุรี')")
-    # Two unpaid IVs of identical shape. The only difference is the write-off.
-    conn.execute("""INSERT INTO sales_transactions
-                      (date_iso, doc_no, doc_base, customer, customer_code,
-                       qty, unit, unit_price, vat_type, total, net)
-                    VALUES ('2026-07-01','IV-WO568-1','IV-WO568','ร้านทดสอบตัดหนี้568','C-WO568',
-                            1,'ตัว',12345.0,1,12345.0,12345.0)""")
-    conn.execute("""INSERT INTO sales_transactions
-                      (date_iso, doc_no, doc_base, customer, customer_code,
-                       qty, unit, unit_price, vat_type, total, net)
-                    VALUES ('2026-07-01','IV-OK568-1','IV-OK568','ร้านทดสอบค้างจริง568','C-OK568',
-                            1,'ตัว',6789.0,1,6789.0,6789.0)""")
-    conn.execute("""INSERT INTO ar_writeoffs
-                      (doc_no, customer_code, customer_name, amount, type,
-                       writeoff_date, reason, excludes_revenue)
-                    VALUES ('IV-WO568','C-WO568','ร้านทดสอบตัดหนี้568',12345.0,'expense',
-                            '2026-06-05','#568 fixture — bad debt, revenue kept',0)""")
-    conn.commit()
     # The far-side property, asserted rather than assumed: a row this clause
     # excludes and the flag-only reading does NOT.
     flag = conn.execute(
@@ -211,13 +178,7 @@ def test_sales_trip_outstanding_excludes_written_off_bill(tmp_db):
     assert flag == 0, 'fixture drifted to the keeping side of a flag-only filter'
     conn.close()
 
-    from app import app
-    app.config['TESTING'] = True
-    c = app.test_client()
-    with c.session_transaction() as sess:
-        sess['user_id'] = 1; sess['username'] = 'admin'; sess['role'] = 'admin'
-    from urllib.parse import quote
-    url = f"/m/sales-trip?region={quote('ภาคตะวันออก')}"
+    c, url = _trip_page()
     body = c.get(url).get_data(as_text=True)
 
     assert _trip_due(body, 'ร้านทดสอบค้างจริง568') == 6789.0, (

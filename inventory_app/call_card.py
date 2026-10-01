@@ -36,6 +36,7 @@ import datetime as dt
 import statistics
 from typing import Optional
 
+import ar_statement
 import customer_geo as geo
 import purchase_history
 import unit_conversion
@@ -496,7 +497,6 @@ def get_card(conn, customer_code):
     """
     # Lazy imports to avoid circular deps at module load time
     import ar_followup as arf_mod
-    import cashflow as cf_mod
     import peer_pricing as pp
 
     # ── 1. Resolve the URL key → canonical customer key ──────────────────────
@@ -565,12 +565,11 @@ def get_card(conn, customer_code):
                                               invoiced_in_error=True)
     clearance = _compute_clearance(conn, _ranked(seed_rows)[:30])
 
-    # ── 7. AR detail ─────────────────────────────────────────────────────────
+    # ── 7. AR detail: chaseable, oldest first, for the card's own code only ──
     ar = []
-    try:
-        ar = arf_mod.get_customer_ar_detail(customer=customer_code, conn=conn)
-    except Exception:
-        pass  # AR data not critical for card rendering
+    if canon_code:
+        ar = sorted(ar_statement.customer_statement(canon_code, conn=conn)['chaseable'],
+                    key=lambda r: -(r['age_days'] or 0))
 
     # ── 8. CRM + log ─────────────────────────────────────────────────────────
     crm = get_crm(conn, customer_code)

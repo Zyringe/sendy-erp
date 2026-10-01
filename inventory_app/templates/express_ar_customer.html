@@ -67,7 +67,7 @@
           </td>
           <td data-label="ยอดบิล" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.bill_amount or 0) }}</td>
           <td data-label="จ่ายแล้ว" class="text-end font-mono td-hide-mobile">{{ '{:,.2f}'.format(r.paid_amount or 0) }}</td>
-          <td data-label="คงค้าง" class="text-end font-mono fw-600 text-danger">{{ '{:,.2f}'.format(r.outstanding_amount or 0) }}</td>
+          <td data-label="คงค้าง" class="text-end font-mono fw-600 text-danger">{{ '{:,.2f}'.format(r.outstanding) }}</td>
           <td data-label="flags" class="text-center td-hide-mobile">
             {% if r.is_anomalous %}<span class="badge bg-warning text-dark me-1" title="ใบเสร็จไม่เรียบร้อย">!</span>{% endif %}
             {% if r.has_warning %}<span class="badge bg-danger" title="warning">***</span>{% endif %}

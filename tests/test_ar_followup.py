@@ -4,7 +4,7 @@ Synthetic data only (empty_db_conn schema clone) for unit tests.
 Integration tests use tmp_db_conn against a copy of the live DB to verify
 the Express BSN snapshot totals (72 customers / 200 docs / ฿1,299,335.94).
 
-AR SOURCE (2026-05-29): customer_ranking and get_customer_ar_detail now
+AR SOURCE (2026-05-29): customer_ranking and the statement it reads (ar_statement)
 source from express_ar_outstanding WHERE entity='BSN' at the latest snapshot.
 Outreach log CRUD and list_overdue_followups are unchanged.
 """
@@ -12,6 +12,7 @@ import pytest
 from datetime import date, timedelta
 
 import ar_followup as arf
+import ar_statement
 
 
 # ── synthetic data helpers ──────────────────────────────────────────────────
@@ -218,7 +219,7 @@ def test_get_followups_returns_newest_first(empty_db_conn):
                      channel='line', result='promised', created_by='admin')
     c.commit()
 
-    rows = arf.get_customer_followups(conn=c, customer='A')
+    rows = arf.get_customer_followups('CA', conn=c)
     assert len(rows) == 2
     assert rows[0]['log_date'] == new
     assert rows[0]['channel'] == 'line'
@@ -233,13 +234,13 @@ def test_get_followups_isolates_per_customer(empty_db_conn):
                      channel='line', result='promised', created_by='admin')
     c.commit()
 
-    assert len(arf.get_customer_followups(conn=c, customer='A')) == 1
-    assert len(arf.get_customer_followups(conn=c, customer='B')) == 1
+    assert len(arf.get_customer_followups('CA', conn=c)) == 1
+    assert len(arf.get_customer_followups('CB', conn=c)) == 1
 
 
-# ── get_customer_ar_detail ──────────────────────────────────────────────────
+# ── ar_statement.customer_statement: what the dunning page lists ───────────
 
-def test_get_customer_ar_detail_lists_outstanding(empty_db_conn):
+def test_statement_lists_the_codes_outstanding(empty_db_conn):
     c = empty_db_conn
     snap = '2026-05-29'
     _ins_express(c, 'IV01', 'CA', 'A', '2026-05-24', 1000, snapshot=snap)   # 5d
@@ -247,23 +248,12 @@ def test_get_customer_ar_detail_lists_outstanding(empty_db_conn):
     _ins_express(c, 'IV03', 'CB', 'B', '2026-05-29', 500,  snapshot=snap)   # 0d
     c.commit()
 
-    rows = arf.get_customer_ar_detail(conn=c, customer='CA')
+    rows = ar_statement.customer_statement('CA', conn=c)['chaseable']
     docs = sorted(r['doc_no'] for r in rows)
     assert docs == ['IV01', 'IV02']
     # IV02 is older — age should be ~200
     iv02 = next(r for r in rows if r['doc_no'] == 'IV02')
     assert iv02['age_days'] == (date.fromisoformat(snap) - date(2025, 11, 10)).days
-
-
-def test_get_customer_ar_detail_sorted_oldest_first(empty_db_conn):
-    """Rows are returned with oldest (largest age_days) first."""
-    c = empty_db_conn
-    _ins_express(c, 'IV01', 'CA', 'A', '2026-05-20', 100)   # newer
-    _ins_express(c, 'IV02', 'CA', 'A', '2026-01-01', 200)   # older
-    c.commit()
-
-    rows = arf.get_customer_ar_detail(conn=c, customer='CA')
-    assert rows[0]['doc_no'] == 'IV02'
 
 
 # ── ranking joins last_log ──────────────────────────────────────────────────
@@ -471,7 +461,7 @@ def test_resolve_target_code_lookup_finds_all_invoices(empty_db_conn):
     _ins_express(c, 'IV02', 'CA', 'ลูกค้า A ', '2026-04-01', 2000)
     c.commit()
 
-    rows = arf.get_customer_ar_detail(customer='CA', conn=c)
+    rows = ar_statement.customer_statement('CA', conn=c)['chaseable']
     assert sorted(r['doc_no'] for r in rows) == ['IV01', 'IV02']
 
 
@@ -487,7 +477,7 @@ def test_resolve_target_code_lookup_finds_all_followups(empty_db_conn):
                      result='promised', created_by='admin')
     c.commit()
 
-    rows = arf.get_customer_followups(customer='CA', conn=c)
+    rows = arf.get_customer_followups('CA', conn=c)
     assert len(rows) == 2
 
 
@@ -564,7 +554,7 @@ def test_customer_ranking_invoice_count(tmp_db_conn):
         f"Expected invoice_count sum=107, got {total_invoices}"
 
 
-def test_get_customer_ar_detail_live(tmp_db_conn):
+def test_statement_live_matches_the_ranking(tmp_db_conn):
     """Per-customer detail returns outstanding docs; spot-check that first
     customer by outstanding has matching total."""
     rows_ranking = arf.customer_ranking(conn=tmp_db_conn)
@@ -572,7 +562,7 @@ def test_get_customer_ar_detail_live(tmp_db_conn):
     top = rows_ranking[0]
     code = top['customer_code']
 
-    detail = arf.get_customer_ar_detail(customer=code, conn=tmp_db_conn)
+    detail = ar_statement.customer_statement(code, conn=tmp_db_conn)['chaseable']
     assert len(detail) > 0, f"Detail for {code} must not be empty"
     detail_total = round(sum(d['outstanding'] for d in detail), 2)
     assert detail_total == pytest.approx(top['outstanding'], abs=0.01), \
@@ -939,20 +929,6 @@ def test_ranking_last_log_detail_ignores_a_deleted_row_on_the_same_date(empty_db
     assert arf.customer_ranking(conn=c)[0]['last_log_result'] == 'no_answer'
 
 
-def test_history_by_NAME_excludes_deleted_rows(empty_db_conn):
-    """Pins get_customer_followups' name branch — a walk-in with no code."""
-    c = empty_db_conn
-    keep = _log(c, 'ลูกค้าเดินเข้า', None, log_date='2026-07-01')
-    drop = _log(c, 'ลูกค้าเดินเข้า', None, log_date='2026-07-02')
-    c.commit()
-    assert len(arf.get_customer_followups('ลูกค้าเดินเข้า', conn=c)) == 2   # control
-
-    arf.delete_outreach(drop, deleted_by='siang', conn=c)
-    c.commit()
-
-    assert [r['id'] for r in arf.get_customer_followups('ลูกค้าเดินเข้า', conn=c)] == [keep]
-
-
 def test_overdue_ignores_a_deleted_plan(empty_db_conn):
     """Pins latest_with_action specifically: the deleted row is the one that
     carries next_action_date, and a live non-terminal log remains."""
@@ -1190,3 +1166,136 @@ def test_the_ar_customers_tab_offers_staff_the_drilldown_but_not_the_csv(tmp_db)
         ('staff is offered fewer ways into the workspace than admin', counts)
     assert EXPORT_LINK in pages['admin'], 'control: the CSV link renders for admin'
     assert EXPORT_LINK not in pages['staff'], 'Q14: staff gets no download button'
+
+
+# ── the dunning page and its log form take a customer CODE only (ADR 0023) ──
+
+SNAP_ONLY_CODE = 'ZZ01ด03'
+SNAP_ONLY_NAME = 'ทดสอบ มีแต่ใน snapshot'
+BILL_NAME_ONLY = 'ทดสอบ ชื่อบิลไม่มีรหัส'
+
+
+def _seed_snapshot_only_code(tmp_db):
+    """Like 01ด03 on 2026-09-30: a code with a chaseable snapshot row and no
+    customer master row, no sales, no log. Plus a bill name that exists only as
+    a sales-ledger name with no code."""
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    try:
+        snap, batch_id = conn.execute(
+            "SELECT snapshot_date_iso, batch_id FROM express_ar_outstanding"
+            " WHERE entity='BSN' ORDER BY snapshot_date_iso DESC LIMIT 1").fetchone()
+        for sql in ("DELETE FROM express_ar_outstanding WHERE TRIM(customer_code) = ?",
+                    "DELETE FROM customers WHERE code = ?",
+                    "DELETE FROM sales_transactions WHERE TRIM(customer_code) = ?",
+                    "DELETE FROM ar_followup_log WHERE TRIM(customer_code) = ?"):
+            conn.execute(sql, (SNAP_ONLY_CODE,))
+        conn.execute("DELETE FROM ar_followup_log WHERE customer = ?", (BILL_NAME_ONLY,))
+        conn.execute("""
+            INSERT INTO express_ar_outstanding
+                (batch_id, snapshot_date_iso, customer_code, customer_name, doc_no,
+                 doc_date_iso, is_anomalous, bill_amount, paid_amount,
+                 outstanding_amount, entity)
+            VALUES (?, ?, ?, ?, 'ZZIV-SNAPONLY', ?, 0, 1764.0, 0, 1764.0, 'BSN')
+        """, (batch_id, snap, SNAP_ONLY_CODE, SNAP_ONLY_NAME, snap))
+        # The bill name has evidence (a log row with no code), which the old
+        # resolver accepted as an orphan key.
+        conn.execute("""
+            INSERT INTO ar_followup_log (customer, customer_code, log_date, channel,
+                                         result, created_by)
+            VALUES (?, NULL, '2026-08-01', 'phone', 'no_answer', 'seed')
+        """, (BILL_NAME_ONLY,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _log_count(tmp_db):
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM ar_followup_log").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_dunning_page_404s_a_bill_name_key(tmp_db):
+    _seed_snapshot_only_code(tmp_db)
+    c = _admin_client(tmp_db)
+    assert c.get(f'/accounting/ar-followup/customer/{BILL_NAME_ONLY}').status_code == 404
+    # Control: the same client renders a real code.
+    assert c.get(f'/accounting/ar-followup/customer/{SNAP_ONLY_CODE}').status_code == 200
+
+
+def test_dunning_page_serves_a_code_that_exists_only_in_the_snapshot(tmp_db):
+    _seed_snapshot_only_code(tmp_db)
+    r = _admin_client(tmp_db).get(f'/accounting/ar-followup/customer/{SNAP_ONLY_CODE}')
+    assert r.status_code == 200
+    assert 'ZZIV-SNAPONLY' in r.get_data(as_text=True)
+
+
+def test_log_form_refuses_a_bill_name_key_and_writes_no_row(tmp_db):
+    _seed_snapshot_only_code(tmp_db)
+    before = _log_count(tmp_db)
+    r = _admin_client(tmp_db).post('/accounting/ar-followup/log/new', data={
+        'customer_key': BILL_NAME_ONLY, 'log_date': '2026-08-10',
+        'channel': 'phone', 'result': 'promised'}, follow_redirects=False)
+    assert r.status_code == 302
+    assert _log_count(tmp_db) == before
+
+    # Control: a code posts, and the row it writes carries that code.
+    r = _admin_client(tmp_db).post('/accounting/ar-followup/log/new', data={
+        'customer_key': SNAP_ONLY_CODE, 'log_date': '2026-08-10',
+        'channel': 'phone', 'result': 'promised'}, follow_redirects=False)
+    assert r.status_code == 302
+    assert _log_count(tmp_db) == before + 1
+    import sqlite3
+    conn = sqlite3.connect(tmp_db)
+    try:
+        assert conn.execute(
+            "SELECT customer, customer_code FROM ar_followup_log"
+            " WHERE customer_code = ?", (SNAP_ONLY_CODE,)).fetchall() == [
+                (SNAP_ONLY_NAME, SNAP_ONLY_CODE)]
+    finally:
+        conn.close()
+
+
+def test_resolve_customer_target_refuses_a_name_with_evidence(empty_db_conn):
+    c = empty_db_conn
+    _log(c, 'ลูกค้าเดินเข้า', None, log_date='2026-07-01')
+    c.commit()
+    assert arf.resolve_customer_target('ลูกค้าเดินเข้า', conn=c) is None
+
+
+def test_dunning_page_lists_oldest_first_and_keeps_snapshot_order_on_ties(tmp_db):
+    """The dunning page sorts its chaseable rows oldest first. Equal ages keep
+    the snapshot's own order (a stable sort), as trunk's page did."""
+    import re
+    import sqlite3
+    from datetime import date as _date, timedelta as _td
+    code = 'ZZDUNSORT'
+    conn = sqlite3.connect(tmp_db)
+    try:
+        snap, batch_id = conn.execute(
+            "SELECT snapshot_date_iso, batch_id FROM express_ar_outstanding"
+            " WHERE entity='BSN' ORDER BY snapshot_date_iso DESC LIMIT 1").fetchone()
+        conn.execute("DELETE FROM express_ar_outstanding WHERE TRIM(customer_code) = ?", (code,))
+        snap_d = _date.fromisoformat(snap)
+        # Inserted in this order; the page must not show it in this order.
+        for doc, days in (('ZZDS-NEW', 5), ('ZZDS-TIE-A', 50), ('ZZDS-OLD', 100),
+                          ('ZZDS-TIE-B', 50)):
+            conn.execute("""
+                INSERT INTO express_ar_outstanding
+                    (batch_id, snapshot_date_iso, customer_code, customer_name, doc_no,
+                     doc_date_iso, is_anomalous, bill_amount, paid_amount,
+                     outstanding_amount, entity)
+                VALUES (?, ?, ?, 'ทดสอบ เรียงบิล', ?, ?, 0, 100, 0, 100, 'BSN')
+            """, (batch_id, snap, code, doc, (snap_d - _td(days=days)).isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = _admin_client(tmp_db).get(f'/accounting/ar-followup/customer/{code}')
+    assert r.status_code == 200
+    docs = re.findall(r'>(ZZDS-[A-Z-]+)</a>', r.get_data(as_text=True))
+    assert docs == ['ZZDS-OLD', 'ZZDS-TIE-A', 'ZZDS-TIE-B', 'ZZDS-NEW']

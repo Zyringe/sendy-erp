@@ -11,9 +11,10 @@ import math
 import sqlite3
 from datetime import date
 
-from flask import (Blueprint, render_template, request, redirect, url_for,
+from flask import (Blueprint, abort, render_template, request, redirect, url_for,
                    flash, session)
 
+import ar_statement
 import book_registry
 import commission_attribution
 import models
@@ -45,36 +46,11 @@ def express_ar_dashboard():
 def express_ar_customer(customer_code):
     """Per-customer AR drill-down — all unpaid invoices in the latest snapshot."""
     conn = get_connection()
-    snapshot = conn.execute(
-        "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding WHERE entity = 'BSN'"
-    ).fetchone()
-    snapshot_date = snapshot['d'] if snapshot else None
-
-    rows = conn.execute("""
-        SELECT customer_code, customer_name, customer_type, salesperson_code,
-               doc_no, doc_date_iso, bill_amount, paid_amount, outstanding_amount,
-               is_anomalous, has_warning,
-               CAST(julianday('now') - julianday(doc_date_iso) AS INTEGER) AS age_days
-          FROM express_ar_outstanding
-         WHERE entity = 'BSN'
-           AND snapshot_date_iso = ?
-           AND TRIM(customer_code) = ?
-           AND {BSN_AR_PREDICATE}
-         ORDER BY doc_date_iso ASC
-    """.format(BSN_AR_PREDICATE=cf_mod.BSN_AR_PREDICATE),
-       (snapshot_date, customer_code)).fetchall()
-
-    # The complement: this customer's snapshot rows that are NOT chaseable, and
-    # why (ADR 0012, #468). Keyed by the SAME TRIM'd code as the query above —
-    # two lists on one page keyed differently is that ADR's defect in miniature.
-    excluded_docs, _excluded_snapshot = cf_mod.bsn_ar_excluded_docs_by_code(
-        customer_code, conn=conn)
-
-    # How OLD the balance below is. This page serves the authoritative chase
-    # figure, so it owes the same freshness warning /ar and the dunning page
-    # already carry (Finding 1, 2026-08-15) — it was the only AR drill-down
-    # without one.
-    aging = cf_mod.ar_aging(conn=conn)
+    statement = ar_statement.customer_statement(customer_code, conn=conn)
+    snapshot_date = statement['snapshot_date']
+    rows = sorted(statement['chaseable'], key=lambda r: r['doc_date_iso'] or '')
+    excluded_docs = statement['excluded']
+    aging = statement['freshness']
 
     # "No chaseable bills" is NOT "no such customer". 33 of the 60 customers in
     # the prod AR snapshot (2026-09-08) have every bill forgiven, already paid,
@@ -85,20 +61,9 @@ def express_ar_customer(customer_code):
         flash(f'ไม่พบลูกหนี้รหัส {customer_code}', 'warning')
         return redirect(url_for('accounting.express_ar_dashboard'))
 
-    # Identity off the chaseable rows when there are any, else off any row the
-    # customer has in the snapshot — chaseable ∪ excluded covers every one, so
-    # this cannot come back empty once the guard above has passed. Reading
-    # `rows[0]` unconditionally is what made the empty chaseable list
-    # unrenderable to begin with.
-    identity = rows[0] if rows else conn.execute("""
-        SELECT customer_name, customer_type, salesperson_code
-          FROM express_ar_outstanding
-         WHERE entity = 'BSN'
-           AND snapshot_date_iso = ?
-           AND TRIM(customer_code) = ?
-         ORDER BY doc_date_iso DESC
-         LIMIT 1
-    """, (snapshot_date, customer_code)).fetchone()
+    # Identity off the oldest chaseable row, else off the newest excluded one:
+    # chaseable ∪ excluded is every snapshot row the customer has.
+    identity = rows[0] if rows else excluded_docs[0]
 
     # "Who looks after this customer" comes from the customers MASTER, not from
     # express_ar_outstanding. The snapshot is re-stamped by Express on every
@@ -116,8 +81,8 @@ def express_ar_customer(customer_code):
     customer_type = identity['customer_type']
     salesperson_code = ((master['salesperson'] if master else None)
                         or identity['salesperson_code'])
-    total_outstanding = sum((r['outstanding_amount'] or 0) for r in rows)
-    total_billed = sum((r['bill_amount'] or 0) for r in rows)
+    total_outstanding = statement['total']
+    total_billed = sum(r['bill_amount'] for r in rows)
     oldest = min((r['doc_date_iso'] or '9999-12-31') for r in rows) if rows else None
 
     # Pull recent payment history from the CANONICAL received_payments table
@@ -150,7 +115,7 @@ def express_ar_customer(customer_code):
                            customer_type=customer_type,
                            salesperson_code=salesperson_code,
                            snapshot_date=snapshot_date,
-                           rows=[dict(r) for r in rows],
+                           rows=rows,
                            excluded_docs=excluded_docs,
                            aging=aging,
                            recent_payments=[dict(r) for r in recent_payments],
@@ -324,19 +289,12 @@ def ar_dashboard():
         # question the dunning list is actually for. Same population as the
         # aging total above — cashflow asserts they reconcile to the satang.
         ctx['due_buckets'] = cf_mod.ar_due_buckets()
-        debt = models.get_customer_debt_summary()
-        summ = models.get_payment_summary()
-        snapshot_total = sum(r['outstanding_amount'] or 0 for r in debt)
-        snapshot_count = len(debt)
-        ledger_unpaid = summ['unpaid_amount']
-        diff_amount = ledger_unpaid - snapshot_total
+        # Chaseable only. The Sendy-ledger card lives on the reconcile tab.
+        totals = ar_statement.customer_totals()
         ctx.update(
-            snapshot_total=snapshot_total,
-            snapshot_count=snapshot_count,
-            ledger_unpaid=ledger_unpaid,
-            unpaid_count=summ['unpaid_count'],
-            diff_amount=diff_amount,
-            top_customers=debt[:8],
+            snapshot_total=sum(t['outstanding'] for t in totals),
+            snapshot_count=len(totals),
+            top_customers=totals[:8],
         )
     elif tab == 'customers':
         bucket = request.args.get('bucket', '').strip()
@@ -677,23 +635,20 @@ def ar_followup():
 
 @bp_accounting.route('/accounting/ar-followup/customer/<path:customer_key>')
 def ar_followup_customer(customer_key):
-    """Per-customer detail page. `customer_key` is the URL slug — either a
-    `customer_code` (preferred, stable) or a customer name (legacy bookmark
-    or orphan customer). Resolved by `arf_mod._resolve_target` inside the
-    detail/followup helpers."""
-    invoices = arf_mod.get_customer_ar_detail(customer=customer_key)
-    followups = arf_mod.get_customer_followups(customer=customer_key)
-    total_outstanding = round(sum(i['outstanding'] for i in invoices), 2)
-    # The chaseable list above drops forgiven / already-paid / pre-2024 bills.
-    # This is the same customer's REMOVED documents, so the page can say what
-    # happened to a bill instead of letting it vanish before a phone call.
-    excluded_docs = arf_mod.get_customer_excluded_docs(customer=customer_key)
+    """Per-customer dunning page, keyed by customer code only (ADR 0023). A key
+    no snapshot, sales, log or master row carries as a code is a 404."""
+    if not arf_mod.resolve_customer_target(customer_key):
+        abort(404)
+    statement = ar_statement.customer_statement(customer_key)
+    # Oldest first; Python's sort is stable, so equal ages keep snapshot order.
+    invoices = sorted(statement['chaseable'], key=lambda i: -(i['age_days'] or 0))
+    followups = arf_mod.get_customer_followups(customer_key)
 
     # Display name = name on the most recent invoice; else newest log; else key.
     if invoices:
-        latest_inv = max(invoices, key=lambda i: i.get('invoice_date') or '')
+        latest_inv = max(invoices, key=lambda i: i['doc_date_iso'] or '')
         customer_name = latest_inv['customer']
-        customer_code = latest_inv.get('customer_code')
+        customer_code = latest_inv['customer_code']
     elif followups:
         customer_name = followups[0]['customer']
         customer_code = followups[0].get('customer_code')
@@ -708,9 +663,11 @@ def ar_followup_customer(customer_key):
         customer_code=customer_code,
         invoices=invoices,
         followups=followups,
-        excluded_docs=excluded_docs,
-        total_outstanding=total_outstanding,
-        aging=cf_mod.ar_aging(),
+        # The same customer's REMOVED documents, so the page can say what
+        # happened to a bill instead of letting it vanish before a phone call.
+        excluded_docs=statement['excluded'],
+        total_outstanding=statement['total'],
+        aging=statement['freshness'],
         today=date.today().isoformat(),
     )
 
@@ -792,7 +749,7 @@ def ar_followup_log_delete(log_id):
         flash('ลบรายการแล้ว', 'success')
     else:
         flash('ไม่พบรายการ หรือถูกลบไปแล้ว', 'warning')
-    if customer_key:
+    if arf_mod.resolve_customer_target(customer_key):
         return redirect(url_for('accounting.ar_followup_customer', customer_key=customer_key))
     return redirect(url_for('accounting.ar_dashboard', tab='customers'))
 

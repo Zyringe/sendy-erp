@@ -101,10 +101,6 @@ DECLARED = {
         'the customer picker\'s search hint, a typeahead aid and not a worklist or '
         'money figure (its own docstring said so before the sweeps existed).'),
     # ── money owed (AR), not money spent ──
-    'blueprints/mobile.py::sales_trip': ({'raw money'},
-        'the sales-trip list\'s outstanding: unpaid invoices per customer, '
-        'VAT-inclusive cash. Money the customer owes, not what it bought; its ซื้อล่าสุด '
-        'comes from purchase_history.histories().'),
     'models/payments.py::get_payment_status': ({'last date', 'raw money'},
         'the /ar รายบิล document ledger: one row per bill, billed against paid. An AR '
         'balance, not a purchase total.'),
