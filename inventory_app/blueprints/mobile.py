@@ -186,7 +186,7 @@ def sales_trip():
 
     ภาค can't be filtered or grouped in SQL, so — same shape as
     get_customers() — this queries every customer, derives ภาค per row in
-    Python, then groups/filters/sorts. ~2,665 customers is fine for this.
+    Python, then groups/filters/sorts: every customer, fine at current size.
     A legacy `?region_id=` bookmark is simply ignored.
     """
     region = (request.args.get('region') or '').strip() or None
