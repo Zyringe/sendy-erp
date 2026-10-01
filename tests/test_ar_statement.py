@@ -9,8 +9,6 @@ os.environ.setdefault('SKIP_DB_INIT', '1')
 import sqlite3
 from datetime import date, timedelta
 
-import pytest
-
 import ar_statement
 
 

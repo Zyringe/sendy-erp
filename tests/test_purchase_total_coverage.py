@@ -45,9 +45,6 @@ _CUSTOMER_KEY = re.compile(r'\b(?:customer|customer_code)\b|customer_key_sql', r
 # ยอดซื้อรวม, so it keeps its own definition on purpose.
 ALLOWED = {
     # ── money owed (AR), not money spent ──
-    'blueprints/mobile.py::sales_trip': (1,
-        'the sales-trip list\'s outstanding: unpaid invoices per customer, '
-        'VAT-inclusive cash. Money the customer owes, not what it bought.'),
     'models/payments.py::get_payment_status': (1,
         'the /ar รายบิล document ledger: one row per bill, VAT-inclusive billed '
         'against paid. An AR balance, not a purchase total.'),

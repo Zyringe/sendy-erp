@@ -86,8 +86,6 @@ ALLOWED = {
     'models/financial_health.py::_trailing_margin': (2,
         'financial-health margin: revenue and base-unit COGS over revenue_filter(), SR dropped.'),
     # ── AR / settlement: a credit note is handled as a credit on purpose ──
-    'blueprints/mobile.py::sales_trip': (1,
-        '/m/sales-trip outstanding: unpaid invoices per customer, VAT-inclusive cash. AR.'),
     'models/payments.py::get_payment_status': (2,
         'the /ar รายบิล document ledger: one row per bill, billed vs paid. AR.'),
     'models/payments.py::get_payment_summary': (4,

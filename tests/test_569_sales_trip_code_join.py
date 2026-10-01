@@ -1,5 +1,8 @@
 """#569: /m/sales-trip reads a customer's bills by customers.code.
 
+Since ADR 0023 the ฿ figure is chaseable AR from the snapshot, keyed by code;
+ล่าสุด still comes from the sales ledger.
+
 The rep reads ล่าสุด (last purchase) and the ฿ figure (what the shop owes) off
 this card before walking into the shop. Both were joined on the master NAME,
 which the bill name drifts from, so 195 of 272 buyers on prod rendered as
@@ -40,8 +43,23 @@ def _seed(db_path):
                          (code, bill))
             conn.execute("INSERT INTO customers (code, name, address) VALUES (?, ?, ?)",
                          (code, master, ADDRESS))
+        snap, batch_id = conn.execute(
+            "SELECT snapshot_date_iso, batch_id FROM express_ar_outstanding"
+            " WHERE entity='BSN' ORDER BY snapshot_date_iso DESC LIMIT 1").fetchone()
+        for code, _master, _bill in (MISMATCH, MATCH):
+            conn.execute("DELETE FROM express_ar_outstanding WHERE TRIM(customer_code) = ?",
+                         (code,))
         for (code, master, bill), doc, day, net, flag in BILLS:
             conn.execute("DELETE FROM ar_writeoffs WHERE doc_no = ?", (doc,))
+            # The trip's ฿ figure is chaseable AR from the snapshot (ADR 0023),
+            # stamped with the bill name, not the master name.
+            conn.execute(
+                """INSERT INTO express_ar_outstanding
+                     (batch_id, snapshot_date_iso, customer_code, customer_name, doc_no,
+                      doc_date_iso, is_anomalous, bill_amount, paid_amount,
+                      outstanding_amount, entity)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, ?, 'BSN')""",
+                (batch_id, snap, code, bill, doc, day, net, net))
             conn.execute("DELETE FROM paid_invoices WHERE doc_no = ?", (doc,))
             conn.execute(
                 """INSERT INTO sales_transactions

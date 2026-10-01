@@ -42,8 +42,6 @@ ALLOWED = {
         'it carries not_a_sale_clause (Put, 2026-09-22), which this file-level '
         'sweep cannot tell apart, so test_627_sales_returns_coverage.py pins '
         'the clause per function.',
-    'blueprints/mobile.py':
-        'Mobile view of the same document ledger as models/sales.py — same call.',
     'payments_alloc.py':
         'Sums SR (credit-note) rows for AR allocation, not revenue.',
     # 'call_card.py' left this list in card C P3: it no longer sums net off
@@ -176,9 +174,6 @@ HS_EXCLUSION_ALLOWED = {
     'payments_alloc.py':
         'Invoice settlement / cash allocation — the issue names '
         '_settlement_rows explicitly as keep-excluded (#514).',
-    'blueprints/mobile.py':
-        "/m/sales-trip's per-customer 'outstanding' figure is an AR figure, "
-        'same reason as models/payments.py (#514).',
     'models/ecommerce_overview.py':
         'Marketplace STOCK-quantity deduction (sold units reducing the '
         'platform stock estimate), not revenue or price evidence — a '

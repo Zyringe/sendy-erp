@@ -588,12 +588,11 @@ def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
                          "express_ar_outstanding WHERE entity='BSN'").fetchone()['d']
         if not snap:
             return []
-        # WHERE = exact complement of BSN_AR_PREDICATE so every excluded doc
-        # (RE, pre-2024 legacy, OR a written-off would-be-collectable) appears
-        # exactly once. The collectable set is
-        #   (is_anomalous=0 AND doc>=2024 AND doc_no NOT IN ar_writeoffs);
-        # its NOT(...) pulls the written-off recents into this excluded section.
-        rows = c.execute("""
+        # NOT (BSN_AR_PREDICATE), imported, so every excluded doc (RE, pre-2024
+        # legacy, OR a written-off would-be-collectable) appears exactly once.
+        # Filter first, join second: the predicate's bare columns are ambiguous
+        # beside the customers join.
+        rows = c.execute(f"""
             SELECT ao.customer_code,
                    COALESCE(cust.name, ao.customer_name) AS customer_name,
                    ROUND(SUM(ao.outstanding_amount), 2)  AS outstanding,
@@ -604,11 +603,10 @@ def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
                    MAX(CASE WHEN ao.is_anomalous = 0 AND ao.doc_date_iso >= '2024-01-01'
                              AND ao.doc_no IN (SELECT doc_no FROM ar_writeoffs)
                             THEN 1 ELSE 0 END) AS has_writeoff
-            FROM express_ar_outstanding ao
+            FROM (SELECT * FROM express_ar_outstanding
+                   WHERE entity = 'BSN' AND snapshot_date_iso = ?
+                     AND NOT ({BSN_AR_PREDICATE})) ao
             LEFT JOIN customers cust ON cust.code = ao.customer_code
-            WHERE ao.entity = 'BSN' AND ao.snapshot_date_iso = ?
-              AND NOT (ao.is_anomalous = 0 AND ao.doc_date_iso >= '2024-01-01'
-                       AND ao.doc_no NOT IN (SELECT doc_no FROM ar_writeoffs))
             GROUP BY ao.customer_code
             HAVING ROUND(SUM(ao.outstanding_amount), 2) > 0
             ORDER BY outstanding DESC

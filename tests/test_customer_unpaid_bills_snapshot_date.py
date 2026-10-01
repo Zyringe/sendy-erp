@@ -1,7 +1,6 @@
-"""TDD + integration tests for Phase 2 finance revamp R4 (freshness
-standard) — models.get_customer_unpaid_bills_by_code() returns
-(rows, snapshot_date) instead of a bare row list, so customer_summary.html
-can disclose "ณ {snapshot_date}" like the other AR widgets already do.
+"""Freshness standard (Phase 2 finance revamp R4): a customer's statement
+carries its snapshot date, so customer_summary.html can disclose
+"ณ {snapshot_date}" like the other AR widgets already do.
 """
 import os
 os.environ.setdefault('SKIP_DB_INIT', '1')
@@ -52,24 +51,21 @@ def _admin(tmp_db):
     return c
 
 
-def test_returns_rows_and_snapshot_date_tuple(tmp_db):
-    import models
+def test_statement_carries_its_bills_and_snapshot_date(tmp_db):
+    import ar_statement
 
     expected_snapshot = _seed_unpaid(tmp_db)
 
-    result = models.get_customer_unpaid_bills_by_code(CODE)
-    assert isinstance(result, tuple) and len(result) == 2
-    rows, snapshot_date = result
-    assert snapshot_date == expected_snapshot
-    assert len(rows) == 1
-    assert rows[0]['doc_base'] == DOC
+    st = ar_statement.customer_statement(CODE)
+    assert st['snapshot_date'] == expected_snapshot
+    assert [b['doc_no'] for b in st['bills']] == [DOC]
 
 
-def test_snapshot_date_is_none_when_no_snapshot_rows(empty_db_conn):
-    import models
-    rows, snapshot_date = models.get_customer_unpaid_bills_by_code('ไม่มีรหัสนี้')
-    assert rows == []
-    assert snapshot_date is None
+def test_snapshot_date_is_none_when_no_snapshot_rows(empty_db):
+    import ar_statement
+    st = ar_statement.customer_statement('ไม่มีรหัสนี้', db_path=empty_db)
+    assert st['bills'] == []
+    assert st['snapshot_date'] is None
 
 
 def test_customer_summary_route_shows_snapshot_date(tmp_db):

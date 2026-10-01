@@ -41,10 +41,6 @@ EXEMPT = {
     '_ar_snapshot_banner.html':
         'it IS the banner — it matches its own markers because it renders '
         'aging.as_of and aging.age_days.',
-    'm/sales_trip.html':
-        'its ยอดค้างรวม is summed from sales_transactions via vat_math.cash_sql, '
-        'NOT from express_ar_outstanding — a snapshot-age warning would be '
-        'about the wrong table.',
     'payment_customers.html':
         'the payment-status ledger, not the AR snapshot. The page already '
         'carries its own note that its totals differ from the Express AR page.',
@@ -158,6 +154,7 @@ SURFACES = [
     ('customer summary',      '/customer/code/' + CODE,       'ZZBAN-IV'),
     ('mobile customer',       '/m/customer/code/' + CODE,     'ZZBAN-IV'),
     ('call card',             '/call/' + CODE,                'ค้างชำระทั้งหมด'),
+    ('sales trip',            '/m/sales-trip',                NAME),
 ]
 
 

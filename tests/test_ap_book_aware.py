@@ -14,9 +14,8 @@ WHAT IS AND IS NOT IN SCOPE, from the plan's own table:
     operational book, so a rep's payout must never depend on which tab someone
     had open. Pinned by a test here rather than left to a comment.
   * /ar -- NOT YET, and deliberately so. Its overview tab calls
-    get_customer_debt_summary() and get_payment_summary(), neither of which
-    takes a connection, and its customers tab calls ar_followup.customer_
-    ranking() -- and ar_followup is blocked on the plan's open decision #2
+    ar_statement.customer_totals() on the default connection, and its
+    customers tab calls ar_followup.customer_ranking() -- and ar_followup is blocked on the plan's open decision #2
     (is chasing a customer one conversation about one total, or two books that
     must never be added together?). Converting half a page would silently mix
     two books' money on one screen, which is worse than not converting it.
