@@ -1350,7 +1350,7 @@ from tests.test_610_importers_write_words import (  # noqa: E402
 @pytest.mark.parametrize('book,hoo', [(None, 'ห่อ'), ('BSN5657', 'ห่อ'), ('xp5', 'หลอด')])
 def test_dbf_sales_order_lines_store_the_word_of_their_book(empty_db, monkeypatch, book, hoo):
     """The census control for `express_registers.py::replace` (through_map_
-    transitive): commit_express_dbf, the one caller that hands it a unit
+    transitive): commit_express_registers, the one caller that hands it a unit
     column, translates every line against the upload's own book first. `หอ`
     is the one code the two books disagree on, so it proves the book is
     threaded, not defaulted."""
@@ -1364,8 +1364,7 @@ def test_dbf_sales_order_lines_store_the_word_of_their_book(empty_db, monkeypatc
                    _oesoit('SO610', 5, '')],
     })
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db,
-                                           snapshot_date='2026-09-22', book=book)
+    out = import_router.commit_express_registers('/x', empty_db, book)
 
     assert out['sales_orders'] == {'orders': 1, 'lines': 5}, out['sales_orders']
     units = _order_units(empty_db)
@@ -1377,8 +1376,8 @@ def test_dbf_sales_order_lines_store_the_word_of_their_book(empty_db, monkeypatc
     assert units[2] == ('ช5' if book == 'xp5' else 'ชุด5')
 
 
-def test_only_commit_express_dbf_replaces_the_sales_order_register():
-    """The transitive claim rests on commit_express_dbf being the ONLY code
+def test_only_commit_express_registers_replaces_the_sales_order_register():
+    """The transitive claim rests on commit_express_registers being the ONLY code
     path that hands express_registers.replace() the sales-order register (the
     one register with a unit column). A second caller would bypass the
     translation while the test above stayed green."""
@@ -1403,7 +1402,7 @@ def test_only_commit_express_dbf_replaces_the_sales_order_register():
                                 and isinstance(call.args[0], ast.Constant)
                                 and call.args[0].value == 'sales_orders'):
                             callers.append((os.path.relpath(path, _ROOT), fn.name))
-    assert callers == [('inventory_app/import_router.py', 'commit_express_dbf')], callers
+    assert callers == [('inventory_app/import_router.py', 'commit_express_registers')], callers
 
 
 

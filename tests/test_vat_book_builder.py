@@ -112,6 +112,7 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     import config
     import database
     import express_dbf_source as eds
+    import import_router
     # The build imports these lazily. First imported under the patched
     # DATABASE_PATH, they would keep the deleted tmp path for every later
     # test (`from config import DATABASE_PATH` binds once); import them now.
@@ -119,6 +120,15 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     import import_credit_notes  # noqa: F401
     import payments_alloc  # noqa: F401
     before = set(sys.modules)
+    register_calls = []
+    real_register_commit = import_router.commit_express_registers
+
+    def tracked_register_commit(*args, **kwargs):
+        register_calls.append((args, kwargs))
+        return real_register_commit(*args, **kwargs)
+
+    monkeypatch.setattr(import_router, 'commit_express_registers',
+                        tracked_register_commit)
 
     main_db = tmp_path / 'main.db'
     c = sqlite3.connect(str(main_db))
@@ -140,7 +150,8 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
     tables = {
         'STMAS': [_stmas('X1', 'น้ำยาทดสอบ', qucod='ขว', unitpr=10.0)],
         'STLOC': [], 'ISVAT': [], 'ISINFO': [],
-        'ARTRN': [], 'ARMAS': [], 'APMAS': [], 'ARTRNRM': [],
+        'ARTRN': [], 'ARMAS': [{'CUSCOD': 'C676', 'CUSNAM': 'ลูกค้า VAT'}],
+        'APMAS': [], 'ARTRNRM': [],
         'ARRCPIT': [], 'APRCPIT': [],
         'APTRN': [{'DOCNUM': 'RR2600001', 'RECTYP': '3', 'SUPCOD': 'S001',
                    'FLGVAT': 0, 'DOCDAT': d}],
@@ -148,6 +159,28 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
                    'STKDES': 'น้ำยาทดสอบ', 'TRNQTY': 6.0, 'TQUCOD': 'ขว',
                    'UNITPR': 10.0, 'DISC': '', 'TRNVAL': 60.0, 'NETVAL': 60.0,
                    'RDOCNUM': ''}],
+        'GLACC': [{'ACCNUM': '11-01', 'ACCNAM': 'เงินสด', 'LEVEL': 1,
+                   'PARENT': '', 'ACCTYP': 'A', 'NATURE': 'D', 'STATUS': 'N'}],
+        'GLJNL': [{'VOUCHER': 'JV-VAT-676', 'VOUDAT': d, 'JNLTYP': 'JV',
+                   'REFNUM': '', 'DESCRP': '', 'SRCJNL': 'JV', 'DOCSTAT': 'N'}],
+        'GLJNLIT': [{'VOUCHER': 'JV-VAT-676', 'SEQIT': 1, 'VOUDAT': d,
+                     'ACCNUM': '11-01', 'DESCRP': '', 'TRNTYP': '0',
+                     'AMOUNT': 60.0}],
+        'OESO': [{'SONUM': 'SO-VAT-676', 'SODAT': d, 'CUSCOD': 'C676',
+                  'SLMCOD': '06', 'YOUREF': '', 'PAYTRM': 30, 'DLVDAT': d,
+                  'CMPLDAT': None, 'TOTAL': 60.0, 'DISCAMT': 0.0,
+                  'VATAMT': 0.0, 'NETAMT': 60.0, 'DOCSTAT': 'N'}],
+        'OESOIT': [{'SONUM': 'SO-VAT-676', 'SEQNUM': 1, 'STKCOD': 'X1',
+                    'STKDES': 'น้ำยาทดสอบ', 'ORDQTY': 6.0, 'CANCELQTY': 0.0,
+                    'REMQTY': 6.0, 'TQUCOD': 'ขว', 'UNITPR': 10.0,
+                    'TRNVAL': 60.0}],
+        'BKTRN': [{'BKTRNTYP': 'QR', 'CHQNUM': 'CHQ-VAT-676',
+                   'TRNDAT': d, 'CHQDAT': d, 'GETDAT': d, 'PAYINDAT': None,
+                   'BNKCOD': '', 'BRANCH': '', 'BNKACC': '', 'CUSCOD': 'C676',
+                   'NAME': 'ลูกค้า VAT', 'AMOUNT': 60.0, 'CHARGE': 0.0,
+                   'VATAMT': 0.0, 'NETAMT': 60.0, 'REMAMT': 60.0,
+                   'CHQSTAT': '10', 'REMARK': '', 'REFDOC': '', 'REFNUM': '',
+                   'VOUCHER': ''}],
     }
 
     def fake_open(dataset_dir, name):
@@ -166,12 +199,18 @@ def test_build_imports_through_the_main_db_map(tmp_path, monkeypatch):
         line_unit = built.execute(
             "SELECT unit FROM purchase_transactions WHERE doc_no = 'RR2600001'").fetchall()
         rows = built.execute("SELECT book, spelling, word FROM unit_map").fetchall()
+        register_counts = tuple(built.execute(
+            f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ('express_gl_vouchers', 'express_sales_orders',
+                          'express_bank_cheques'))
     finally:
         built.close()
     assert line_unit == [('ขวด',)]           # the importer path
     assert product_unit == [('ขวด',)]        # the STMAS seed path
     # exactly the main map: schema.sql's dumped rows were replaced, not topped up
     assert sorted(rows) == [('BSN5657', 'ขว', 'ขวด'), ('xp5', 'ขว', 'ขวด')]
+    assert register_calls, 'the VAT build dropped the detached register phase'
+    assert register_counts == (1, 1, 1)
     leaked = sorted(m for m in set(sys.modules) - before
                     if getattr(sys.modules[m], 'DATABASE_PATH', None) == db_path)
     assert leaked == [], f'first imported inside the build, bound to the tmp db: {leaked}'

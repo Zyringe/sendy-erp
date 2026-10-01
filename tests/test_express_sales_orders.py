@@ -94,7 +94,7 @@ def test_takes_no_cutoff_argument():
         build_sales_order_records([], [], [], cutoff=datetime.date(2026, 6, 18))
 
 
-# ── wiring through commit_express_dbf ───────────────────────────────────────
+# ── wiring through commit_express_registers ─────────────────────────────────
 
 def _q(db_path, sql):
     c = sqlite3.connect(db_path); c.row_factory = sqlite3.Row
@@ -127,20 +127,24 @@ def _patch(monkeypatch, tables):
     monkeypatch.setattr(eds, 'open_table', fake)
 
 
-def test_commit_stores_orders_and_lines_then_replaces_them(empty_db, monkeypatch):
+def _commit(db_path):
+    import bsn_units
     import import_router
+    return import_router.commit_express_registers('/x', db_path, bsn_units.DEFAULT_BOOK)
 
+
+def test_commit_stores_orders_and_lines_then_replaces_them(empty_db, monkeypatch):
     tables = {'OESO': [_oeso('SO1'), _oeso('SO2')],
               'OESOIT': [_oesoit('SO1', 1), _oesoit('SO1', 2), _oesoit('SO2', 1)]}
     _patch(monkeypatch, tables)
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
     assert out['sales_orders'] == {'orders': 2, 'lines': 3}
 
     tables['OESO'] = [_oeso('SO1')]
     tables['OESOIT'] = [_oesoit('SO1', 1)]
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    _commit(empty_db)
 
     assert len(_q(empty_db, 'SELECT * FROM express_sales_orders')) == 1
     assert len(_q(empty_db, 'SELECT * FROM express_sales_order_lines')) == 1, \
@@ -148,39 +152,35 @@ def test_commit_stores_orders_and_lines_then_replaces_them(empty_db, monkeypatch
 
 
 def test_an_empty_order_book_does_not_erase_a_stored_one(empty_db, monkeypatch):
-    import import_router
-
     tables = {'OESO': [_oeso('SO1')], 'OESOIT': [_oesoit('SO1', 1)]}
     _patch(monkeypatch, tables)
     _seed_company(empty_db)
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    _commit(empty_db)
     assert len(_q(empty_db, 'SELECT * FROM express_sales_orders')) == 1   # CONTROL
 
     tables['OESO'] = []
     tables['OESOIT'] = []
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    out = _commit(empty_db)
 
     assert 'error' in out['sales_orders']
     assert len(_q(empty_db, 'SELECT * FROM express_sales_orders')) == 1
 
 
 def test_a_zip_without_oeso_still_imports(empty_db, monkeypatch):
-    import import_router
-
     _patch(monkeypatch, {})
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
 
     assert 'skipped' in out['sales_orders'] and 'error' not in out['sales_orders']
-    assert 'error' not in out['ar_snapshot']
+    assert 'error' not in out['general_ledger']
+    assert 'error' not in out['bank_cheques']
 
 
 def test_a_missing_oesoit_must_not_erase_stored_order_lines(empty_db, monkeypatch):
     """Codex P1, 2026-08-18 — same hole as the GL: OESO and OESOIT are one group.
     OESO present with OESOIT missing used to delete every stored line and commit
     headers-only, reporting success."""
-    import import_router
     import express_dbf_source as eds
 
     present = {'OESO': [_oeso('SO1')], 'OESOIT': [_oesoit('SO1', 1)]}
@@ -195,11 +195,11 @@ def test_a_missing_oesoit_must_not_erase_stored_order_lines(empty_db, monkeypatc
     monkeypatch.setattr(eds, 'open_table', fake)
     _seed_company(empty_db)
 
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    _commit(empty_db)
     assert len(_q(empty_db, 'SELECT * FROM express_sales_order_lines')) == 1   # CONTROL
 
     del present['OESOIT']
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    out = _commit(empty_db)
 
     assert 'error' in out['sales_orders'] and 'OESOIT' in out['sales_orders']['error']
     assert len(_q(empty_db, 'SELECT * FROM express_sales_order_lines')) == 1, \

@@ -32,6 +32,15 @@ import blueprints.bsn as bsn
 import db_backup
 
 
+@pytest.fixture(autouse=True)
+def _no_detached_register_process(monkeypatch):
+    import shutil
+    monkeypatch.setattr(
+        bsn, '_spawn_register_import',
+        lambda dataset_dir, _run_id: shutil.rmtree(dataset_dir, ignore_errors=True),
+        raising=False)
+
+
 def _client(role='staff'):
     from app import app as flask_app
     flask_app.config['TESTING'] = True

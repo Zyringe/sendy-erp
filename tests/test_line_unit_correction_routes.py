@@ -12,6 +12,16 @@ LINE = 'IV6900001-1'
 STALE = '2000-01-01 00:00:00'
 
 
+@pytest.fixture(autouse=True)
+def _no_detached_register_process(monkeypatch):
+    import shutil
+    import blueprints.bsn as bsn
+    monkeypatch.setattr(
+        bsn, '_spawn_register_import',
+        lambda dataset_dir, _run_id: shutil.rmtree(dataset_dir, ignore_errors=True),
+        raising=False)
+
+
 @pytest.fixture
 def client(empty_db):
     from app import app as flask_app

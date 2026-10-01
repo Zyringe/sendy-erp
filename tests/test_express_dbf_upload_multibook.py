@@ -14,6 +14,16 @@ import pytest
 import blueprints.bsn as bsn
 
 
+@pytest.fixture(autouse=True)
+def _no_detached_register_process(monkeypatch):
+    """Route tests stub the new worker unless a test supplies its own seam."""
+    import shutil
+    monkeypatch.setattr(
+        bsn, '_spawn_register_import',
+        lambda dataset_dir, _run_id: shutil.rmtree(dataset_dir, ignore_errors=True),
+        raising=False)
+
+
 def _client(role='staff'):
     from app import app as flask_app
     flask_app.config['TESTING'] = True
@@ -194,7 +204,46 @@ def test_bsn_failure_still_reported_and_vat_spawned(tmp_db, monkeypatch):
         "ORDER BY id DESC LIMIT 1").fetchone()[0])
     conn.close()
     assert notes['bsn']['ok'] is False and 'parse died' in notes['bsn']['error']
+    assert 'registers' not in notes, 'register worker started after the money import failed'
     assert len(spawned) == 1                  # BSN failing doesn't block VAT
+
+
+def test_register_spawn_failure_keeps_the_money_upload_successful(tmp_db, monkeypatch):
+    import config
+
+    _set_watermark(config.DATABASE_PATH, '2026-01-01')
+    monkeypatch.setattr(bsn, '_classify_dataset', lambda _d: 'missing')
+    monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
+                        lambda *a, **k: _fake_per_type(1))
+    register_dirs = []
+    original_mkdtemp = bsn.tempfile.mkdtemp
+
+    def tracked_mkdtemp(*args, **kwargs):
+        path = original_mkdtemp(*args, **kwargs)
+        if kwargs.get('prefix') == 'express_registers_run_':
+            register_dirs.append(path)
+        return path
+
+    monkeypatch.setattr(bsn.tempfile, 'mkdtemp', tracked_mkdtemp)
+    monkeypatch.setattr(
+        bsn, '_spawn_register_import',
+        lambda *_args: (_ for _ in ()).throw(RuntimeError('register boom')),
+        raising=False)
+
+    response = _upload_dated(
+        _client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0),
+        follow=True)
+
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = json.loads(conn.execute(
+        "SELECT notes FROM import_log WHERE filename='express-dbf-upload' "
+        "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    conn.close()
+    assert notes['bsn']['ok'] is True
+    assert notes['registers']['status'] == 'error'
+    assert 'register boom' in notes['registers']['error']
+    assert 'นำเข้าสำเร็จ' in response.get_data(as_text=True)
+    assert register_dirs and all(not os.path.exists(path) for path in register_dirs)
 
 
 def test_spawn_refuses_while_lock_held(tmp_db, tmp_path):
@@ -248,6 +297,26 @@ def test_import_page_shows_vat_freshness_and_last_run(tmp_db, monkeypatch):
     html = _client().get('/import-express-dbf').get_data(as_text=True)
     assert 'สมุด VAT (xp5): rebuild ล่าสุด' in html
     assert 'ผลการนำเข้าล่าสุด' in html
+
+
+def test_import_page_marks_an_old_register_build_as_stalled(tmp_db):
+    import datetime
+    import config
+
+    started = (datetime.datetime.now() - datetime.timedelta(minutes=31)).strftime(
+        '%Y-%m-%d %H:%M:%S')
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute(
+        "INSERT INTO import_log "
+        "(filename, rows_imported, rows_skipped, notes, imported_at) "
+        "VALUES ('express-dbf-upload', 0, 0, ?, ?)",
+        (json.dumps({'registers': {'status': 'building'}}, ensure_ascii=False), started))
+    conn.commit()
+    conn.close()
+
+    html = _client().get('/import-express-dbf').get_data(as_text=True)
+    assert 'registers-status' in html
+    assert 'ไม่ตอบสนอง (>30 นาที)' in html
 
 
 def test_import_page_shows_reconcile_scan_error_line(tmp_db):
@@ -942,7 +1011,8 @@ def _per_type_with(**overrides):
     return _fake_per_type() | {'reconcile': {}} | overrides
 
 
-def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, monkeypatch):
+def test_a_failing_in_request_register_warns_but_does_not_fail_the_money_import(
+        tmp_db, monkeypatch):
     """ok must stay True: the ledger DID commit. Saying otherwise sends the team
     into a retry loop over a register that has nothing to do with the money."""
     import config
@@ -950,13 +1020,13 @@ def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, mon
     monkeypatch.setattr(bsn, '_classify_dataset', lambda d: 'missing')
     monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
                         lambda *a, **k: _per_type_with(
-                            general_ledger={'vouchers': 0, 'error': 'GLJNL exploded'}))
+                            billing_notes={'upserted': 0, 'error': 'ARBIL exploded'}))
 
     r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0),
                       follow=True)
 
     body = r.get_data(as_text=True)
-    assert 'บัญชีแยกประเภท' in body and 'GLJNL exploded' in body, (
+    assert 'ใบวางบิล' in body and 'ARBIL exploded' in body, (
         'a register failure must be visible to the operator')
 
     conn = sqlite3.connect(config.DATABASE_PATH)
@@ -965,7 +1035,7 @@ def test_a_failing_register_warns_but_does_not_fail_the_money_import(tmp_db, mon
         "ORDER BY id DESC LIMIT 1").fetchone()[0])
     conn.close()
     assert notes['bsn']['ok'] is True, 'the money import succeeded — do not call it failed'
-    assert notes['bsn']['register_errors'] == {'general_ledger': 'GLJNL exploded'}
+    assert notes['bsn']['register_errors'] == {'billing_notes': 'ARBIL exploded'}
 
 
 def test_register_vocabulary_has_labels_and_derived_snapshot_subset():
@@ -994,16 +1064,29 @@ def test_every_declared_register_key_exists_in_a_real_import_result(empty_db, mo
     import express_dbf_source as eds
     import express_registers
     import import_router
-    monkeypatch.setattr(eds, 'open_table', lambda _d, _n: [])
+    import bsn_units
+    moved = {'general_ledger', 'sales_orders', 'bank_cheques'}
+    moved_tables = {'GLACC', 'GLJNL', 'GLJNLIT', 'OESO', 'OESOIT', 'BKTRN'}
+
+    def fake_open(_dataset_dir, name):
+        if name in moved_tables:
+            raise FileNotFoundError(name)
+        return []
+
+    monkeypatch.setattr(eds, 'open_table', fake_open)
     c = sqlite3.connect(empty_db)
     c.execute("INSERT INTO companies (code, name_th, short_name) "
               "VALUES ('BSN', 'บุญสวัสดิ์ นำชัย', 'BSN') ON CONFLICT(code) DO NOTHING")
     c.commit(); c.close()
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db,
-                                           snapshot_date='2026-08-17')
+    in_request = import_router.commit_express_dbf(
+        '/x', db_path=empty_db, snapshot_date='2026-08-17')
+    detached = import_router.commit_express_registers(
+        '/x', empty_db, bsn_units.DEFAULT_BOOK)
 
-    missing = express_registers.REGISTER_KEYS - set(out)
+    assert moved.isdisjoint(in_request), 'moved registers still run in the request'
+    assert set(detached) == moved
+    missing = express_registers.REGISTER_KEYS - (set(in_request) | set(detached))
     assert not missing, f'declared register keys absent from the result: {missing}'
     # CONTROL: the assertion above is over a non-empty set.
     assert len(express_registers.REGISTER_KEYS) == 6
@@ -1228,7 +1311,7 @@ def test_the_register_warning_tells_the_operator_what_to_do(tmp_db, monkeypatch)
     monkeypatch.setattr(bsn.import_router, 'commit_express_dbf',
                         lambda *a, **k: _per_type_with(
                             ar_snapshot={'imported': 0, 'error': 'NETAMT invariant'},
-                            general_ledger={'vouchers': 0, 'error': 'GLJNL exploded'}))
+                            billing_notes={'upserted': 0, 'error': 'ARBIL exploded'}))
 
     r = _upload_dated(_client(), [('data/ARTRN.DBF', b'x')], (2026, 8, 17, 16, 50, 0),
                       follow=True)

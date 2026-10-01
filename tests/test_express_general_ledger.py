@@ -131,7 +131,7 @@ def test_duplicate_line_sequences_are_kept():
     assert len(lines) == 2
 
 
-# ── wiring through commit_express_dbf ───────────────────────────────────────
+# ── wiring through commit_express_registers ─────────────────────────────────
 
 def _q(db_path, sql):
     c = sqlite3.connect(db_path); c.row_factory = sqlite3.Row
@@ -164,9 +164,13 @@ def _patch(monkeypatch, tables):
     monkeypatch.setattr(eds, 'open_table', fake)
 
 
-def test_commit_stores_the_ledger_and_replaces_it_next_run(empty_db, monkeypatch):
+def _commit(db_path):
+    import bsn_units
     import import_router
+    return import_router.commit_express_registers('/x', db_path, bsn_units.DEFAULT_BOOK)
 
+
+def test_commit_stores_the_ledger_and_replaces_it_next_run(empty_db, monkeypatch):
     tables = {'GLACC': [_glacc('11-01-01-00', 'เงินสด')],
               'GLJNL': [_gljnl('V1'), _gljnl('V2')],
               'GLJNLIT': [_gljnlit('V1', 1, '11-01-01-00', '0', 100.0),
@@ -174,12 +178,12 @@ def test_commit_stores_the_ledger_and_replaces_it_next_run(empty_db, monkeypatch
     _patch(monkeypatch, tables)
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
     assert out['general_ledger'] == {'accounts': 1, 'vouchers': 2, 'lines': 2}
 
     tables['GLJNL'] = [_gljnl('V1')]
     tables['GLJNLIT'] = [_gljnlit('V1', 1, '11-01-01-00', '0', 100.0)]
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    _commit(empty_db)
 
     assert len(_q(empty_db, 'SELECT * FROM express_gl_vouchers')) == 1
     assert len(_q(empty_db, 'SELECT * FROM express_gl_lines')) == 1, \
@@ -187,40 +191,35 @@ def test_commit_stores_the_ledger_and_replaces_it_next_run(empty_db, monkeypatch
 
 
 def test_an_empty_journal_does_not_erase_a_stored_one(empty_db, monkeypatch):
-    import import_router
-
     tables = {'GLACC': [_glacc('A')], 'GLJNL': [_gljnl('V1')],
               'GLJNLIT': [_gljnlit('V1', 1, 'A', '0', 1.0)]}
     _patch(monkeypatch, tables)
     _seed_company(empty_db)
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    _commit(empty_db)
     assert len(_q(empty_db, 'SELECT * FROM express_gl_vouchers')) == 1     # CONTROL
 
     tables['GLJNL'] = []
     tables['GLJNLIT'] = []
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    out = _commit(empty_db)
 
     assert 'error' in out['general_ledger']
     assert len(_q(empty_db, 'SELECT * FROM express_gl_vouchers')) == 1
 
 
 def test_a_zip_without_the_gl_still_imports(empty_db, monkeypatch):
-    import import_router
-
     _patch(monkeypatch, {})
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
 
     assert 'skipped' in out['general_ledger'] and 'error' not in out['general_ledger']
-    assert 'error' not in out['ar_snapshot']
+    assert 'error' not in out['sales_orders']
+    assert 'error' not in out['bank_cheques']
 
 
 def test_debits_equal_credits_for_what_was_stored(empty_db, monkeypatch):
     """The GL's own invariant, and the reason it is worth having: a book that
     does not balance cannot be used to check anything else."""
-    import import_router
-
     _patch(monkeypatch, {
         'GLACC': [_glacc('11-01-02-03'), _glacc('11-02-02-00'), _glacc('53-02-02-00')],
         'GLJNL': [_gljnl('QR46058065', voudat=datetime.date(2026, 8, 15))],
@@ -229,7 +228,7 @@ def test_debits_equal_credits_for_what_was_stored(empty_db, monkeypatch):
                     _gljnlit('QR46058065', 3, '11-02-02-00', '1', 7800.0)]})
     _seed_company(empty_db)
 
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    _commit(empty_db)
 
     rows = _q(empty_db, "SELECT entry_side, SUM(amount) t FROM express_gl_lines "
                         "GROUP BY entry_side ORDER BY entry_side")
@@ -246,7 +245,6 @@ def test_a_missing_companion_table_must_not_erase_the_stored_ledger(empty_db, mo
     vouchers with no lines — reporting success. A partially-copied zip is a
     broken export, not a ledger with no entries.
     """
-    import import_router
     import express_dbf_source as eds
 
     good = {'GLACC': [_glacc('A')], 'GLJNL': [_gljnl('V1')],
@@ -263,11 +261,11 @@ def test_a_missing_companion_table_must_not_erase_the_stored_ledger(empty_db, mo
     monkeypatch.setattr(eds, 'open_table', fake)
     _seed_company(empty_db)
 
-    import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    _commit(empty_db)
     assert len(_q(empty_db, 'SELECT * FROM express_gl_lines')) == 1        # CONTROL
 
     del present['GLJNLIT']                       # the companion did not copy
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-18')
+    out = _commit(empty_db)
 
     assert 'error' in out['general_ledger']
     assert 'GLJNLIT' in out['general_ledger']['error']
@@ -280,11 +278,9 @@ def test_a_missing_companion_table_must_not_erase_the_stored_ledger(empty_db, mo
 def test_the_whole_gl_group_absent_is_still_a_graceful_skip(empty_db, monkeypatch):
     """CONTROL for the above: a flash drive on the pre-2026-08-17 .bat has NONE
     of the three, and that is a thinner import rather than a broken one."""
-    import import_router
-
     _patch(monkeypatch, {})
     _seed_company(empty_db)
 
-    out = import_router.commit_express_dbf('/x', db_path=empty_db, snapshot_date='2026-08-17')
+    out = _commit(empty_db)
 
     assert 'skipped' in out['general_ledger'] and 'error' not in out['general_ledger']
