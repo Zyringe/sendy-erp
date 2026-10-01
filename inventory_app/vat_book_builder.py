@@ -21,7 +21,7 @@ the caller renames/moves it into place (see blueprints/bsn.py).
 Fill order: fresh schema → unit_map copied from the main db → products+mapping
 seeded from STMAS (so every STKCOD resolves during import) →
 commit_express_dbf(since_days=None) = full history
-through the six REAL importers → stock_levels overwritten from STMAS.TOTBAL
+through the six REAL importers → three reference registers → stock_levels overwritten from STMAS.TOTBAL
 (the book's own stock, oracle-checked vs Σ STLOC.LOCBAL) → isvat_raw dump →
 book_meta → finalize.
 """
@@ -362,6 +362,8 @@ def _build(source_dir, snapshot_date=None, main_db_path=None):
         per_type = import_router.commit_express_dbf(
             source_dir, db_path=db_path, since_days=None,
             snapshot_date=snapshot_date, book=bsn_units.BOOK_XP5)
+        per_type.update(import_router.commit_express_registers(
+            source_dir, db_path, bsn_units.BOOK_XP5))
         _require_snapshots_ok(per_type)
         overwrite_stock_from_stmas(conn, stmas, stloc, code_to_pid)
         isvat_n = dump_isvat(conn, isvat)

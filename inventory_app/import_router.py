@@ -343,6 +343,64 @@ def _commit_snapshot(kind, build, db_path, snapshot_date):
 DRIFT_SCAN_RESERVE_SECONDS = 12
 
 
+def commit_express_registers(dataset_dir, db_path, book):
+    """Replace the three reference registers that do not feed the money path.
+
+    Each register remains isolated: a failed or incomplete source reports its
+    own error and leaves the previously stored register untouched.
+    """
+    import bsn_units
+    import express_dbf_source as eds
+
+    book = book or bsn_units.DEFAULT_BOOK
+
+    try:
+        group = _open_table_group(eds, dataset_dir, ("GLACC", "GLJNL", "GLJNLIT"))
+        if group is None:
+            gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0,
+                        "skipped": "GL tables not in this zip"}
+        else:
+            gl_records = eds.build_gl_records(
+                group["GLACC"], group["GLJNL"], group["GLJNLIT"], eds.gl_cutoff())
+            n_acc, n_vou, n_lin = express_registers.replace(
+                'general_ledger', gl_records, "BSN", db_path)
+            gl_stats = {"accounts": n_acc, "vouchers": n_vou, "lines": n_lin}
+    except Exception as exc:
+        gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0, "error": str(exc)[:300]}
+
+    try:
+        group = _open_table_group(eds, dataset_dir, ("OESO", "OESOIT"))
+        if group is None:
+            sales_orders_stats = {"orders": 0, "lines": 0,
+                                  "skipped": "OESO/OESOIT not in this zip"}
+        else:
+            armas = eds.open_table(dataset_dir, "ARMAS")
+            sales_order_records = eds.build_sales_order_records(
+                group["OESO"], group["OESOIT"], armas)
+            _unit_words(sales_order_records[1], book, db_path)
+            n_head, n_line = express_registers.replace(
+                'sales_orders', sales_order_records, "BSN", db_path)
+            sales_orders_stats = {"orders": n_head, "lines": n_line}
+    except Exception as exc:
+        sales_orders_stats = {"orders": 0, "lines": 0, "error": str(exc)[:300]}
+
+    try:
+        bktrn = _open_optional(eds, dataset_dir, "BKTRN")
+        if bktrn is None:
+            bank_cheques_stats = {"stored": 0, "skipped": "BKTRN not in this zip"}
+        else:
+            stored, = express_registers.replace(
+                'bank_cheques', (eds.build_bank_cheque_records(bktrn),),
+                "BSN", db_path)
+            bank_cheques_stats = {"stored": stored}
+    except Exception as exc:
+        bank_cheques_stats = {"stored": 0, "error": str(exc)[:300]}
+
+    return {"general_ledger": gl_stats,
+            "sales_orders": sales_orders_stats,
+            "bank_cheques": bank_cheques_stats}
+
+
 def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
                        snapshot_date=None, export_at=None, detect_drift=False,
                        started_at=None, book=None):
@@ -494,55 +552,8 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     # current — but it is never SILENT: the error rides the result dict up to
     # the upload page, because a silently stale AR is the exact bug this
     # feature exists to end.
-    # ใบวางบิล. Whole table, no window (the bills open invoices point at run back
-    # to 2014), and isolated like the snapshots: it is reference data, so a
-    # failure must not make a committed ledger import read as failed.
-    # บัญชีแยกประเภท — windowed by whole calendar years (see gl_cutoff), unlike
-    # the ledger's rolling since_days, and isolated like every register here.
-    try:
-        group = _open_table_group(eds, dataset_dir, ("GLACC", "GLJNL", "GLJNLIT"))
-        if group is None:
-            gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0,
-                        "skipped": "GL tables not in this zip"}
-        else:
-            gl_records = eds.build_gl_records(
-                group["GLACC"], group["GLJNL"], group["GLJNLIT"], eds.gl_cutoff())
-            n_acc, n_vou, n_lin = express_registers.replace(
-                'general_ledger', gl_records, "BSN", db_path)
-            gl_stats = {"accounts": n_acc, "vouchers": n_vou, "lines": n_lin}
-    except Exception as exc:
-        gl_stats = {"accounts": 0, "vouchers": 0, "lines": 0, "error": str(exc)[:300]}
-
-    # ใบสั่งขาย — same isolation and optional-table handling as the two below.
-    try:
-        group = _open_table_group(eds, dataset_dir, ("OESO", "OESOIT"))
-        if group is None:
-            sales_orders_stats = {"orders": 0, "lines": 0,
-                                  "skipped": "OESO/OESOIT not in this zip"}
-        else:
-            sales_order_records = eds.build_sales_order_records(
-                group["OESO"], group["OESOIT"], armas)
-            _unit_words(sales_order_records[1], book, db_path)
-            n_head, n_line = express_registers.replace(
-                'sales_orders', sales_order_records, "BSN", db_path)
-            sales_orders_stats = {"orders": n_head, "lines": n_line}
-    except Exception as exc:
-        sales_orders_stats = {"orders": 0, "lines": 0, "error": str(exc)[:300]}
-
-    # ทะเบียนเช็ค — same isolation and the same optional-table handling as the
-    # billing notes above; neither is something the ledger depends on.
-    try:
-        bktrn = _open_optional(eds, dataset_dir, "BKTRN")
-        if bktrn is None:
-            bank_cheques_stats = {"stored": 0, "skipped": "BKTRN not in this zip"}
-        else:
-            stored, = express_registers.replace(
-                'bank_cheques', (eds.build_bank_cheque_records(bktrn),),
-                "BSN", db_path)
-            bank_cheques_stats = {"stored": stored}
-    except Exception as exc:
-        bank_cheques_stats = {"stored": 0, "error": str(exc)[:300]}
-
+    # ใบวางบิล stays in-request: cashflow reads it for AR due buckets, and the
+    # full table costs only a small fraction of the upload.
     try:
         arbil = _open_optional(eds, dataset_dir, "ARBIL")
         if arbil is None:
@@ -616,9 +627,6 @@ def commit_express_dbf(dataset_dir, db_path=None, since_days=60,
     return {"sales": sales_stats, "purchase": purchase_stats,
             "invoice_refs_upserted": refs_upserted,
             "billing_notes": billing_notes_stats,
-            "bank_cheques": bank_cheques_stats,
-            "sales_orders": sales_orders_stats,
-            "general_ledger": gl_stats,
             "payments_in": payments_in_stats,
             "payments_out": payments_out_stats,
             "credit_notes_ar": credit_notes_ar_stats,
