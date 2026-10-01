@@ -7,15 +7,12 @@ the routes work there too.
 """
 from flask import Blueprint, render_template, request, jsonify, abort
 
-import cashflow
+import ar_statement
 import customer_geo
-import document_kind
 import marketplace_match
-import models
 import payments_alloc
 import purchase_history
 from database import get_connection
-import vat_math
 
 bp_mobile = Blueprint('mobile', __name__, url_prefix='/m',
                       template_folder='../templates/m')
@@ -130,16 +127,19 @@ def customer_detail(customer_code):
     # from the customers row, so a code without one shows none of them, the same
     # rule as the desktop code page.
     pay_speed = payments_alloc.payment_speed(customer_code) if customer else None
-    # Use existing model fn — handles VAT, SR/HS doc filtering, paid-status correctly
-    unpaid_full, unpaid_snapshot_date = models.get_customer_unpaid_bills_by_code(customer_code)
+    # Chaseable bills (ADR 0023), newest first; the phone shows the first five.
+    statement = ar_statement.customer_statement(customer_code)
+    unpaid_full = sorted(statement['bills'], key=lambda b: b['doc_date_iso'] or '',
+                         reverse=True)
     unpaid = unpaid_full[:5]
-    unpaid_total = sum((b['total_net'] or 0) for b in unpaid_full)
-    # What was REMOVED from that total (ADR 0012, #468), keyed identically to
-    # the chaseable list. This surface renders only the phone-sized count.
-    excluded_docs, _excluded_snapshot = cashflow.bsn_ar_excluded_docs_by_code(customer_code)
+    unpaid_total = sum(b['outstanding'] for b in unpaid_full)
+    unpaid_snapshot_date = statement['snapshot_date']
+    # What was REMOVED from that total (ADR 0012, #468). This surface renders
+    # only the phone-sized count.
+    excluded_docs = statement['excluded']
     # A rep on a sales trip reads the outstanding total off this screen, so it
     # needs the staleness warning most of the four, not least.
-    aging = cashflow.ar_aging()
+    aging = statement['freshness']
     conn = get_connection()
 
     # Aggregate stats, from the same purchase_history definitions (totals()) the desktop
@@ -187,64 +187,21 @@ def sales_trip():
 
     ภาค can't be filtered or grouped in SQL, so — same shape as
     get_customers() — this queries every customer, derives ภาค per row in
-    Python, then groups/filters/sorts. ~2,665 customers is fine for this (no
-    heavier than the SUM/EXISTS subqueries below already ran on every
-    candidate row before the old query's own LIMIT 300 truncated it).
+    Python, then groups/filters/sorts. ~2,665 customers is fine for this.
     A legacy `?region_id=` bookmark is simply ignored.
     """
     region = (request.args.get('region') or '').strip() or None
 
     conn = get_connection()
-    # Customers + outstanding total. Read from customers MASTER +
-    # salespersons; customer_regions/regions no longer touched. The last sale
-    # (ล่าสุด, a customer's last PURCHASE, #513) is added below from
-    # purchase_history.histories(), the same reader /customers and /call use.
+    # The last sale (ล่าสุด, a customer's last PURCHASE, #513) is added below
+    # from purchase_history.histories(), the same reader /customers and /call use.
     sql = f"""
         SELECT c.code, c.name, c.zone, c.phone, COALESCE(c.address, '') AS address,
                COALESCE(sp.name, c.salesperson) AS salesperson,
                c.salesperson                    AS salesperson_code,
                (c.salesperson IS NOT NULL
                   AND c.salesperson != ''
-                  AND sp.code IS NULL)          AS salesperson_orphan,
-               (SELECT ROUND(SUM({vat_math.cash_sql('s')}), 2)
-                  FROM sales_transactions s
-                  WHERE s.customer_code = c.code
-                    AND s.doc_base IS NOT NULL
-                    AND {document_kind.not_return_sql('s', 'sales')}
-                    AND s.doc_base NOT LIKE 'HS%'
-                    -- HS is paid on the spot, never a receivable (#514)
-                    -- "paid" means an ACTIVE receipt, same contract as
-                    -- models.payments._ACTIVE_PAID_DOCS_CTE. The old
-                    -- `LEFT JOIN paid_invoices ... IS NULL` had no
-                    -- received_payments join at all, so a cancelled receipt
-                    -- erased real debt from this customer-facing figure.
-                    AND NOT EXISTS (
-                        SELECT 1
-                          FROM paid_invoices pi
-                          JOIN received_payments rp ON rp.id = pi.re_id
-                         WHERE pi.doc_no = s.doc_base
-                           AND rp.cancelled = 0)
-                    -- A rep opens this screen before walking into the shop,
-                    -- so this figure is COLLECTABILITY — which excludes the
-                    -- WHOLE ar_writeoffs table, not the revenue-only
-                    -- `excludes_revenue = 1` subset (#568, ADR 0012; the four
-                    -- readings of this table sit side by side at
-                    -- price_lookup._WRITEOFF_SUBQUERY). Same clause and reason
-                    -- as models.payments.find_customers_for_transfer. Note the
-                    -- ล่าสุด subquery above deliberately does NOT take the
-                    -- whole table (Put, 2026-09-17: a written-off bill is
-                    -- still a purchase). Measured on prod 2026-09-17, and again
-                    -- through the code join on the prod snapshot 2026-09-16: both
-                    -- write-offs reaching this population are flagged 0, so
-                    -- the flag reading removes nothing — นางด้วง (เมืองพีน)
-                    -- showed ฿10,200.00 owed on IV6701775, written off
-                    -- 2026-06-05.
-                    -- LOAD-BEARING: ar_writeoffs.doc_no must stay NOT NULL
-                    -- (mig 095) — one NULL makes `NOT IN (SELECT ...)`
-                    -- evaluate to NULL for every row and every figure here
-                    -- silently becomes 0.
-                    AND s.doc_base NOT IN (SELECT doc_no FROM ar_writeoffs)
-               ) AS outstanding
+                  AND sp.code IS NULL)          AS salesperson_orphan
           FROM customers c
      LEFT JOIN salespersons sp ON sp.code = c.salesperson
          WHERE c.code NOT IN ({', '.join('?' * len(marketplace_match.MARKETPLACE_CODES))})
@@ -254,12 +211,18 @@ def sales_trip():
     rows = [dict(r) for r in conn.execute(
         sql, tuple(marketplace_match.MARKETPLACE_CODES)).fetchall()]
     hist = purchase_history.histories(conn)
+    # A rep opens this screen before walking into the shop, so the figure is
+    # chaseable AR, the same one the customer screen shows (ADR 0023).
+    owed = {t['customer_code']: t['outstanding']
+            for t in ar_statement.customer_totals(conn=conn) if t['customer_code']}
+    aging = ar_statement.freshness(conn=conn)
     conn.close()
 
     for r in rows:
         # Joined on the CODE (#569): the bill name drifts from the master name and
         # the name join blanked 195 of 272 buyers on prod 2026-09-18.
         r['last_sale'] = hist.get(r['code'], {}).get('last_purchase')
+        r['outstanding'] = owed.get(r['code'])
         r['region'] = customer_geo.region_of(r.pop('address'))
     if region:
         rows = [r for r in rows if r['region'] == region]
@@ -281,4 +244,5 @@ def sales_trip():
                            grouped=grouped,
                            regions=customer_geo.REGION_ORDER,
                            region=region,
-                           total_outstanding=total_outstanding)
+                           total_outstanding=total_outstanding,
+                           aging=aging)

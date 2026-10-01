@@ -48,38 +48,13 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date, timedelta
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional
 
+import ar_statement
 import sales_filters
+from ar_statement import AR_SNAPSHOT_STALE_AFTER_DAYS, BSN_AR_PREDICATE
 from config import DATABASE_PATH
 import payments_alloc as pa
-
-
-# ── Canonical BSN AR filter ──────────────────────────────────────────────────
-# Every page that totals BSN AR must apply this to the latest snapshot so the
-# numbers agree (enforced by tests/test_ar_reconcile.py). Excludes:
-#   - RE / is_anomalous receipts — Put: "ลูกหนี้จ่ายแล้ว" (already paid), and
-#   - pre-2024 legacy debt — before the Sendy era (Put 2026-06-04).
-# Bare column names (no table alias) — unambiguous since only express_ar_outstanding
-# has these columns, even in queries that JOIN customers.
-#
-# The `doc_no NOT IN (SELECT ... ar_writeoffs)` clause makes accountant-decided
-# write-offs / write-backs drop from the collectable figure PERMANENTLY, even
-# after the next ลูกหนี้คงค้าง import replaces express_ar_outstanding (the snapshot
-# is DELETE+INSERTed per import; ar_writeoffs is keyed on doc_no and survives).
-# `doc_no` is unambiguous here for the same reason as the bare columns above.
-# LOAD-BEARING: ar_writeoffs.doc_no must stay NOT NULL (mig 095). A NULL in the
-# subquery makes `doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)` evaluate to
-# NULL (never true) for every row → collectable AR collapses to 0.
-BSN_AR_PREDICATE = (
-    "is_anomalous = 0 AND doc_date_iso >= '2024-01-01' "
-    "AND doc_no NOT IN (SELECT doc_no FROM ar_writeoffs)"
-)
-
-# The Express AR snapshot is exported approximately daily, so anything older
-# than one day is no longer safe to chase with. Deliberately NOT the DBF
-# transaction badge's 26-hour rule — that import carries no AR snapshot.
-AR_SNAPSHOT_STALE_AFTER_DAYS = 1
 
 
 # ── DB helpers (mirrors payments_alloc._ConnCtx) ──────────────────────────────
@@ -399,31 +374,16 @@ def ar_aging(as_of: Optional[str] = None,
     ]
 
     with _ConnCtx(conn, db_path) as c:
-        snap = c.execute(
-            "SELECT MAX(snapshot_date_iso) AS snap"
-            " FROM express_ar_outstanding WHERE entity='BSN'"
-        ).fetchone()['snap']
-
-        # Observation date — how old the snapshot is RIGHT NOW. Never feeds
-        # the invoice buckets below (those stay point-in-time on `snap`).
-        observation_date = date.fromisoformat(as_of or _today_iso())
-        # NOT clamped at 0: a future-dated snapshot (BE year typo, clock skew)
-        # is a data error, and clamping would report it as the FRESHEST
-        # possible verdict on the one banner whose job is to fail loud.
-        snapshot_age_days = (
-            None if not snap
-            else (observation_date - date.fromisoformat(snap)).days
-        )
-        # No snapshot, and a future-dated one, are both worse than stale.
-        is_stale = (snapshot_age_days is None
-                    or snapshot_age_days < 0
-                    or snapshot_age_days > AR_SNAPSHOT_STALE_AFTER_DAYS)
+        fresh = ar_statement.freshness(as_of, conn=c)
+        snap = fresh['snapshot_date']
+        is_stale = fresh['is_stale']
+        snapshot_age_days = fresh['age_days']
 
         if not snap:
             # No snapshot yet — return empty structure so the dashboard
             # renders gracefully (AR Aging section shows zeros).
             return {
-                'as_of':              as_of or _today_iso(),
+                'as_of':              fresh['as_of'],
                 'age_days':           snapshot_age_days,
                 'is_stale':           is_stale,
                 'stale_after_days':   AR_SNAPSHOT_STALE_AFTER_DAYS,
@@ -654,115 +614,3 @@ def bsn_ar_excluded_by_customer(conn: Optional[sqlite3.Connection] = None,
             ORDER BY outstanding DESC
         """, (snap,)).fetchall()
     return [dict(r) for r in rows]
-
-
-# ── Per-document complement of BSN_AR_PREDICATE, for ONE customer ────────────
-# `bsn_ar_excluded()` totals the excluded amount and `bsn_ar_excluded_by_customer()`
-# gives one aggregate row per customer. Neither answers the question a per-customer
-# AR page has to ask — "WHICH of this customer's documents were removed from the
-# chaseable total, and why" — which is what the four chase-facing surfaces render
-# below their bill list so a removed bill stops silently disappearing (ADR 0012).
-
-def _excluded_docs(match_sql: str,
-                   match_params: Sequence,
-                   conn: Optional[sqlite3.Connection] = None,
-                   db_path: Optional[str] = None) -> Tuple[List[dict], Optional[str]]:
-    """Rows in the latest BSN snapshot for one customer that are NOT chaseable.
-
-    Returns (rows, snapshot_date). Each row carries `excluded_by`, exactly one of:
-
-      're'       is_anomalous = 1                              (any date)
-      'legacy'   is_anomalous = 0 AND doc_date_iso < 2024
-      'writeoff' is_anomalous = 0 AND doc >= 2024 AND in ar_writeoffs
-
-    ⚠ The buckets are COPIED from `bsn_ar_excluded()`, not re-derived, so the two
-    helpers cannot disagree and a doc that is both written off and pre-2024 is
-    counted ONCE (as legacy). `excluded_by` is the display bucket; the write-off
-    metadata below is attached whenever an `ar_writeoffs` row exists at all, so a
-    legacy doc that was also written off still shows its reason.
-
-    ⚠ The WHERE is `NOT (BSN_AR_PREDICATE)` — the predicate is IMPORTED, never
-    re-typed. A hand-typed complement is ADR 0012's defect in mirror image: it
-    would drift from the chaseable list and let a document fall out of BOTH,
-    which is worse than showing it twice because nothing would ever surface it.
-    `tests/test_ar_excluded_docs.py` pins the partition in both directions.
-
-    ⚠ Filter FIRST, join second — same reason as `ar_due_buckets()`. The
-    predicate uses bare column names, and `ar_writeoffs` also has a `doc_no`,
-    so applying it beside that join fails with "ambiguous column name".
-
-    ⚠ Deliberately NOT filtered on `outstanding_amount > 0`. `_unpaid_bills`
-    filters credit rows out of a chaseable LIST on purpose; here the partition
-    against the chaseable set is the property that matters, and a filter would
-    let a doc be invisible on both lists.
-
-    The `ar_writeoffs` join is safe to make plainly because that table carries
-    `UNIQUE(doc_no)` ("one write-off decision per doc"), so it cannot fan a
-    document out into two rows and break the partition. That constraint is the
-    assumption this query rests on, and
-    `test_one_writeoff_decision_per_doc_is_a_db_invariant` pins it.
-
-    `match_sql` is the caller's identity predicate — a literal chosen at the
-    call site, never user input; placeholders are filled from `match_params`.
-    Same contract as `models/payments.py::_unpaid_bills`.
-    """
-    with _ConnCtx(conn, db_path) as c:
-        snap = c.execute(
-            "SELECT MAX(snapshot_date_iso) AS d FROM express_ar_outstanding "
-            "WHERE entity = 'BSN'").fetchone()['d']
-        if not snap:
-            return [], None
-        rows = c.execute(f"""
-            SELECT ao.doc_no,
-                   ao.doc_date_iso,
-                   COALESCE(cust.name, ao.customer_name) AS customer,
-                   ao.customer_code,
-                   ao.bill_amount,
-                   ao.paid_amount,
-                   ao.outstanding_amount                AS outstanding,
-                   CASE WHEN ao.is_anomalous = 1            THEN 're'
-                        WHEN ao.doc_date_iso < '2024-01-01' THEN 'legacy'
-                        ELSE 'writeoff' END              AS excluded_by,
-                   w.type                               AS writeoff_type,
-                   w.writeoff_date                      AS writeoff_date,
-                   w.reason                             AS writeoff_reason
-              FROM (SELECT * FROM express_ar_outstanding
-                     WHERE entity = 'BSN' AND snapshot_date_iso = ?
-                       AND NOT ({BSN_AR_PREDICATE})) ao
-              LEFT JOIN customers cust ON cust.code = ao.customer_code
-              LEFT JOIN ar_writeoffs w ON w.doc_no = ao.doc_no
-             WHERE {match_sql}
-             ORDER BY ao.doc_date_iso DESC
-        """, [snap] + list(match_params)).fetchall()
-    return [dict(r) for r in rows], snap
-
-
-def bsn_ar_excluded_docs_by_code(customer_code: str,
-                                 conn: Optional[sqlite3.Connection] = None,
-                                 db_path: Optional[str] = None
-                                 ) -> Tuple[List[dict], Optional[str]]:
-    """Code-keyed customer AR pages, including desktop, mobile, and Express.
-
-    TRIMs the snapshot's code, matching `ar_followup.get_customer_ar_detail`.
-    The chaseable and excluded sides of a page must key IDENTICALLY or a code
-    carrying stray whitespace lands in one list and not the other, and the
-    partition that makes this pair trustworthy quietly stops holding.
-    """
-    return _excluded_docs("TRIM(ao.customer_code) = ?", [customer_code],
-                          conn=conn, db_path=db_path)
-
-
-def bsn_ar_excluded_docs_by_snapshot_name(customer_name: str,
-                                          conn: Optional[sqlite3.Connection] = None,
-                                          db_path: Optional[str] = None
-                                          ) -> Tuple[List[dict], Optional[str]]:
-    """Name-keyed the NARROW way, mirroring `ar_followup.get_customer_ar_detail`'s
-    orphan branch: the name stamped on the snapshot row, and nothing else.
-
-    This name matcher exists only because a customer renamed in the master,
-    with no sales history under the new name, resolves to no code on the dunning
-    page. Its excluded list must use the same snapshot-name key as the chaseable
-    orphan branch beside it or the two lists can disagree (ADR 0012).
-    """
-    return _excluded_docs("ao.customer_name = ?", [customer_name],
-                          conn=conn, db_path=db_path)

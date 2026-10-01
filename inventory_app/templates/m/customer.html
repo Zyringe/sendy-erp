@@ -108,13 +108,13 @@
   </div>
   <div class="list-group list-group-flush">
     {% for b in unpaid %}
-    <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_base) }}"
+    <a href="{{ url_for('sales.sales_doc', doc_base=b.doc_no) }}"
        class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
       <div>
-        <div class="font-mono small">{{ b.doc_base }}</div>
-        <div class="text-subtle small">{{ b.bill_date }}</div>
+        <div class="font-mono small">{{ b.doc_no }}</div>
+        <div class="text-subtle small">{{ b.doc_date_iso }}</div>
       </div>
-      <div class="fw-600 text-danger">฿{{ '{:,.2f}'.format(b.total_net or 0) }}</div>
+      <div class="fw-600 text-danger">฿{{ '{:,.2f}'.format(b.outstanding) }}</div>
     </a>
     {% endfor %}
   </div>
