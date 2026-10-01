@@ -73,7 +73,7 @@ def test_overview_has_no_ledger_card_and_reconcile_keeps_its_own(tmp_db):
     assert 'Express snapshot (books)' in overview            # control: the card row rendered
     assert 'Ledger unpaid (Sendy transactions)' not in overview
     reconcile = c.get('/ar?tab=reconcile').data.decode()
-    assert 'รวม Ledger unpaid (Sendy)' in reconcile
+    assert 'ยอดที่ยังไม่ได้รับตาม Ledger (Sendy)' in reconcile
 
 
 # ── Task 3 ────────────────────────────────────────────────────────────────────

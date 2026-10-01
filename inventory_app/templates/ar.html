@@ -506,7 +506,7 @@
     <div class="card h-100 border-primary-subtle">
       <div class="card-body">
         <div class="text-subtle small mb-1">
-          <i class="bi bi-receipt me-1 text-primary"></i>รวม Ledger unpaid (Sendy)
+          <i class="bi bi-receipt me-1 text-primary"></i>ยอดที่ยังไม่ได้รับตาม Ledger (Sendy)
         </div>
         <div class="fs-3 fw-bold">฿{{ '{:,.0f}'.format(reconcile.ledger_total) }}</div>
         <div class="text-subtle small">
@@ -612,7 +612,7 @@
         <tr>
           <th>ลูกค้า</th>
           <th class="text-end">Express (books)</th>
-          <th class="text-end">Ledger (Sendy)</th>
+          <th class="text-end">ยังไม่ได้รับ (Ledger)</th>
           <th class="text-end">ส่วนต่าง</th>
           <th>สถานะ</th>
         </tr>
@@ -656,7 +656,8 @@
 <div class="alert alert-secondary py-2 small">
   <i class="bi bi-info-circle me-1"></i>
   Express snapshot = ยอด ณ วันที่ export ({{ snapshot_date or '—' }}) ·
-  Ledger = ยอดสดจากบิล/รับชำระใน Sendy.
+  Ledger = ยอดคงเหลือของบิลที่ยังรับไม่ครบใน Sendy (สถานะรับชำระ) ไม่ใช่ยอดที่ตามทวง ·
+  ยอดที่ตามได้จริงคือการ์ด Express snapshot.
   <strong>ต่างกันเป็นเรื่องปกติ</strong>
   (บิลที่ import หลัง snapshot หรือยังไม่ได้ลงใน Express books).
   แท็บนี้ช่วยหาว่า "ต่างตรงไหน" เพื่อเช็คกับบัญชี
@@ -695,8 +696,9 @@
     <p class="text-subtle small mb-0 mt-2">
       ค้นลูกค้า <strong>ทุกราย</strong> (ไม่ตัดคนที่บิลเยอะออก) โดยไล่ชุดบิล <strong>ไม่เกิน 4 ใบ</strong>
       บวกกับ <strong>จ่ายยกยอดทั้งหมด / จ่ายยกถึงบิลวันที่ใดวันหนึ่ง</strong> &nbsp;·&nbsp;
-      ยอดค้างที่ใช้ที่นี่คำนวณจาก <strong>ledger ของ Sendy</strong> (บิลขาย ลบใบเสร็จที่ยังไม่ถูกยกเลิก)
-      ไม่ใช่ snapshot ของ Express ที่แท็บอื่นใช้ — ตัวเลขสองฝั่งอาจไม่ตรงกัน
+      ยอดที่ใช้ที่นี่คือ <strong>ยอดคงเหลือของบิลที่ยังรับไม่ครบ ตาม ledger ของ Sendy</strong>
+      (สถานะรับชำระ: บิลขาย ลบใบลดหนี้และใบเสร็จที่ยังไม่ถูกยกเลิก)
+      ไม่ใช่ยอดที่ตามทวง — ยอดที่ตามได้จริงคือ snapshot ของ Express ที่แท็บอื่นใช้ ตัวเลขสองฝั่งอาจไม่ตรงกัน
       ให้ใช้ผลที่นี่เป็น <strong>ตัวช่วยเดา ไม่ใช่คำตอบสุดท้าย</strong>
     </p>
   </div>
@@ -717,11 +719,11 @@
           <th class="ps-3" style="width:2rem">#</th>
           <th>ลูกค้า</th>
           <th>บิลที่ตรงกัน</th>
-          <th class="text-end">ยอดบิลรวม</th>
+          <th class="text-end">ยอดคงเหลือของบิลชุดนี้</th>
           <th class="text-end">ส่วนต่าง</th>
           <th class="text-center">ทางที่เป็นไปได้</th>
-          <th class="text-center">บิลค้างทั้งหมด</th>
-          <th class="text-end pe-3" title="คิดจาก ledger ของ Sendy — ไม่ใช่ snapshot Express ที่แท็บอื่นใช้">ยอดค้างตาม ledger</th>
+          <th class="text-center">บิลที่ยังรับไม่ครบ</th>
+          <th class="text-end pe-3" title="สถานะรับชำระจาก ledger ของ Sendy — ไม่ใช่ยอดที่ตามทวง (Express snapshot)">ยอดที่ยังไม่ได้รับตาม ledger</th>
         </tr>
       </thead>
       <tbody>
@@ -769,7 +771,7 @@
     </table>
   </div>
   <div class="card-footer text-subtle small">
-    ส่วนต่างเป็นบวก = ยอดบิลมากกว่าเงินที่โอนเข้ามา (จ่ายไม่ครบ) · ลบ = โอนเกินยอดบิลชุดนั้น
+    ส่วนต่างเป็นบวก = ยอดคงเหลือของบิลมากกว่าเงินที่โอนเข้ามา (จ่ายไม่ครบ) · ลบ = โอนเกินยอดคงเหลือของบิลชุดนั้น
     <br>
     <strong>"ทางที่เป็นไปได้"</strong> = จำนวนชุดบิลของลูกค้ารายนั้นที่รวมได้เข้าช่วงยอดนี้ ·
     <strong>1 ชุด = น่าเชื่อถือ</strong> · หลายชุด = ลูกค้ามีบิลย่อยเยอะจนบวกได้พอดีโดยบังเอิญ
@@ -777,7 +779,7 @@
   </div>
   {% else %}
   <div class="card-body text-center text-subtle py-3">
-    <i class="bi bi-search me-2"></i>ไม่พบชุดบิลค้างที่รวมได้ใกล้ ฿{{ '{:,.2f}'.format(match_amount) }}
+    <i class="bi bi-search me-2"></i>ไม่พบชุดบิลที่ยังรับไม่ครบที่รวมได้ใกล้ ฿{{ '{:,.2f}'.format(match_amount) }}
     — ลองเพิ่มส่วนต่างที่ยอมรับ
   </div>
   {% endif %}

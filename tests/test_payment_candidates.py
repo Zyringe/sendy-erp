@@ -233,7 +233,7 @@ def test_match_tab_shows_an_exact_hit(seeded):
 
 def test_match_tab_honours_a_custom_tolerance(seeded):
     tight = _admin().get('/ar?tab=match&amount=1005&tol=0').data.decode()
-    assert 'ไม่พบชุดบิลค้าง' in tight
+    assert 'ไม่พบชุดบิลที่ยังรับไม่ครบ' in tight
     loose = _admin().get('/ar?tab=match&amount=1005&tol=10').data.decode()
     assert 'IV001' in loose and '-5.00' in loose
 
@@ -246,7 +246,7 @@ def test_match_tab_survives_a_non_numeric_amount(seeded):
 
 def test_match_tab_reports_no_hit_rather_than_an_empty_table(seeded):
     body = _admin().get('/ar?tab=match&amount=999999').data.decode()
-    assert 'ไม่พบชุดบิลค้าง' in body
+    assert 'ไม่พบชุดบิลที่ยังรับไม่ครบ' in body
 
 
 # ── ambiguity is reported, not hidden ────────────────────────────────────────
@@ -426,7 +426,7 @@ def test_the_ledger_source_is_named_in_the_column_header(seeded):
     """The other /ar tabs serve the Express snapshot under the same words, and
     the two figures legitimately differ. Say which one this column is."""
     body = _admin().get('/ar?tab=match&amount=1000').data.decode()
-    assert 'ยอดค้างตาม ledger' in body
+    assert 'ยอดที่ยังไม่ได้รับตาม ledger' in body
 
 
 def _receive(db_path, doc_no, amount):
