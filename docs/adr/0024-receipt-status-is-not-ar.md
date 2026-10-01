@@ -28,7 +28,11 @@ credit notes unpaid, and the reconcile ledger counted two written-off invoices a
    `get_ar_reconciliation` and `find_payment_candidates` read the module. The newest receipt's
    number and date still come from `_ACTIVE_PAYMENT_DISPLAY_CTE`, display only.
    `_ACTIVE_PAID_DOCS_CTE` is deleted.
-5. **Untouched on purpose.** `payment_speed` keeps excluding the whole `ar_writeoffs` table
+5. **Satang short-closes are not gaps (decision A, Put 2026-10-02).** A remainder under
+   ฿1 (`receipt_status.SHORT_CLOSE_FLOOR`) still reads จ่ายบางส่วน, but the reconcile tab
+   counts a customer as matched when ledger and snapshot differ by less than ฿1 (the
+   satang still shows in the diff column), and the matcher never offers such a remainder.
+6. **Untouched on purpose.** `payment_speed` keeps excluding the whole `ar_writeoffs` table
    before windowing, `cash_in_rows` keeps feeding `/cashflow`, and the commission engine keeps
    its own stricter receipt rule for payouts.
 
@@ -37,7 +41,8 @@ credit notes unpaid, and the reconcile ledger counted two written-off invoices a
 - Receipt status is never AR. A remainder on the Sendy ledger is not a figure anyone is chased
   for; chaseable stays the Express snapshot (ADR 0012).
 - Express closes some invoices short (a few satang to a few hundred baht). They read
-  จ่ายบางส่วน here and their remainder appears in the reconcile ledger column and the matcher.
+  จ่ายบางส่วน here. A remainder of ฿1 or more appears in the reconcile ledger column and the
+  matcher; below ฿1 it reconciles as a match and is never offered (decision A).
 - Each reader takes one read transaction (`database.read_snapshot()`) for every query it
   makes, so an import that commits mid-request cannot split a page. The invoices tab runs the
   engine once and builds both the list and the cards from those rows.

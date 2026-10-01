@@ -447,7 +447,7 @@ def get_ar_reconciliation():
             status = 'ledger_only'
         elif code not in led:
             status = 'snapshot_only'
-        elif abs(l - s) < 0.01:
+        elif abs(l - s) < receipt_status.SHORT_CLOSE_FLOOR:
             status = 'match'
         else:
             status = 'diff'
@@ -575,6 +575,7 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
 
     A written-off invoice (ตัดหนี้แล้ว, the whole `ar_writeoffs` table) is never
     offered: incoming cash cannot belong to a receivable the accountant retired.
+    Nor is a remainder under `receipt_status.SHORT_CLOSE_FLOOR` (decision A).
 
     Row shape is the page's contract: customer, customer_code, matched_bills
     [{doc_base, vat_type}], matched_sum, diff (matched − amount), match_count,
@@ -594,7 +595,8 @@ def find_payment_candidates(amount, tolerance=MATCH_TOLERANCE_BAHT,
 
     with read_snapshot() as conn:
         bills = [r for r in receipt_status.rows(conn=conn)
-                 if r['status'] in (receipt_status.PARTIAL, receipt_status.UNPAID)]
+                 if r['status'] in (receipt_status.PARTIAL, receipt_status.UNPAID)
+                 and r['remainder'] >= receipt_status.SHORT_CLOSE_FLOOR]
         vat_types = dict(conn.execute(
             "SELECT doc_base, MAX(vat_type) FROM sales_transactions "
             "WHERE doc_base IS NOT NULL GROUP BY doc_base").fetchall())

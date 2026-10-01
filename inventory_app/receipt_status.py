@@ -18,6 +18,11 @@ UNPAID = 'unpaid'
 WRITTEN_OFF = 'written_off'
 STATUSES = (PAID, PARTIAL, UNPAID, WRITTEN_OFF)
 
+# Decision A (Put, 2026-10-02): a remainder under ฿1 is an Express short-close
+# (IV6900675 closed ฿0.03 short). It still reads partial, but reconcile counts
+# a gap under this as a match and the matcher never offers such a remainder.
+SHORT_CLOSE_FLOOR = 1.00
+
 _FROM_ENGINE = {
     'paid': PAID,
     'overpaid': PAID,
