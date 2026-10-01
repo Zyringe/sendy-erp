@@ -31,7 +31,10 @@ def test_get_ar_reconciliation_shape_and_totals(tmp_db):
         assert r['status'] in ('match', 'diff', 'snapshot_only', 'ledger_only')
 
 
-def test_reconciliation_ledger_total_matches_payment_summary(tmp_db):
+def test_reconcile_ledger_and_summary_cards_share_one_status_set(tmp_db):
+    """Both read receipt_status rows; this proves they keep the same open
+    statuses (partial + unpaid), not that either amount is right. The amounts
+    are tied to an independent SQL oracle in the live-clone invariants test."""
     import models
     rec = models.get_ar_reconciliation()
     summ = models.get_payment_status()[2]
@@ -273,11 +276,10 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     is what used to report MORE paid bills than total bills."""
     import models
     import sqlite3
-    s = dict(models.get_payment_status()[2])
+    rows, total, s = models.get_payment_status(per_page=10 ** 6)
     assert s['paid_count'] + s['partial_count'] + s['unpaid_count'] \
         + s['written_off_count'] == s['total_bills']
     assert s['paid_count'] <= s['total_bills']
-    rows, total, _summary = models.get_payment_status(per_page=10 ** 6)
     assert total == len(rows) == s['total_bills']
 
     # Conservation of baht: the split must account for every billed satang and
@@ -296,6 +298,15 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     conn.close()
     assert billed > 0
     assert sum(r['billed'] for r in rows) == pytest.approx(billed, abs=0.01)
+
+    # The four cards conserve the same oracle: billed on the paid and
+    # written-off cards plus the billed of every open invoice.
+    open_rows = [r for r in rows if r['status'] in ('partial', 'unpaid')]
+    assert open_rows, 'clone has no open invoice; the card split is untested'
+    assert s['paid_billed'] + s['written_off_billed'] \
+        + sum(r['billed'] for r in open_rows) == pytest.approx(billed, abs=0.01)
+    assert s['partial_remainder'] + s['unpaid_remainder'] \
+        == pytest.approx(sum(r['remainder'] for r in open_rows), abs=0.01)
 
     # control: the fixture really does contain the multi-link shape
     conn = sqlite3.connect(tmp_db)
