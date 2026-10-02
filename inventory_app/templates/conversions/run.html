@@ -5,7 +5,7 @@
 {% block content %}
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
-    <li class="breadcrumb-item"><a href="{{ url_for('inventory.conversion_list') }}">สูตรแปลงสินค้า</a></li>
+    <li class="breadcrumb-item"><a href="{{ url_for('inventory.alerts_view' if alert_product_id else 'inventory.conversion_list') }}">สูตรแปลงสินค้า</a></li>
     <li class="breadcrumb-item active">{{ formula.name }}</li>
   </ol>
 </nav>
@@ -18,7 +18,7 @@
       <div class="card-header fw-500" style="background:#f0fdf4;color:#2e7d3a">
         <i class="bi bi-scissors me-2"></i>{{ formula.name }}
       </div>
-      <div class="card-body p-0">
+      <div class="card-body p-0 table-responsive">
         <table class="table table-sm mb-0">
           <thead class="table-light">
             <tr>
@@ -26,6 +26,7 @@
               <th class="text-end">ต่อครั้ง</th>
               <th class="text-end">สต็อกปัจจุบัน</th>
               <th class="text-end" id="neededHeader">ต้องใช้</th>
+              <th class="text-end">คงเหลือหลังแปลง</th>
             </tr>
           </thead>
           <tbody>
@@ -46,19 +47,22 @@
                 <span class="text-subtle">{{ inp.unit_type }}</span>
               </td>
               <td class="text-end small" id="needed-{{ loop.index0 }}">
-                {{ inp.quantity | fmt_qty }} {{ inp.unit_type }}
+                {{ (inp.quantity * multiplier) | fmt_qty }} {{ inp.unit_type }}
               </td>
+              <td class="text-end small" id="remaining-{{ loop.index0 }}">{{ (inp.current_stock - inp.quantity * multiplier) | fmt_qty }} {{ inp.unit_type }}</td>
             </tr>
             {% endfor %}
           </tbody>
           <tfoot class="table-light">
             <tr>
-              <td colspan="3" class="fw-500 text-success">
+              <td colspan="2" class="fw-500 text-success">
                 <i class="bi bi-arrow-up-circle me-1"></i>ได้: {{ formula.output_product_name }}
               </td>
+              <td class="text-end small">{{ formula.output_stock | fmt_qty }} {{ formula.output_unit_type }}</td>
               <td class="text-end fw-500 text-success" id="outputQty">
-                {{ formula.output_qty | fmt_qty }} {{ formula.output_unit_type }}
+                {{ (formula.output_qty * multiplier) | fmt_qty }} {{ formula.output_unit_type }}
               </td>
+              <td class="text-end fw-500" id="outputRemaining">{{ (formula.output_stock + formula.output_qty * multiplier) | fmt_qty }} {{ formula.output_unit_type }}</td>
             </tr>
           </tfoot>
         </table>
@@ -71,12 +75,14 @@
         <form method="post" id="runForm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="run_token" value="{{ run_token }}">
+    <input type="hidden" name="recipe" value="{{ recipe }}">
+    {% if alert_product_id %}<input type="hidden" name="alert_product_id" value="{{ alert_product_id }}">{% endif %}
           <div class="mb-3">
             <label class="form-label fw-500">จำนวนรอบ <span class="text-danger">*</span></label>
             <div class="input-group">
               <span class="input-group-text text-subtle">×</span>
               <input type="number" name="multiplier" id="multiplier" class="form-control form-control-lg"
-                     min="1" value="1" required autofocus oninput="updatePreview()">
+                     min="1" value="{{ multiplier }}" required autofocus oninput="updatePreview()">
               <span class="input-group-text text-subtle">รอบ</span>
             </div>
             <div class="form-text text-subtle" id="multiPreview"></div>
@@ -119,7 +125,7 @@
           </div>
 
           <div class="d-flex gap-2">
-            <a href="{{ url_for('inventory.conversion_list') }}" class="btn btn-outline-secondary flex-fill">ยกเลิก</a>
+            <a href="{{ url_for('inventory.alerts_view' if alert_product_id else 'inventory.conversion_list') }}" class="btn btn-outline-secondary flex-fill">ยกเลิก</a>
             <button type="submit" id="submitBtn" class="btn btn-success flex-fill fw-500">
               <i class="bi bi-play-fill me-1"></i>ยืนยันแปลงสินค้า
             </button>
@@ -139,6 +145,7 @@ const inputs = [
   { stock: {{ inp.current_stock }}, qty: {{ inp.quantity }}, name: {{ inp.product_name | tojson }}, unit: {{ inp.unit_type | tojson }} }{% if not loop.last %},{% endif %}
   {% endfor %}
 ];
+const outputStock = {{ formula.output_stock }};
 const outputQtyBase  = {{ formula.output_qty }};
 const outputUnit     = {{ formula.output_unit_type | tojson }};
 const outputName     = {{ formula.output_product_name | tojson }};
@@ -162,6 +169,7 @@ function updatePreview() {
     const stockEl = document.getElementById('stock-' + i);
     const neededEl = document.getElementById('needed-' + i);
     neededEl.textContent = fmt(needed) + ' ' + inp.unit;
+    document.getElementById('remaining-' + i).textContent = fmt(inp.stock - needed) + ' ' + inp.unit;
     const span = stockEl.querySelector('span:first-child');
     if (inp.stock < needed) {
       span.className = 'text-danger fw-500';
@@ -181,6 +189,7 @@ function updatePreview() {
     warnings.push(`ตัดของเสีย ${fmt(writeoff)} เกินจำนวนที่ผลิต ${fmt(totalOut)}`);
   }
   const good = Math.max(0, totalOut - writeoff);
+  document.getElementById('outputRemaining').textContent = fmt(outputStock + good) + ' ' + outputUnit;
   document.getElementById('outputQty').textContent = fmt(good) + ' ' + outputUnit;
 
   const preview = document.getElementById('multiPreview');

@@ -159,6 +159,23 @@ def transaction_history():
 
 # ── Product Conversions (สูตรแปลงสินค้า) ─────────────────────────────────────
 
+@bp_inventory.route('/alerts/<int:product_id>/conversion')
+def alert_conversion(product_id):
+    product = models.get_product(product_id)
+    if not product or not product['is_active']:
+        abort(404)
+    if product['quantity'] >= 0:
+        flash('สินค้านี้ไม่มีสต็อกติดลบแล้ว', 'info')
+        return redirect(url_for('inventory.alerts_view'))
+    formulas = models.get_producing_formulas(product_id)
+    if len(formulas) == 1:
+        return redirect(url_for('inventory.conversion_run', formula_id=formulas[0]['id'],
+                                alert_product_id=product_id))
+    if not formulas:
+        return redirect(url_for('inventory.conversion_pair', alert_product_id=product_id))
+    return render_template('conversions/choose.html', product=product, formulas=formulas)
+
+
 @bp_inventory.route('/conversions')
 def conversion_list():
     formulas = models.get_conversion_formulas()
@@ -226,6 +243,10 @@ def conversion_pair():
     for a bundle."""
     if not session.get('role'):
         abort(403)
+    alert_product_id = request.values.get('alert_product_id', type=int)
+    alert_product = models.get_product(alert_product_id) if alert_product_id else None
+    if alert_product_id and (not alert_product or not alert_product['is_active']):
+        abort(404)
     if request.method == 'POST':
         pack_id      = request.form.get('pack_id', '').strip()
         loose_id     = request.form.get('loose_id', '').strip()
@@ -235,8 +256,26 @@ def conversion_pair():
         packaging_id = request.form.get('packaging_id', '').strip()
         packaging_qty = request.form.get('packaging_qty', '').strip() or '1'
 
+        source_id = request.form.get('source_id', '').strip()
+        alert_direction = request.form.get('alert_direction', 'unpack')
+        if alert_product:
+            if alert_direction not in ('pack', 'unpack'):
+                abort(400)
+            source = models.get_product(int(source_id)) if source_id.isdecimal() else None
+            if not source or not source['is_active']:
+                flash('กรุณาเลือกสินค้าต้นทางที่ใช้งานอยู่', 'danger')
+                return render_template('conversions/pair_form.html', prefill=None,
+                                       alert_product=alert_product, alert_direction=alert_direction)
+            source_id = str(source['id'])
+            pack_id, loose_id = ((str(alert_product_id), source_id) if alert_direction == 'pack'
+                                 else (source_id, str(alert_product_id)))
+            direction, packaging_id, packaging_qty = 'both', '', '1'
+
         def _reshow():
             return render_template('conversions/pair_form.html',
+                                   alert_product=alert_product, source_id=source_id,
+                                   source_name=source['product_name'] if alert_product else '',
+                                   alert_direction=alert_direction,
                                    prefill=_pair_prefill(pack_id, loose_id, ratio, direction, note,
                                                           packaging_id, packaging_qty))
         if not pack_id or not loose_id or not ratio:
@@ -279,7 +318,8 @@ def conversion_pair():
         try:
             res = models.upsert_pack_unpack_pair(pack_id_i, loose_id_i, ratio_i, direction, note,
                                                   packaging_id=packaging_id_i,
-                                                  packaging_qty=packaging_qty_i)
+                                                  packaging_qty=packaging_qty_i,
+                                                  allow_packaging_removal=not bool(alert_product))
         except (models.ConversionRoleError, sqlite3.IntegrityError) as e:
             flash(f'บันทึกไม่สำเร็จ: {e}', 'danger')
             return _reshow()
@@ -287,6 +327,11 @@ def conversion_pair():
         if res.get('deactivated'):
             msg += f' · ปิดใช้งานสูตรแกะเดิม {res["deactivated"]} สูตร (แพ็คนี้เปิดไม่ได้แล้ว)'
         flash(msg, 'success')
+        if alert_product:
+            formula = next(f for f in models.get_producing_formulas(alert_product_id)
+                           if f['id'] in res['formula_ids'])
+            return redirect(url_for('inventory.conversion_run', formula_id=formula['id'],
+                                    alert_product_id=alert_product_id))
         return redirect(url_for('inventory.conversion_list'))
 
     # GET — blank (create) or prefilled from an existing formula (edit)
@@ -298,7 +343,8 @@ def conversion_pair():
             flash('สูตรนี้แก้ไขผ่านหน้าจับคู่ไม่ได้ (ไม่ใช่คู่แพ็ค-ตัวหลวม)', 'warning')
             return redirect(url_for('inventory.conversion_list'))
         prefill['editing'] = True
-    return render_template('conversions/pair_form.html', prefill=prefill)
+    return render_template('conversions/pair_form.html', prefill=prefill,
+                           alert_product=alert_product, alert_direction='unpack')
 
 
 @bp_inventory.route('/conversions/<int:formula_id>/run', methods=['GET', 'POST'])
@@ -306,6 +352,16 @@ def conversion_run(formula_id):
     formula, inputs = models.get_conversion_formula(formula_id)
     if not formula or not formula['is_active']:
         abort(404)
+    alert_product_id = request.values.get('alert_product_id', type=int)
+    if alert_product_id and formula['output_product_id'] != alert_product_id:
+        abort(400)
+    if not math.isfinite(formula['output_qty']) or formula['output_qty'] <= 0:
+        flash('สูตรแปลงสินค้าไม่ถูกต้อง กรุณาตรวจสอบสูตร', 'danger')
+        return redirect(url_for('inventory.alerts_view' if alert_product_id
+                                else 'inventory.conversion_list'))
+    # Match the stock ledger's four-decimal precision before rounding up rounds.
+    multiplier = (max(1, math.ceil(-round(formula['output_stock'], 4) / formula['output_qty']))
+                  if alert_product_id else 1)
     if request.method == 'POST':
         if not session.get('role'):
             abort(403)
@@ -328,19 +384,23 @@ def conversion_run(formula_id):
         # twice. Refuse rather than run it unguarded — the same stance the app
         # already takes for a missing CSRF token. Costs a stale tab one reload.
         run_token = request.form.get('run_token', '').strip()
-        if not run_token:
+        expected_recipe = request.form.get('recipe', '').strip()
+        if not run_token or (alert_product_id and not expected_recipe):
             flash('ฟอร์มหมดอายุ กรุณาโหลดหน้านี้ใหม่แล้วทำรายการอีกครั้ง', 'danger')
         else:
             success, message, _ = models.run_conversion(
                 formula_id, multiplier, reference_no, extra_note, writeoff_qty,
-                run_token=run_token)
+                run_token=run_token, expected_recipe=expected_recipe or None)
             flash(message, 'success' if success else 'danger')
             if success:
-                return redirect(url_for('inventory.conversion_list'))
+                return redirect(url_for('inventory.alerts_view' if alert_product_id
+                                        else 'inventory.conversion_list'))
 
     # Fresh nonce per render: it is what makes a re-submitted POST recognisable
     # as the same run. A reused one would refuse the next genuine run.
     return render_template('conversions/run.html', formula=formula, inputs=inputs,
+                           multiplier=multiplier, alert_product_id=alert_product_id,
+                           recipe=models.conversion_recipe(formula, inputs),
                            run_token=f'CONV{formula_id}-{uuid4().hex[:12]}')
 
 

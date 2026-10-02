@@ -144,7 +144,7 @@ from .platform_skus import (
     suggest_platform_mapping, get_marketplace_listings_with_history,
 )
 from .conversions import (
-    get_conversion_formulas, get_conversion_formula, get_buildable,
+    get_conversion_formulas, get_conversion_formula, get_buildable, get_producing_formulas, conversion_recipe,
     upsert_pack_unpack_pair, delete_conversion_formula, find_pair_partner,
     derive_pair_from_formula, get_recent_conversion_runs, run_conversion,
 )
