@@ -142,6 +142,26 @@ def derive_brand_short_code(name: str) -> str:
     return ascii_only.upper()[:6]
 
 
+def find_brand_by_name(conn, name):
+    if not name or not name.strip():
+        return None
+    return conn.execute(
+        'SELECT id, short_code FROM brands WHERE lower(trim(name)) = lower(?) '
+        'ORDER BY id LIMIT 1', (name.strip(),)
+    ).fetchone()
+
+
+def _clean_short_code(value):
+    return (value or '').strip().upper() or None
+
+
+def preview_brand_short_code(conn, name, short_code=None):
+    if not name or not name.strip():
+        return None
+    existing = find_brand_by_name(conn, name)
+    return existing[1] if existing is not None else _clean_short_code(short_code)
+
+
 def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
     """Resolve a typed brand name to a brand id, creating the row if new.
 
@@ -168,16 +188,7 @@ def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
         raise ValueError('ชื่อแบรนด์ว่างเปล่า')
     name = name.strip()
 
-    # ORDER BY id: if two legacy rows already share a display name (none do on
-    # prod today, but the constraint is on `code`, not `name`), reuse must be
-    # DETERMINISTIC — an unordered LIMIT-less query lets SQLite hand back
-    # whichever row it likes, so the same typed name could attach a different
-    # brand_id, sku segment and own-brand flag on different days. Oldest wins
-    # (Codex review 2026-08-25).
-    existing = conn.execute(
-        'SELECT id FROM brands WHERE lower(trim(name)) = lower(?) '
-        'ORDER BY id LIMIT 1', (name,)
-    ).fetchone()
+    existing = find_brand_by_name(conn, name)
     if existing:
         return existing['id'] if hasattr(existing, 'keys') else existing[0]
 
@@ -201,7 +212,7 @@ def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
         ON CONFLICT(code) DO NOTHING
     """, (code, name,
           (name_th or '').strip() or None,
-          (short_code or '').strip().upper() or None,
+          _clean_short_code(short_code),
           1 if is_own else 0))
     if cur.rowcount:
         return cur.lastrowid
@@ -222,7 +233,7 @@ def upsert_brand(conn, name, *, name_th=None, short_code=None, is_own=False):
         VALUES (?, ?, ?, ?, ?, 100)
     """, (code, name,
           (name_th or '').strip() or None,
-          (short_code or '').strip().upper() or None,
+          _clean_short_code(short_code),
           1 if is_own else 0)).lastrowid
 
 
