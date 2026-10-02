@@ -365,6 +365,13 @@ def _known_ratio_units(conn, product_id):
     return units
 
 
+def usable_ratio(ratio):
+    """Is a stored unit_conversions ratio a ratio at all? A row whose ratio is
+    0, negative or not finite counts as NO row (#720). The one rule both
+    `_resolve_unit` and `measure_ratio` read."""
+    return ratio is not None and math.isfinite(ratio) and ratio > 0
+
+
 def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     """(ratio, ratio_source, tier_row) for `unit`.
 
@@ -411,7 +418,7 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     tier = _find_matching_tier(conn, product_id, unit)
 
     ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
-    if ratio is not None and ratio > 0:
+    if usable_ratio(ratio):
         return ratio, 'unit_conversions', tier
     # A ratio <= 0 row resolves like no row, except that it never earns the
     # non-strict miss value 1.0 below: its unit is known NOT to be the base (#720).
@@ -458,9 +465,10 @@ def measure_ratio(conn, product_id, unit_type, unit, cache=None):
     for a promo minimum, the ask's, the minimum's own, last_paid and R6.
 
     Order: the unit's own base-unit word → 1.0; else the RAW spelling's
-    unit_conversions row, then the row of its หน่วย word
-    (unit_conversion.word_ratio); else, for a โหล, the tier-implied 12 when a
-    โหล tier exists. A ratio that is 0, negative or not finite is no ratio.
+    unit_conversions row, then `_resolve_unit` on its หน่วย word (that word's
+    row, else the tier-implied 12 when a โหล tier exists). A row is usable only
+    by `usable_ratio` (#720: a ratio <= 0 row is no row), so both functions
+    read one rule; tests/test_673_measure_contract.py pins them together.
     Never the unknown → 1.0 fallback `_resolve_unit(strict=False)` ends on.
 
     Raw spelling first matters: a product may carry `หล = 6` (a half-dozen
@@ -469,12 +477,18 @@ def measure_ratio(conn, product_id, unit_type, unit, cache=None):
     (product_id, unit)."""
     if cache is not None and (product_id, unit) in cache:
         return cache[(product_id, unit)]
-    ratio = unit_conversion.word_ratio(conn, product_id, unit_type, unit, {})
-    if ratio is not None:
-        ratio = ratio if (math.isfinite(ratio) and ratio > 0) else None
-    elif (_unit_word(conn, unit) == 'โหล'
-          and _find_matching_tier(conn, product_id, 'โหล') is not None):
-        ratio = 12.0
+    if not unit or _unit_word(conn, unit) == _unit_word(conn, unit_type):
+        ratio = 1.0
+    else:
+        # the raw spelling's own row first; else the resolver's chain on the
+        # หน่วย word (its row, then the tier-implied โหล), minus its unknown →
+        # 1.0 fallback
+        ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
+        if not usable_ratio(ratio):
+            ratio, source, _tier = _resolve_unit(conn, product_id, _unit_word(conn, unit),
+                                                 unit_type, strict=False)
+            if source not in ('unit_conversions', 'tier-implied'):
+                ratio = None
     if cache is not None:
         cache[(product_id, unit)] = ratio
     return ratio
