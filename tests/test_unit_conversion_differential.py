@@ -11,6 +11,10 @@ The one difference allowed is Q14: the marketplace sold count now
 short-circuits a line in the product's own unit, so a row keyed on the base
 unit with a ratio other than 1 no longer scales it (PROD 2026-09-29: 0 such
 rows). The test asserts the difference lands on exactly those products.
+
+Since #716 resolve_price also answers where the baseline raised
+ZeroDivisionError: a bill whose unit has a ratio-0 row is now skipped as
+unratioed instead of divided by.
 """
 import functools
 import importlib.util
@@ -133,15 +137,20 @@ def test_resolve_and_bundle(world):
 def test_resolve_price_end_to_end(world):
     conn, products = world
     old = _old('inventory_app/price_lookup.py', '_old_price_lookup')
-    answered = 0
+    answered = fixed_716 = 0
     for pid in products:
         for u in [None, 'โหล', 'หล', 'กุรุส', 'แผง']:
             for cust in (None, 'ร้านทดสอบ'):
                 args = dict(product_id=pid, customer_code=cust, unit=u, qty=2, today='2026-09-29')
                 got = _call(lambda: price_lookup.resolve_price(conn, **args))
-                assert _call(lambda: old.resolve_price(conn, **args)) == got, (pid, u)
+                want = _call(lambda: old.resolve_price(conn, **args))
+                if want == 'raises ZeroDivisionError' and not got.startswith('raises'):
+                    fixed_716 += 1
+                    continue
+                assert want == got, (pid, u)
                 answered += not got.startswith('raises')
     assert answered > 100, 'control: most asks must resolve, not raise'
+    assert fixed_716 > 0, 'control: the seed still holds a ratio-0 bill the baseline divided by'
 
 
 def _sql_rows(conn, sf):

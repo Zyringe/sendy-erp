@@ -96,7 +96,8 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
     }
 
     ratio_cache = {}
-    row_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], unit, ratio_cache)
+    # A ratio-0 row is a miss like no row at all (#716), not "ทุน 0.00".
+    row_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], unit, ratio_cache) or None
     lp = conn.execute("""
         SELECT unit_cost, event_date, reference_no FROM product_cost_ledger
         WHERE product_id = ? AND event_type = 'PURCHASE'
@@ -140,7 +141,7 @@ def _card_cost(conn, pid, unit, last_row, freebie_rows, resolved):
         if lp_pu is not None:
             out['last_below_last_purchase'] = kept_per_unit < lp_pu
         free_ratios = [unit_conversion.word_ratio(conn, pid, prod['unit_type'], f['unit'],
-                                                  ratio_cache)
+                                                  ratio_cache) or None
                        for f in freebie_rows]
         if has_cost:
             out['last_below_wacc'] = kept_per_unit < wacc_pu

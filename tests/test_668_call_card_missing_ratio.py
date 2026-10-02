@@ -31,7 +31,7 @@ def conn(empty_db_conn):
     return c
 
 
-def _row(conn, unit, ratios=(), promo=None, canon=CODE):
+def _row(conn, unit, ratios=(), promo=None):
     pid = mk_product(conn, f'สินค้าหกหกแปด {unit!r}')
     conn.executemany("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, ?, ?)",
                      [(pid, u, r) for u, r in ratios])
@@ -41,7 +41,7 @@ def _row(conn, unit, ratios=(), promo=None, canon=CODE):
     add_line(conn, doc_base='IV668', date_iso='2026-09-01', pid=pid, qty=1, net=500,
              customer=NAME, code=CODE, unit=unit)
     conn.commit()
-    rows = [p for p in call_card._assemble_products(conn, CODE, canon, today='2026-10-02')
+    rows = [p for p in call_card._assemble_products(conn, CODE, CODE, today='2026-10-02')
             if p['product_id'] == pid]
     assert len(rows) == 1, 'CONTROL: the line must reach the card'
     return rows[0]
@@ -49,10 +49,7 @@ def _row(conn, unit, ratios=(), promo=None, canon=CODE):
 
 @pytest.mark.parametrize('ratios', [(), (('กล่อง', 0.0),)], ids=['no row', 'ratio 0'])
 def test_unit_with_no_usable_ratio_has_no_price(conn, ratios):
-    # canon=None: with a code, latest_evidence divides by the ratio-0 row and
-    # raises before the card is built. Pre-existing and out of #668's scope
-    # (price evidence); both ratio writers refuse ratio <= 0.
-    p = _row(conn, 'กล่อง', ratios, promo=8, canon=None)
+    p = _row(conn, 'กล่อง', ratios, promo=8)
     assert p['base'] is None
     assert p['customer_price'] is None
     assert p['ratio_missing'] is True
