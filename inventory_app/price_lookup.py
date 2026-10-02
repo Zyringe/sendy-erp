@@ -927,7 +927,8 @@ def _epoch_with_reason(conn, product_id, unit, today, promo_counts=None):
 
 # ── evidence lookups ─────────────────────────────────────────────────────────
 
-def latest_evidence(conn, product_id, customer_code, window_from, unit=None, today=None):
+def latest_evidence(conn, product_id, customer_code, window_from, unit=None, today=None,
+                    skip_row=None):
     """The customer's most recent evidence-filtered bill for this product
     in [`window_from`, `today`] (pass window_from='' for an
     unbounded-from-below search — used by resolve_price for the
@@ -948,6 +949,10 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     can be answered directly (no conversion needed); a bill in any other
     unit cannot be converted and is skipped, same as an ordinary
     unratioed bill.
+
+    `skip_row(row)` (#673): a bill it returns True for is passed over, as if
+    absent — resolve_price uses it for a bill that got a gated promo's price
+    the current ask is not entitled to.
     """
     if not customer_code:
         return None
@@ -971,6 +976,8 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
 
     cache = {}
     for row in rows:
+        if skip_row is not None and skip_row(row):
+            continue
         if ratio is None:
             # by WORD: a bill spelled `บล` is evidence for an ask in `แผง`
             if _unit_word(conn, row['unit']) != target_unit:
@@ -1289,6 +1296,50 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         and ratio is None
     )
 
+    # Bill provenance (#673 fix round, item 1): a bill "got the gated price"
+    # iff its line met the minimum of a gated price promo active on ITS date
+    # (open or since closed) AND its cash/piece is at or under that promo's
+    # price × 1.01 (R6's threshold). Such a bill never answers an ask that
+    # does not meet that same promo — not as last_paid, not as `lowest`.
+    # Price-slot promos are read once; the per-date pick mirrors
+    # get_active_promos_by_class (highest id whose window holds the date),
+    # plus deactivated rows that carry the date they stopped.
+    price_expr_all, _qe = promo_models.promo_slot_sql('')
+    slot_promos = conn.execute(f"""
+        SELECT * FROM promotions
+        WHERE product_id = ? AND {price_expr_all}
+          AND (is_active = 1 OR date_end IS NOT NULL)
+        ORDER BY id DESC
+    """, (product_id,)).fetchall()
+    measure_cache = {}
+    list_pp = (list_info['list_for_unit'] / ratio) if ratio else base
+
+    def _promo_on(day):
+        for p in slot_promos:
+            if ((p['date_start'] is None or p['date_start'] <= day)
+                    and (p['date_end'] is None or p['date_end'] >= day)):
+                return p
+        return None
+
+    def _gated_price_promo_of(row):
+        """The gated promo whose price this bill got, or None."""
+        promo = _promo_on(row['date_iso'])
+        if promo is None or promo['min_qty'] is None:
+            return None
+        if _gate_for(promo, row['qty'], row['unit']) != 'met':
+            return None
+        bill_ratio = measure_ratio(conn, product_id, unit_type, row['unit'], measure_cache)
+        if not bill_ratio:
+            return None
+        cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
+        promo_pp = promo_models.promo_price_if_met(list_pp, 1.0, promo)
+        return promo if cash_pp <= promo_pp * 1.01 else None
+
+    def _not_for_this_ask(row):
+        promo = _gated_price_promo_of(row)
+        return (promo is not None
+                and _gate_for(promo, qty, asked_unit) not in promo_models.GATE_APPLIES)
+
     # Put 2026-10-02 (A): a gated promo starts a price epoch only for an ask
     # that meets its minimum — adding a gated discount never moves a
     # below-minimum ask's window, last_paid or lowest.
@@ -1326,6 +1377,8 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
             comparable.append((cash_pp, row))
             cash_asked = round(cash_pp * ratio, 2)
+        if _not_for_this_ask(row):
+            continue   # #673: a gated-price bill is not this ask's floor
         if lowest is None or cash_asked < lowest['cash_per_unit']:
             lowest = {
                 'cash_per_unit': cash_asked,
@@ -1351,13 +1404,20 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     customer_last = None
     in_window = False
     price_changed_since_last = False
+    skipped_gated_bill = None
     if customer_code:
-        within = latest_evidence(conn, product_id, customer_code, window_from, unit=answer_unit, today=today)
+        within = latest_evidence(conn, product_id, customer_code, window_from, unit=answer_unit,
+                                 today=today, skip_row=_not_for_this_ask)
+        unfiltered = latest_evidence(conn, product_id, customer_code, window_from,
+                                     unit=answer_unit, today=today)
+        if unfiltered is not None and (within is None or unfiltered['doc_no'] != within['doc_no']):
+            skipped_gated_bill = unfiltered   # it would have answered (#673)
         if within is not None:
             customer_last = within
             in_window = True
         else:
-            broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit, today=today)
+            broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit,
+                                    today=today, skip_row=_not_for_this_ask)
             if broad is not None:
                 customer_last = broad
                 in_window = False
@@ -1373,17 +1433,20 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     promo_last_used, promo_stale = _promo_evidence(price_promo_in_effect, comparable,
                                                    list_after_promo, ratio)
 
-    # Put 2026-10-02 (A): an ask below a gated promo's minimum must not
-    # inherit the gated price through the customer's last bill. When that
-    # in-window bill MET the minimum while the promo ran, the list answers
-    # and a flag says why; a last bill unrelated to the promo answers as
-    # before.
-    last_paid_was_min_promo = bool(
+    # Put 2026-10-02 (A): the customer's latest in-window bill got a gated
+    # price this ask is not entitled to — it was skipped above, and the flag
+    # says why (#673 fix round: keyed on the bill's provenance, not qty alone).
+    last_paid_was_min_promo = skipped_gated_bill is not None
+
+    # Put 2026-10-02 (Q6): the ask MEETS the current gated promo's minimum but
+    # the customer's last bill was a small one above the promo price → the
+    # promo answers, flagged. A lower own deal still wins.
+    last_paid_below_min = bool(
         customer_last is not None and in_window
-        and price_promo is not None and price_promo_in_effect is None
-        and (price_promo['date_start'] is None
-             or customer_last['date'] >= price_promo['date_start'])
-        and _gate_for(price_promo, customer_last['qty'], customer_last['bill_unit']) == 'met'
+        and price_promo_in_effect is not None and price_promo_in_effect['min_qty'] is not None
+        and _gate_for(price_promo_in_effect, customer_last['qty'],
+                      customer_last['bill_unit']) != 'met'
+        and customer_last['cash_per_unit'] > list_after_promo
     )
 
     # R7 customer context
@@ -1412,7 +1475,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         }
 
     # answer (R3 order)
-    if customer_last is not None and in_window and not last_paid_was_min_promo:
+    if customer_last is not None and in_window and not last_paid_below_min:
         price = customer_last['cash_per_unit']
         basis = 'last_paid'
     else:
@@ -1594,11 +1657,21 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                               'text': f"ยังไม่ถึงขั้นต่ำโปร{offer}: ต้องซื้อ {need} "
                                       f"(ขอ {qty:g} {asked_unit}) — ใช้ราคาตั้ง"})
     if last_paid_was_min_promo:
+        bill_promo = _promo_on(skipped_gated_bill['date'])
         flags.append({
             'code': 'last_paid_was_min_promo',
-            'text': (f"ครั้งล่าสุดลูกค้าซื้อถึงขั้นต่ำโปร ({customer_last['doc_no']}, "
-                     f"{customer_last['date']}) จึงได้ ฿{customer_last['cash_per_unit']:g} — "
-                     f"ครั้งนี้ไม่ถึง {_promo_min_text(price_promo)} ใช้ราคาตั้ง"),
+            'text': (f"ครั้งล่าสุดลูกค้าซื้อถึงขั้นต่ำโปร ({skipped_gated_bill['doc_no']}, "
+                     f"{skipped_gated_bill['date']}) จึงได้ ฿{skipped_gated_bill['cash_per_unit']:g}"
+                     f" — ครั้งนี้{gate_text(_gate_for(bill_promo, qty, asked_unit))}"
+                     f" (ขั้นต่ำ {_promo_min_text(bill_promo)}) ไม่ใช้ราคานั้น"),
+        })
+    if last_paid_below_min:
+        flags.append({
+            'code': 'last_paid_below_min',
+            'text': (f"ครั้งล่าสุดลูกค้าซื้อไม่ถึงขั้นต่ำโปร ({customer_last['doc_no']}, "
+                     f"{customer_last['date']}) ได้ ฿{customer_last['cash_per_unit']:g} — "
+                     f"ครั้งนี้ถึง {_promo_min_text(price_promo_in_effect)} ใช้ราคาโปร "
+                     f"{list_after_promo:g}"),
         })
 
     return {

@@ -233,7 +233,10 @@ def test_last_bill_met_the_minimum_ask_below_answers_list(db):
     assert below['answer']['basis'] == 'list_after_promo'
     assert below['answer']['price_per_unit'] == 100.0
     assert 'last_paid_was_min_promo' in _codes(below)
-    assert below['customer']['last']['cash_per_unit'] == 95.0   # still reported as context
+    # fix round: the gated-price bill is skipped, not reported as this ask's
+    # last price; the flag carries it (doc, date, ฿95)
+    assert below['customer']['last'] is None
+    assert '95' in _flag(below, 'last_paid_was_min_promo')
 
     # control: the same ask AT the minimum answers the customer's own bill
     met = rp(db, pid, customer_code=cust, qty=20)
