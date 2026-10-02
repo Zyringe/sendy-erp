@@ -246,7 +246,22 @@ def _takes_minimum(intent):
             and not intent["gift_desc"])
 
 
-def _check_minimum(conn, product_id, unit_type, row, intents):
+def _check_minimum_units(conn, ops):
+    """RunAbort when an inserted promo's minimum unit has no ratio for its
+    product (#673). Runs inside the import transaction AFTER _execute_ops, so
+    the file's own tiers and the DB state the resolver will read are both
+    there; the caller rolls everything back on the abort."""
+    for pid, full in ops["promo_insert"]:
+        if full.get("min_qty_unit") is None:
+            continue
+        unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
+                                 (pid,)).fetchone()["unit_type"]
+        problem = price_lookup.min_qty_unit_problem(conn, pid, unit_type, full["min_qty_unit"])
+        if problem:
+            raise RunAbort(f"product {pid}: {problem}")
+
+
+def _check_minimum(product_id, row, intents):
     """RunAbort on a minimum the DB would refuse, or one the resolver could
     only fail closed on (#673). Called per row before reconciliation."""
     raw_qty = (row.get("min_qty") or "").strip()
@@ -263,9 +278,9 @@ def _check_minimum(conn, product_id, unit_type, row, intents):
             raise RunAbort(
                 f"product {product_id}: min_qty {raw_qty} {raw_unit} but the row has no "
                 f"price promo to carry it — ขั้นต่ำใช้ได้กับโปรลดราคาเท่านั้น")
-        problem = price_lookup.min_qty_unit_problem(conn, product_id, unit_type, raw_unit)
-        if problem:
-            raise RunAbort(f"product {product_id}: {problem}")
+        # The unit's ratio is judged after this file's tiers are written
+        # (_check_minimum_units): a '1 โหล' tier on the same row is what makes
+        # a 'โหล' minimum convertible on a product with no โหล row.
     for it in intents:
         if (it["bundle_condition"] and promo_models.affects_price(it)
                 and it["min_qty"] is None):
@@ -524,7 +539,6 @@ def _build_ops(conn, rows_all, batch_date, limit):
             skipped_non_int.append(r.get("sku_code", "(unknown)"))
 
     bsp_lookup = {}
-    unit_type_by_pid = {}
     sendy_known_pids = set()
     if csv_pids:
         # SQLite has a 999-param limit by default; chunk if larger
@@ -532,10 +546,9 @@ def _build_ops(conn, rows_all, batch_date, limit):
             chunk = csv_pids[i:i + 500]
             qmarks = ",".join("?" * len(chunk))
             for row in conn.execute(
-                f"SELECT id, base_sell_price, unit_type FROM products WHERE id IN ({qmarks})",
+                f"SELECT id, base_sell_price FROM products WHERE id IN ({qmarks})",
                 chunk):
                 bsp_lookup[row["id"]] = row["base_sell_price"]
-                unit_type_by_pid[row["id"]] = row["unit_type"]
                 sendy_known_pids.add(row["id"])
 
     skipped_missing_pids = []
@@ -571,7 +584,7 @@ def _build_ops(conn, rows_all, batch_date, limit):
         # qty_label). A spelling the map does not know is left as written.
         r = _translate_units(conn, r)
         plan = plan_writes_for_row(r, current_base, batch_date)
-        _check_minimum(conn, pid, unit_type_by_pid[pid], r, plan["promo_intents"])
+        _check_minimum(pid, r, plan["promo_intents"])
 
         if plan["update_base"] is not None:
             ops["base"].append((pid, plan["update_base"][0]))
@@ -786,6 +799,7 @@ def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int]
 
         # Pass 2 — execute, then verify by re-read in the SAME transaction.
         inserted_promo_ids = _execute_ops(conn, ops)
+        _check_minimum_units(conn, ops)
         _assert_invariants(conn, ops, inserted_promo_ids)
 
         mode = "COMMIT" if commit else "DRY RUN"
