@@ -460,3 +460,4 @@ def test_gated_last_bill_answers_list_even_with_an_older_own_bill(db):
         assert out['answer']['price_per_unit'] == 100.0, q
         assert out['answer']['basis'] == 'list_after_promo', q
         assert 'last_paid_was_min_promo' in _codes(out), q
+        assert out['customer']['last'] is None, q   # the older bill does not stand in

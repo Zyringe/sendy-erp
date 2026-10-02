@@ -1423,6 +1423,12 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                 in_window = False
                 if epoch is not None and broad['date'] < epoch:
                     price_changed_since_last = True
+        if skipped_gated_bill is not None:
+            # Put's last_paid rule (A): the latest in-window bill is the gated
+            # one, so LIST answers. No older bill stands in for it, not as the
+            # answer and not as "the customer's last" (falling through gave a
+            # ฿385.2 add-on-VAT bill over a ฿350 list, lead repro 2026-10-02).
+            customer_last, in_window, price_changed_since_last = None, False, False
 
     # R6 promo evidence — only for the promo this ask is priced with, and
     # (#673) only over bills whose own line met its minimum: a small bill at
@@ -1434,8 +1440,9 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                                                    list_after_promo, ratio)
 
     # Put 2026-10-02 (A): the customer's latest in-window bill got a gated
-    # price this ask is not entitled to — it was skipped above, and the flag
-    # says why (#673 fix round: keyed on the bill's provenance, not qty alone).
+    # price this ask is not entitled to — it does not answer, list does (see
+    # the answer below), and the flag says why (#673 fix round: keyed on the
+    # bill's provenance, not qty alone).
     last_paid_was_min_promo = skipped_gated_bill is not None
 
     # Put 2026-10-02 (Q6): the ask MEETS the current gated promo's minimum but
