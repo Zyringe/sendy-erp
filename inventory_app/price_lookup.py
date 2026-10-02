@@ -871,6 +871,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     unit_type = _unit_word(conn, prod['unit_type'])
     target_unit = _unit_word(conn, unit) if unit else unit_type
     ratio, _source, _tier = _resolve_unit(conn, product_id, target_unit, unit_type, strict=False)
+    ratio = ratio or None   # a ratio-0 row is no ratio, not "every bill costs ฿0" (#716)
 
     rows = conn.execute(f"""
         SELECT * FROM sales_transactions st

@@ -58,6 +58,14 @@ def test_latest_evidence_control_a_real_ratio_still_converts(conn):
     assert (ev['doc_no'], ev['cash_per_unit']) == ('IV716B-1', 50.0)
 
 
+def test_latest_evidence_asked_in_a_ratio_zero_unit_never_prices_at_zero(conn):
+    # The ask's own ratio is 0 too: it is unknown, so only a bill already in
+    # กล่อง answers, unconverted. Scaling the ตัว bill by 0 printed ฿0.00.
+    pid = _product(conn, 0.0)
+    ev = price_lookup.latest_evidence(conn, pid, CODE, '', unit='กล่อง', today=TODAY)
+    assert (ev['doc_no'], ev['cash_per_unit']) == ('IV716B-1', 500.0)
+
+
 def test_resolve_price_counts_a_ratio_zero_bill_as_unratioed(conn):
     pid = _product(conn, 0.0)
     out = price_lookup.resolve_price(conn, product_id=pid, customer_code=CODE, today=TODAY)
@@ -101,3 +109,13 @@ def test_call_card_with_a_code_renders(conn):
     resp = client.get('/call/' + CODE)
     assert resp.status_code == 200
     assert 'ไม่มีอัตราแปลง' in resp.get_data(as_text=True), 'CONTROL: the กล่อง row reached the card'
+
+
+def test_call_card_latest_price_for_a_ratio_zero_unit_is_its_own_bill(conn):
+    import call_card
+    pid = _product(conn, 0.0)
+    rows = {p['unit']: p for p in call_card._assemble_products(conn, CODE, CODE, today=TODAY)
+            if p['product_id'] == pid}
+    assert set(rows) == {'กล่อง', 'ตัว'}, 'CONTROL: both rows reached the card'
+    assert rows['กล่อง']['customer_latest'] == 500.0
+    assert rows['ตัว']['customer_latest'] == 90.0

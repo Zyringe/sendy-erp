@@ -78,8 +78,9 @@ def conversion_ratio(conn, product_id, unit) -> Optional[float]:
 
 def word_ratio(conn, product_id, unit_type, unit, cache) -> Optional[float]:
     """Ratio converting a sales line's own `unit` to the product's base unit,
-    or None when neither its spelling nor its word has a row. The price
-    resolver SKIPS such a bill and never assumes 1.
+    or None when neither its spelling nor its word has a row. A stored ratio
+    of 0 comes back as 0.0. The price resolver SKIPS a bill on either and
+    never assumes 1 (#716).
 
     A blank unit, or one whose word is the base unit's word, is 1.0 whatever
     a row keyed on the base unit says. `cache` is the caller's dict, keyed
