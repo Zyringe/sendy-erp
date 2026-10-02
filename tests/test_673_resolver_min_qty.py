@@ -190,7 +190,10 @@ def test_no_quantity_is_qty_unknown(db):
     assert out['list']['promo_gate'] == 'qty_unknown'
     assert out['answer']['price_per_unit'] == 100.0
     assert out['answer']['qty'] is None and out['answer']['line_total'] is None
-    assert 'ยังไม่ระบุจำนวน' in _flag(out, 'promo_min_not_met')
+    # own code (/interrogate on the PR 1 diff, item 8): "not met" is a claim the
+    # resolver cannot make without a quantity
+    assert 'ยังไม่ระบุจำนวน' in _flag(out, 'promo_min_qty_unknown')
+    assert 'promo_min_not_met' not in _codes(out)
 
 
 def test_asked_unit_without_a_ratio_is_qty_unknown(db):
