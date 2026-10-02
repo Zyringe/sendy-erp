@@ -478,3 +478,25 @@ def test_closed_label_without_number_promo_end_is_an_epoch_for_every_ask(db):
         assert out['window']['from'] == _ago(7), q
         assert out['answer']['price_per_unit'] == 100.0, q
         assert out['answer']['basis'] == 'list_after_promo', q
+
+
+# ── re-review on d0db6aa, finding 4: context keeps the true last bill ────────
+
+def test_out_of_window_gated_bill_stays_the_customers_last_as_context(db):
+    """38จ01|1102 shape: the gated-price bill sits BEFORE the window (a base
+    price change since). It cannot answer anyway; the out-of-window lookup is
+    context ('ลูกค้านี้เคยซื้อ … ก่อนเปลี่ยนราคา') and must show the real last
+    bill, not hide it (was customer.last None at qty 1)."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    db.execute("INSERT INTO product_price_history (product_id, field_name, old_value, new_value, "
+               "changed_at) VALUES (?, 'base_sell_price', 90, 100, ?)", (pid, _ago(5) + ' 09:00:00'))
+    db.commit()
+    cust = _customer(db, 'TST673-CTX')
+    _bill(db, pid, date_iso=_ago(30), qty=20, unit='อัน', price=95.0, customer=cust)
+    out = rp(db, pid, customer_code=cust, qty=1)
+    assert out['window']['reason'] == 'base_changed'          # control: bill is out of window
+    assert out['customer']['last'] is not None
+    assert (out['customer']['last']['cash_per_unit'], out['customer']['last']['in_window']) == (95.0, False)
+    assert out['answer']['basis'] == 'list_after_promo'
+    assert out['answer']['price_per_unit'] == 100.0

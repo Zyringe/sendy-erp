@@ -203,3 +203,17 @@ def test_r5_runs_on_a_tier_implied_dozen_line(db):
     assert 'ไม่ถึงขั้นต่ำ 5 โหล' in _r5(db, _line(pid, 1, 90.0, unit='โหล'))[0]['message_th']
     assert 'ไม่ได้ใช้โปร' in _r5(db, _line(pid, 5, 120.0, unit='โหล'))[0]['message_th']
     assert _r5(db, _line(pid, 5, 90.0, unit='โหล')) == []
+
+
+# ── re-review on d0db6aa, finding 5: an unmeasurable line unit says so ───────
+
+def test_unmeasurable_line_unit_gets_its_own_text(db):
+    """A 'กล่อง' line priced at its own tier but with no ratio: the line HAS a
+    quantity, its unit just cannot be compared with a 5 โหล minimum."""
+    pid = _product(db, rows=[('โหล', 12.0)], tiers=[('1 กล่อง', 500.0)])
+    _promo(db, pid, min_qty=5, min_qty_unit='โหล')
+    flags = _r5(db, _line(pid, 1, 400.0, unit='กล่อง'))
+    assert len(flags) == 1
+    msg = flags[0]['message_th']
+    assert 'แปลงเป็นชิ้นไม่ได้' in msg and '5 โหล' in msg
+    assert 'ยังไม่ระบุจำนวน' not in msg

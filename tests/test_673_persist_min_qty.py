@@ -189,3 +189,20 @@ def test_replace_promotion_refuses_and_writes_nothing(tmp_db, extra, needle):
     assert (ok, new_id) == (False, None)
     assert needle in msg
     assert _promos(tmp_db, pid) == []
+
+
+# ── re-review on d0db6aa, finding 8: validate what is stored ─────────────────
+
+def test_minimum_is_validated_as_the_word_that_will_be_stored(tmp_db):
+    """'หล' is stored as its word 'โหล'. Here 'หล' has its own usable row (6)
+    but 'โหล' has only a ratio-0 row and no tier, so the STORED minimum could
+    never be measured — it must be refused at write, not pass on the raw
+    spelling."""
+    import models
+    pid = _product(tmp_db, rows=[('หล', 6.0), ('โหล', 0.0)])
+    ok, msg, new_id = models.replace_promotion(
+        pid, {'promo_name': 'r', 'promo_type': 'percent', 'discount_value': 5,
+              'min_qty': 2, 'min_qty_unit': 'หล'}, today='2026-10-02')
+    assert (ok, new_id) == (False, None), msg
+    assert 'โหล' in msg
+    assert _promos(tmp_db, pid) == []
