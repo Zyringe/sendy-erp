@@ -461,3 +461,20 @@ def test_gated_last_bill_answers_list_even_with_an_older_own_bill(db):
         assert out['answer']['basis'] == 'list_after_promo', q
         assert 'last_paid_was_min_promo' in _codes(out), q
         assert out['customer']['last'] is None, q   # the older bill does not stand in
+
+
+def test_closed_label_without_number_promo_end_is_an_epoch_for_every_ask(db):
+    """Prod shape (pid 544 / 27ส009, measured 2026-10-02): a closed ยกลัง promo
+    with no number was priced for EVERYONE until #673, so its end is a price
+    regime change for every ask. Treating it as gated widened the window and
+    let a pre-end bill answer (฿646 instead of list ฿680)."""
+    pid = _product(db)
+    _promo(db, pid, bundle_condition='ยกลัง', date_start=None, date_end=_ago(8))
+    cust = _customer(db, 'TST673-LBL')
+    _bill(db, pid, date_iso=_ago(100), qty=1, unit='อัน', price=95.0, customer=cust)
+    for q in (None, 1, 5, 1000):
+        out = rp(db, pid, customer_code=cust, qty=q)
+        assert out['window']['reason'] == 'promo_end', q
+        assert out['window']['from'] == _ago(7), q
+        assert out['answer']['price_per_unit'] == 100.0, q
+        assert out['answer']['basis'] == 'list_after_promo', q
