@@ -26,7 +26,8 @@ sys.path.insert(0, str(REPO / "scripts"))
 import import_catalog_pricing as imp  # noqa: E402
 
 BATCH = "2026-10-02"
-FIELDS = ["product_id", "sku_code", "special_price", "promo_type", "promo_value",
+FIELDS = ["product_id", "sku_code", "tier1_qty_label", "tier1_price",
+          "special_price", "promo_type", "promo_value",
           "bundle_buy", "bundle_free", "bundle_unit", "bundle_condition",
           "min_qty", "min_qty_unit"]
 _pid = [981000]
@@ -163,3 +164,32 @@ def test_special_price_row_carries_the_minimum(tmp_db, tmp_path):
     _run(_csv(tmp_path, [{"product_id": str(pid), "sku_code": "S", "special_price": "80",
                           "min_qty": "2", "min_qty_unit": "โหล"}]), tmp_db)
     assert _promos(tmp_db, pid) == [("fixed", 80.0, 2.0, "โหล", None)]
+
+
+# ── fix round (/interrogate on the PR 1 diff, item 6) ────────────────────────
+
+def test_a_tier_planned_in_the_same_row_makes_the_minimum_convertible(tmp_db, tmp_path):
+    """pid 307's shape on a first import: the row that carries the '1 โหล' tier
+    is the same row whose promo needs '5 โหล' to convert — the minimum is
+    judged after the file's tiers, not against the DB before them."""
+    pid = _product(tmp_db, rows=())
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE products SET unit_type = 'ดอก' WHERE id = ?", (pid,))
+    c.commit(); c.close()
+    stats = _run(_csv(tmp_path, [_row(pid, promo_value="25", tier1_qty_label="1 โหล",
+                                      tier1_price="120", min_qty="5", min_qty_unit="โหล")]),
+                 tmp_db)
+    assert (stats["tiers_inserted"], stats["promos_inserted"]) == (1, 1)
+    assert _promos(tmp_db, pid) == [("percent", 25.0, 5.0, "โหล", None)]
+
+
+def test_without_that_tier_the_same_minimum_is_still_refused(tmp_db, tmp_path):
+    """CONTROL: the tier is what made it convertible."""
+    pid = _product(tmp_db, rows=())
+    c = sqlite3.connect(tmp_db)
+    c.execute("UPDATE products SET unit_type = 'ดอก' WHERE id = ?", (pid,))
+    c.commit(); c.close()
+    with pytest.raises(imp.RunAbort, match="หน่วยที่ใช้ได้"):
+        _run(_csv(tmp_path, [_row(pid, promo_value="25", min_qty="5", min_qty_unit="โหล")]),
+             tmp_db)
+    assert _promos(tmp_db, pid) == []
