@@ -208,10 +208,20 @@ def _new_cli():
 # else (base, customer_price, promo, tiers, peers, latest price, orders, flag ...) is
 # still card A's arithmetic and must equal the baseline on every row the two lists share.
 CARD_C_FIELDS = {'total_qty', 'total_net', 'doc_count', 'last_buy'}
+# #668 moved the card's ratio onto the word family (stripped unit) and made a miss
+# carry no price; these fields are checked against the ratio instead.
+CARD_668_FIELDS = {'base', 'customer_price', 'ratio_missing'}
+
+
+def _exact_row(conn, pid, unit):
+    """The baseline card's lookup: that spelling only, ratio 0 is none."""
+    row = conn.execute("SELECT ratio FROM unit_conversions WHERE product_id = ? AND bsn_unit = ?",
+                       (pid, unit)).fetchone()
+    return float(row[0]) if row and row[0] else None
 
 
 def test_call_card(world):
-    conn, _ = world
+    conn, products = world
     old = _old('inventory_app/call_card.py', '_old_call_card')
     got_old = {(p['product_id'], p['unit']): p for p in
                old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
@@ -219,10 +229,31 @@ def test_call_card(world):
                call_card._assemble_products(conn, 'ร้านทดสอบ', None, today='2026-09-29')}
     shared = sorted(set(got_old) & set(got_new), key=repr)
     assert len(shared) >= 10, 'control: the two lists must share rows to compare'
+    seen = {'same ratio': 0, 'new ratio': 0, 'miss': 0}
     for k in shared:
-        assert got_old[k].keys() == got_new[k].keys(), k
-        for f in sorted(got_old[k].keys() - CARD_C_FIELDS):
-            assert repr(got_old[k][f]) == repr(got_new[k][f]), (k, f)
+        old_p, new_p = got_old[k], got_new[k]
+        assert new_p.keys() == old_p.keys() | {'ratio_missing'}, k
+        for f in sorted(old_p.keys() - CARD_C_FIELDS - CARD_668_FIELDS):
+            assert repr(old_p[f]) == repr(new_p[f]), (k, f)
+        # #668: the price fields may move only where the ratio itself moved.
+        pid, unit = k
+        ut = products[pid]
+        old_r = 1.0 if not unit or unit == ut else _exact_row(conn, pid, unit)
+        new_r = unit_conversion.word_ratio(conn, pid, ut, unit.strip(), {}) or None
+        bsp = conn.execute("SELECT base_sell_price FROM products WHERE id = ?", (pid,)).fetchone()[0]
+        if new_r is None:
+            seen['miss'] += 1
+            assert (new_p['base'], new_p['customer_price'], new_p['ratio_missing']) == (None, None, True), k
+        elif new_r == old_r:
+            seen['same ratio'] += 1
+            assert new_p['ratio_missing'] is False, k
+            for f in ('base', 'customer_price'):
+                assert repr(old_p[f]) == repr(new_p[f]), (k, f)
+        else:
+            seen['new ratio'] += 1
+            assert new_p['ratio_missing'] is False, k
+            assert new_p['base'] == round(bsp * new_r, 2), k
+    assert all(seen.values()), f'control: every #668 class must occur, got {seen}'
     # A marketplace shop account is never "bought" history (purchase population).
     assert call_card._assemble_products(conn, 'หน้าร้านS', None, today='2026-09-29') == []
 

@@ -401,7 +401,7 @@
                 <td class="cc-clickcell" style="padding:9px 10px;border-bottom:1px solid #e3e8ef;font-size:13px;text-align:right;vertical-align:middle"
                     data-bs-toggle="modal" data-bs-target="#detailModal"
                     data-tpl="tpl-promo-{{ loop.index }}" data-title="ราคาและโปรโมชัน — {{ p.product_name }}">
-                  <div class="cc-base">{% if p.base %}฿{{ '{:,.2f}'.format(p.base) }}{% else %}—{% endif %}</div>
+                  <div class="cc-base">{% if p.ratio_missing %}<span class="text-danger small">ไม่มีอัตราแปลง</span>{% elif p.base %}฿{{ '{:,.2f}'.format(p.base) }}{% else %}—{% endif %}</div>
                   {% if p.promo %}
                   <div class="cc-promo">{{ mac.promo_summary(p.promo) }}</div>
                   {% else %}
@@ -461,7 +461,12 @@
         <template id="tpl-promo-{{ loop.index }}">
           <div class="mb-2">
             <div class="text-muted small">ราคาตั้ง ({{ p.unit or '—' }})</div>
+            {% if p.ratio_missing %}
+            <div class="fs-5 fw-bold text-danger">ไม่มีอัตราแปลง</div>
+            <div class="small text-muted">หน่วย "{{ p.unit }}" ยังไม่มีอัตราแปลงเป็นหน่วยหลัก ราคาตั้งจึงแสดงไม่ได้ ตั้งได้ที่ <a href="{{ url_for('bsn.unit_conversions', q=p.product_name) }}">หน้าแปลงหน่วย</a></div>
+            {% else %}
             <div class="fs-5 fw-bold">{% if p.base %}฿{{ '{:,.2f}'.format(p.base) }}{% else %}—{% endif %}</div>
+            {% endif %}
           </div>
           {% if p.price_tiers %}
           <div class="mb-2">

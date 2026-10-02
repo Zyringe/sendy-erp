@@ -190,15 +190,16 @@ def test_options_family(conn):
                           ('กร', 144.0, False), ('แผง', 0.0, False)])
 
 
-# ── exact: the call card (batch), the quote CLI, the stock writer, review ───
+# ── word (stripped): the call card (#668) ── exact: the quote CLI, the stock writer, review ──
 
-# unit -> (base, customer_price) with a fixed promo of ฿8 per piece. A unit
-# with no usable ratio keeps the unconverted base and skips the fixed promo
-# (#668); a ratio-0 row is no ratio at all.
+# unit -> (base, customer_price) with a fixed promo of ฿8 per piece. The card
+# reads the word family on the stripped unit (#668): ` ตัว` is the base unit,
+# `หล` and `กุรุส` find their word's row, and a unit with no usable ratio (a
+# ratio-0 row is none) carries no price at all.
 CALL_CARD = {None: (100.0, 8.0), '': (100.0, 8.0), 'ตัว': (100.0, 8.0),
-             ' ตัว': (100.0, 100.0), 'โหล': (1200.0, 96.0), 'หล': (100.0, 100.0),
-             'กุรุส': (100.0, 100.0), 'กร': (14400.0, 1152.0), 'แผง': (100.0, 100.0),
-             'กล่อง': (100.0, 100.0)}
+             ' ตัว': (100.0, 8.0), 'โหล': (1200.0, 96.0), 'หล': (1200.0, 96.0),
+             'กุรุส': (14400.0, 1152.0), 'กร': (14400.0, 1152.0), 'แผง': (None, None),
+             'กล่อง': (None, None)}
 
 
 def test_call_card_family(conn):
