@@ -200,7 +200,9 @@ def test_invariant_no_consumer_outside_marketplace_match_yet():
     hits = [
         os.path.relpath(p, app_dir) for p in result.stdout.splitlines() if p.strip()
     ]
-    allowed = {'marketplace_match.py'}
+    # admin.py (#680) only COUNTs the table's rows in the full-replace upload
+    # gate (_UPLOAD_DIFF_TABLES); it never reads the mapping.
+    allowed = {'marketplace_match.py', 'blueprints/admin.py'}
     unexpected = [h for h in hits if h not in allowed]
     assert not unexpected, (
         f"product_generic_standins is referenced outside the allowed set: {unexpected} "
