@@ -600,8 +600,9 @@ def test_assemble_products_price_promo_not_shadowed_by_later_qty_promo():
     still win the price slot. The old code picked whichever promo had the
     latest created_at across ALL promo_types, so a bundle/gift promo
     created after a price promo silently hid the price promo's discount.
-    Goes red on the pre-2e code (customer_price stayed at the raw base,
-    100.0, instead of 90.0)."""
+    Goes red on the pre-2e code (the card showed the bundle promo). #673
+    removed the card's never-rendered `customer_price`; the slot-aware
+    selection is what this pins."""
     c = _assemble_db()
     c.execute("DELETE FROM promotions")
     c.execute(
@@ -615,17 +616,15 @@ def test_assemble_products_price_promo_not_shadowed_by_later_qty_promo():
     )
     c.commit()
     p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
-    assert p['customer_price'] == 90.0        # 100 * (1 - 10%), from the PRICE promo
+    assert 'customer_price' not in p          # #673: the card prices no promo
     assert p['promo']['promo_type'] == 'percent'
 
 
 def test_assemble_products_qty_only_promo_still_displayed_when_no_price_promo():
     """Control: with NO price-slot promo, the qty (bundle) promo is still
-    shown as `promo` (display falls back to qty_promo) even though it
-    does not change customer_price."""
+    shown as `promo` (display falls back to qty_promo)."""
     c = _assemble_db()  # fixture's only promo is the 'bundle' one
     p = cc._assemble_products(c, key='C001', canon_code='C001', today='2026-08-01')[0]
-    assert p['customer_price'] == 100.0
     assert p['promo']['promo_type'] == 'bundle'
 
 

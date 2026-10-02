@@ -70,8 +70,9 @@
 {% endmacro %}
 
 
-{# One-line promotion summary for a table cell: discount and/or freebie, plus a
-   "🎁 N ระดับ" pill when a bundle has multiple tiers. Covers all promo_types. #}
+{# One-line promotion summary for a table cell: discount and/or freebie, the
+   enforced minimum quantity (#673, "ซื้อ ≥ N <unit>"), plus a "🎁 N ระดับ" pill
+   when a bundle has multiple tiers. Covers all promo_types. #}
 {% macro promo_summary(promo) %}
 {%- if promo -%}
   {%- if promo.promo_type == 'percent' -%}ลด {{ '%g' | format(promo.discount_value) }}%
@@ -80,6 +81,7 @@
   {%- elif promo.promo_type == 'gift' -%}🎁 แถม {{ promo.gift_desc }}{% if promo.gift_qty %} ({{ promo.gift_qty }}){% endif %}
   {%- elif promo.promo_type == 'mixed' -%}{% if promo.discount_value %}ลด {{ '%g' | format(promo.discount_value) }}%{% endif %}{% if promo.bundle_buy %} · 🎁 ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% endif %}{% if promo.gift_desc %} · 🎁 {{ promo.gift_desc }}{% endif %}
   {%- endif -%}
+  {%- if promo.min_qty %} · ซื้อ ≥ {{ '%g' | format(promo.min_qty) }} {{ promo.min_qty_unit }}{% endif -%}
   {%- if promo.bundle_tiers_json -%}{%- set tiers = promo.bundle_tiers_json | from_json -%}{%- if tiers and tiers | length > 1 %} <span class="cc-freebie">🎁 {{ tiers | length }} ระดับ</span>{%- endif -%}{%- endif -%}
 {%- endif -%}
 {% endmacro %}

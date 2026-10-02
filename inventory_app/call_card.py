@@ -632,8 +632,7 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
     customer's peer-derived `customer_latest` against an ALL-TIME unfiltered
     peer median. All three are now routed through the shared, tested helpers
     in price_lookup.py (C1-C4): `batch_active_promos_by_class` (same
-    slot-independent selection resolve_price uses), `apply_price_promo` (the
-    one promo-price application in the app), `epochs_for_pairs` (C2, one
+    slot-independent selection resolve_price uses), `epochs_for_pairs` (C2, one
     epoch per (product_id, unit) pair), and `latest_evidence` (the canonical
     "customer's most recent evidence-filtered bill" lookup) — with
     `peer_pricing.product_peer_prices`'s peer population filtered by the SAME
@@ -746,19 +745,16 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
         # bundle/gift terms are shown via `promo` below, not priced here).
         price_promo, qty_promo = promo_batch.get(pid, (None, None))
 
-        # Unit-aware base price + the ratio apply_price_promo needs for a
-        # 'fixed' promo (its discount_value is per-PIECE). The ratio is found
-        # by unit WORD, the way price evidence finds a bill's (#668), after
-        # stripping the bill's spaces so ` ตัว` is the base unit. No ratio, or
-        # a ratio of 0, is a miss: the row carries no price and the card says
-        # ไม่มีอัตราแปลง, never the base-unit price beside a กล่อง line.
+        # Unit-aware base price. The ratio is found by unit WORD, the way
+        # price evidence finds a bill's (#668), after stripping the bill's
+        # spaces so ` ตัว` is the base unit. No ratio, or a ratio of 0, is a
+        # miss: the row carries no price and the card says ไม่มีอัตราแปลง,
+        # never the base-unit price beside a กล่อง line.
+        # The card prices nothing after the promo (#673): its `customer_price`
+        # was never rendered, and with no quantity a promo with a minimum
+        # could not be priced anyway. The promo itself is shown below.
         ratio = unit_conversion.word_ratio(conn, pid, unit_type, unit.strip(), ratio_cache)
-        if ratio:
-            base = (row['base_sell_price'] or 0.0) * ratio
-            promo_price = pl.apply_price_promo(base, ratio, price_promo,
-                                               qty_pieces=None, min_pieces=None)
-        else:
-            base = promo_price = None
+        base = (row['base_sell_price'] or 0.0) * ratio if ratio else None
 
         # Display promo: price_promo when one occupies that slot, else
         # qty_promo (bundle/gift) so the card still shows a deal with no
@@ -853,7 +849,6 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
             'promo_label':     promo_label,
             'promo':           dict(promo) if promo else None,
             'price_tiers':     tiers_map.get(pid, []),
-            'customer_price':  round(promo_price, 2) if promo_price is not None else None,
             'ratio_missing':   not ratio,
             'customer_median': peer.get('customer_median'),
             'customer_latest': cust_latest,

@@ -297,7 +297,8 @@ def test_call_card(world):
     seen = {'same ratio': 0, 'new ratio': 0, 'miss': 0}
     for k in shared:
         old_p, new_p = got_old[k], got_new[k]
-        assert new_p.keys() == old_p.keys() | {'ratio_missing'}, k
+        # #673 dropped the never-rendered `customer_price`.
+        assert new_p.keys() == (old_p.keys() - {'customer_price'}) | {'ratio_missing'}, k
         for f in sorted(old_p.keys() - CARD_C_FIELDS - CARD_668_FIELDS):
             assert repr(old_p[f]) == repr(new_p[f]), (k, f)
         # #668: the price fields may move only where the ratio itself moved.
@@ -308,12 +309,11 @@ def test_call_card(world):
         bsp = conn.execute("SELECT base_sell_price FROM products WHERE id = ?", (pid,)).fetchone()[0]
         if new_r is None:
             seen['miss'] += 1
-            assert (new_p['base'], new_p['customer_price'], new_p['ratio_missing']) == (None, None, True), k
+            assert (new_p['base'], new_p['ratio_missing']) == (None, True), k
         elif new_r == old_r:
             seen['same ratio'] += 1
             assert new_p['ratio_missing'] is False, k
-            for f in ('base', 'customer_price'):
-                assert repr(old_p[f]) == repr(new_p[f]), (k, f)
+            assert repr(old_p['base']) == repr(new_p['base']), k
         else:
             seen['new ratio'] += 1
             assert new_p['ratio_missing'] is False, k
