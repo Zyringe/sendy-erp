@@ -6,6 +6,12 @@ live dev DB WITH data — never inherit it). Drop-first fixture: the clone may
 already carry 199 (init_db applies any migration file present), so the `db`
 fixture runs the ROLLBACK first, then this test's own forward run.
 
+The rollback is run the way a human runs it, by the real `sqlite3` CLI with the
+file on stdin (`sqlite3 "$DB" < 199_promo_min_qty.rollback.sql`): under that
+CLI a failing statement does NOT stop the script unless `.bail on` is set, so
+an executescript() test proved a refusal the CLI never made (/interrogate on the
+PR 1 diff, 3/3 lanes: the precondition fired, then the columns were dropped).
+
 ⚠ The rollback-trigger-byte-identity test compares against
 EXPECTED_176_TRIGGER_SQL, a LITERAL extracted from `git show
 bc4183f:data/schema.sql` (origin/main before 199 existed) and checked equal to
@@ -15,6 +21,7 @@ itself; see tests/test_mig176_promo_source.py).
 """
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -33,15 +40,20 @@ EXPECTED_176_TRIGGER_SQL = {
 }
 
 
+def _cli_rollback(path):
+    with open(ROLLBACK, 'rb') as f:
+        return subprocess.run(['sqlite3', str(path)], stdin=f, capture_output=True)
+
+
 def _cols(conn):
     return {r['name'] for r in conn.execute("PRAGMA table_info(promotions)")}
 
 
 @pytest.fixture
-def db(tmp_db_conn):
+def db(tmp_db, tmp_db_conn):
     if 'min_qty' in _cols(tmp_db_conn):
-        tmp_db_conn.executescript(ROLLBACK.read_text(encoding='utf-8'))
         tmp_db_conn.commit()
+        assert _cli_rollback(tmp_db).returncode == 0
     assert 'min_qty' not in _cols(tmp_db_conn)
     tmp_db_conn.executescript(MIG.read_text(encoding='utf-8'))
     tmp_db_conn.commit()
@@ -181,10 +193,10 @@ def _trigger_bodies(conn):
         AUDIT_TRIGGERS)}
 
 
-def test_rollback_restores_176_triggers_byte_identical_and_drops_columns(db):
+def test_rollback_restores_176_triggers_byte_identical_and_drops_columns(db, tmp_db):
     assert _trigger_bodies(db) != EXPECTED_176_TRIGGER_SQL   # control: forward changed them
-    db.executescript(ROLLBACK.read_text(encoding='utf-8'))
-    db.commit()
+    done = _cli_rollback(tmp_db)
+    assert done.returncode == 0, done.stderr
     assert _trigger_bodies(db) == EXPECTED_176_TRIGGER_SQL
     cols = _cols(db)
     assert 'source' in cols                                   # control: 176 untouched
@@ -195,17 +207,25 @@ def test_rollback_restores_176_triggers_byte_identical_and_drops_columns(db):
     assert {'min_qty', 'min_qty_unit'} <= _cols(db)
 
 
-def test_rollback_aborts_when_an_active_promo_carries_a_minimum(db):
+def test_rollback_aborts_when_an_active_promo_carries_a_minimum(db, tmp_db):
     pid = _insert(db, promo_type='percent', discount_value=5, min_qty=20, min_qty_unit='อัน')
-    with pytest.raises(sqlite3.DatabaseError, match='199 rollback precondition'):
-        db.executescript(ROLLBACK.read_text(encoding='utf-8'))
-    db.rollback()
+    triggers_before = _trigger_bodies(db)
+    refused = _cli_rollback(tmp_db)
+    assert refused.returncode != 0
+    assert '199 rollback precondition' in refused.stderr.decode('utf-8')
+    # nothing after the refusal ran: columns, row and min_qty-aware triggers all intact
     assert {'min_qty', 'min_qty_unit'} <= _cols(db)
     assert db.execute("SELECT min_qty FROM promotions WHERE id = ?", (pid,)).fetchone()[0] == 20.0
+    assert _trigger_bodies(db) == triggers_before
+    assert all('min_qty' in body for body in triggers_before.values())
 
     # an INACTIVE row with a minimum does not block it (dropping it ungates nothing live)
     db.execute("UPDATE promotions SET is_active = 0 WHERE id = ?", (pid,))
     db.commit()
-    db.executescript(ROLLBACK.read_text(encoding='utf-8'))
-    db.commit()
+    done = _cli_rollback(tmp_db)
+    assert done.returncode == 0, done.stderr
     assert 'min_qty' not in _cols(db)
+
+
+def test_rollback_file_bails_on_its_first_line():
+    assert ROLLBACK.read_text(encoding='utf-8').splitlines()[0] == '.bail on'
