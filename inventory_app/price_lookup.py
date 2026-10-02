@@ -903,7 +903,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
                 'discount': row['discount'],
             }
         bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
-        if bill_ratio is None:
+        if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
             continue
         cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
         return {
@@ -980,7 +980,7 @@ def _customer_context(conn, customer_code, today):
         cash_list = []
         for r in prows:
             bill_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
-            if bill_ratio is None:
+            if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
                 continue
             cash_pp = vat_math.cash_from_net(r['net'] / r['qty'], r['vat_type']) / bill_ratio
             cash_list.append(cash_pp)
@@ -1176,7 +1176,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             cash_asked = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
         else:
             bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
-            if bill_ratio is None:
+            if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
                 n_unratioed += 1
                 continue
             cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio

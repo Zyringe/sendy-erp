@@ -12,7 +12,7 @@ Each family has its own entry point and keeps its own rule; the caller keeps
 its own miss action:
 
   family    entry point          base-unit compare   lookup                        miss
-  word      word_ratio           unit WORD           spelling, then its word       None: price evidence skips the bill
+  word      word_ratio           unit WORD           spelling, then its word       None or 0: price evidence skips the bill (#716)
   word      word_ratio, stripped unit WORD          spelling, then its word       None or 0: the call card shows ไม่มีอัตราแปลง, no price (#668)
   resolve   conversion_ratio     (caller, row wins)  spelling, then a word scan    price_lookup._resolve_unit decides
   bundle    conversion_ratio     unit WORD           the word, then a word scan    1.0 silent (promo gating, Q16)
