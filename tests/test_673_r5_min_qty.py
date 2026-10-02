@@ -123,3 +123,16 @@ def test_ungated_promo_unchanged(db):
     _promo(db, pid)
     assert len(_r5(db, _line(pid, 1, 100.0))) == 1
     assert _r5(db, _line(pid, 1, 95.0)) == []
+
+
+def test_r5_reads_the_price_slot_not_the_newest_row(db):
+    """A newer bundle (qty-slot) promo must not hide the older percent promo
+    from R5 — the same slot-aware selection the resolver uses
+    (get_active_promos_by_class). Behaviour change, its own commit."""
+    pid = _product(db)
+    _promo(db, pid)                                                  # percent 5, older
+    _promo(db, pid, 'bundle', None, bundle_buy=10, bundle_free=1)    # newer, qty slot
+    flags = _r5(db, _line(pid, 1, 100.0))
+    assert len(flags) == 1
+    assert 'โปร percent' in flags[0]['message_th']
+    assert _r5(db, _line(pid, 1, 95.0)) == []                        # control
