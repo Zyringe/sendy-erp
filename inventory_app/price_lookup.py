@@ -836,14 +836,13 @@ def _epoch_candidates(conn, product_id, unit, today, promo_counts=None):
     # ยกล่อง label with no number included) was priced for everyone until #673,
     # so its start and end are a regime change for every ask (prod 2026-10-02:
     # treating the closed labelled promos as gated moved 34 quotes).
-    asked_counts = promo_counts
-
-    def promo_counts(promo):
+    def counts(promo):
         if promo['min_qty'] is None:
             return True
-        if asked_counts is None:   # no quantity: a gated promo is not applied
+        if promo_counts is None:   # no quantity: a gated promo is not applied
             return False
-        return asked_counts(promo)
+        return promo_counts(promo)
+
     price_expr, _qty_expr = promo_models.promo_slot_sql('')
     current = conn.execute(f"""
         SELECT * FROM promotions
@@ -853,7 +852,7 @@ def _epoch_candidates(conn, product_id, unit, today, promo_counts=None):
           AND {price_expr}
         ORDER BY id DESC LIMIT 1
     """, (product_id, today, today)).fetchone()
-    if current is not None and promo_counts(current):
+    if current is not None and counts(current):
         if current['date_start']:
             out['promo_start'] = current['date_start']
     else:
@@ -864,7 +863,7 @@ def _epoch_candidates(conn, product_id, unit, today, promo_counts=None):
               AND (is_active = 0 OR date_end < ?)
             ORDER BY date_end DESC, id DESC
         """, (product_id, today)).fetchall():
-            if promo_counts(closed):
+            if counts(closed):
                 out['promo_end'] = _add_days(closed['date_end'], 1)
                 break
 
@@ -1440,8 +1439,10 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             customer_last = within
             in_window = True
         else:
+            # context, not an answer: the true last bill, gated or not (an
+            # out-of-window bill never answers last_paid anyway)
             broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit,
-                                    today=today, skip_row=_not_for_this_ask)
+                                    today=today)
             if broad is not None:
                 customer_last = broad
                 in_window = False
