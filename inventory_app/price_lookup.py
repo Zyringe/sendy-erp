@@ -377,7 +377,7 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
 
     ratio_source values:
       'unit_conversions' -- a unit_conversions row with ratio > 0 exists
-                              for (pid, unit); a ratio-0 row counts as none
+                              for (pid, unit); a ratio <= 0 row counts as none
       'tier-implied'      -- unit == 'โหล', a โหล tier exists, no
                               unit_conversions row (ratio = 12.0)
       'none'              -- unit == unit_type (ratio trivially 1.0)
@@ -385,8 +385,8 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
                               no unit_conversions row exists for `unit` and
                               it isn't the โหล-implied case — ratio is
                               genuinely not derivable (ratio = None).
-                              Also a non-strict lookup whose only row
-                              has ratio 0 (#720).
+                              Also a non-strict lookup whose row has
+                              ratio <= 0 (#720).
                               `resolve_price` must never treat this the
                               same as ratio=1.0: every ratio-dependent
                               number (qty conversion, internal cost/
@@ -412,7 +412,7 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
     if ratio is not None and ratio > 0:
         return ratio, 'unit_conversions', tier
-    # A ratio-0 row resolves like no row, except that it never earns the
+    # A ratio <= 0 row resolves like no row, except that it never earns the
     # non-strict miss value 1.0 below: its unit is known NOT to be the base (#720).
     unusable_row = ratio is not None
     if tier is not None and unit == 'โหล':

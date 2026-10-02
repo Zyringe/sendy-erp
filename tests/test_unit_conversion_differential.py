@@ -123,9 +123,13 @@ def test_conversion_ratio(world):
                     == _call(unit_conversion.conversion_ratio, conn, pid, u)), (pid, u)
 
 
-def _has_ratio_zero_row(conn, pid):
-    return conn.execute("SELECT 1 FROM unit_conversions WHERE product_id = ? AND ratio <= 0",
-                        (pid,)).fetchone() is not None
+def _asks_a_ratio_zero_word(conn, pid, unit):
+    """Does the asked unit's WORD have a ratio <= 0 row on this product?"""
+    if not unit:
+        return False
+    word = price_lookup._unit_word(conn, unit)
+    return any(price_lookup._unit_word(conn, r[0]) == word for r in conn.execute(
+        "SELECT bsn_unit FROM unit_conversions WHERE product_id = ? AND ratio <= 0", (pid,)))
 
 
 def test_resolve_and_bundle(world):
@@ -162,7 +166,7 @@ def test_resolve_price_end_to_end(world):
                 if want == 'raises ZeroDivisionError' and not got.startswith('raises'):
                     fixed_716 += 1
                     continue
-                if want != got and _has_ratio_zero_row(conn, pid):   # #720
+                if want != got and _asks_a_ratio_zero_word(conn, pid, u):   # #720
                     assert got == 'raises ValueError' or not got.startswith('raises'), (pid, u, got)
                     fixed_720 += 1
                     continue
