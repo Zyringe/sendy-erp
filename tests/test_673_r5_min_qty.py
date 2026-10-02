@@ -1,0 +1,125 @@
+"""#673 — ตรวจบิล R5 (promo mismatch) with a minimum-quantity promo.
+
+Below the minimum the line is EXPECTED at list price: a list-price line is not
+"ไม่ได้ใช้โปร?". A line that got the promo discount anyway is its own finding,
+"ให้ส่วนลดโปรแต่ไม่ถึงขั้นต่ำ N <unit>", and a price tier that happens to equal
+the promo price does not excuse it (Sol, /interrogate 2026-10-02). At or above
+the minimum R5 behaves as before.
+
+The line quantity is measured through the same unit chain as the resolver
+(price_lookup.promo_min_measure). Real DB clone (`tmp_db_conn`) with mig 199;
+every product and promo is forced by the test.
+"""
+import os
+
+import pytest
+
+import review_rules
+
+MIG_199 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       'data', 'migrations', '199_promo_min_qty.sql')
+_pid = [977000]
+_doc = [9977000]
+
+
+@pytest.fixture
+def db(tmp_db_conn):
+    cols = {r['name'] for r in tmp_db_conn.execute("PRAGMA table_info(promotions)")}
+    if 'min_qty' not in cols:
+        tmp_db_conn.executescript(open(MIG_199, encoding='utf-8').read())
+        tmp_db_conn.commit()
+    return tmp_db_conn
+
+
+def _product(conn, *, rows=(), tiers=()):
+    _pid[0] += 1
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type, base_sell_price, cost_price, is_active) "
+        "VALUES (?, 'อัน', 100, 60, 1)", (f'r5 min #{_pid[0]}',)).lastrowid
+    for unit, ratio in rows:
+        conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?,?,?)",
+                     (pid, unit, ratio))
+    for label, price in tiers:
+        conn.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) VALUES (?,?,?)",
+                     (pid, label, price))
+    conn.commit()
+    return pid
+
+
+def _promo(conn, pid, promo_type='percent', discount_value=5.0, *, min_qty=None,
+           min_qty_unit=None, bundle_buy=None, bundle_free=None):
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, is_active, "
+        "min_qty, min_qty_unit, bundle_buy, bundle_free) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
+        (pid, f'โปร {promo_type}', promo_type, discount_value, min_qty, min_qty_unit,
+         bundle_buy, bundle_free))
+    conn.commit()
+
+
+def _line(pid, qty, unit_price, unit='อัน'):
+    _doc[0] += 1
+    total = round(qty * unit_price, 2)
+    return {
+        'product_id': pid, 'unit': unit, 'unit_price': unit_price, 'qty': qty,
+        'net': total, 'total': total, 'bsn_code': 'X', 'product_name_raw': 'x',
+        'ref_invoice': '', 'date_iso': '2026-10-01', 'customer_code': 'TST673R5',
+        'doc_no': f'IV{_doc[0]}-1', 'doc_base': f'IV{_doc[0]}',
+    }
+
+
+def _r5(conn, line):
+    return [f for f in review_rules._check_row_rules(conn, line)
+            if f['rule_code'] == 'R5_PROMO_MISMATCH']
+
+
+def test_below_minimum_at_list_price_is_not_flagged(db):
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    assert _r5(db, _line(pid, 19, 100.0)) == []
+
+
+def test_at_minimum_at_list_price_is_flagged(db):
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    flags = _r5(db, _line(pid, 20, 100.0))
+    assert len(flags) == 1
+    assert 'ไม่ได้ใช้โปร' in flags[0]['message_th']
+
+
+def test_below_minimum_at_promo_price_is_flagged_with_its_own_message(db):
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    flags = _r5(db, _line(pid, 19, 95.0))
+    assert len(flags) == 1
+    assert 'ให้ส่วนลดโปรแต่ไม่ถึงขั้นต่ำ 20 อัน' in flags[0]['message_th']
+
+
+def test_a_matching_tier_does_not_excuse_a_below_minimum_discount(db):
+    pid = _product(db, tiers=[('10 อัน', 95.0)])
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    flags = _r5(db, _line(pid, 19, 95.0))
+    assert len(flags) == 1
+    assert 'ไม่ถึงขั้นต่ำ' in flags[0]['message_th']
+    # control: at the minimum the same price IS the promo price — clean
+    assert _r5(db, _line(pid, 20, 95.0)) == []
+
+
+def test_at_minimum_at_promo_price_is_clean(db):
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    assert _r5(db, _line(pid, 20, 95.0)) == []
+
+
+def test_minimum_measured_through_the_line_unit(db):
+    """2 โหล = 24 อัน meets a 20 อัน minimum; 1 โหล = 12 does not."""
+    pid = _product(db, rows=[('โหล', 12.0)])
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    assert len(_r5(db, _line(pid, 2, 1200.0, unit='โหล'))) == 1          # met, list → flag
+    assert _r5(db, _line(pid, 1, 1200.0, unit='โหล')) == []               # not met, list → clean
+
+
+def test_ungated_promo_unchanged(db):
+    pid = _product(db)
+    _promo(db, pid)
+    assert len(_r5(db, _line(pid, 1, 100.0))) == 1
+    assert _r5(db, _line(pid, 1, 95.0)) == []
