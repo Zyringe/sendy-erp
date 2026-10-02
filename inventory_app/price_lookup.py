@@ -346,7 +346,7 @@ def _known_ratio_units(conn, product_id):
     real, answerable ask even though its piece-equivalent isn't known)."""
     units = []
     for r in conn.execute(
-        "SELECT DISTINCT bsn_unit FROM unit_conversions WHERE product_id = ?",
+        "SELECT DISTINCT bsn_unit FROM unit_conversions WHERE product_id = ? AND ratio > 0",
         (product_id,)
     ).fetchall():
         # named by their WORD: the message tells a human which asks resolve,
@@ -376,7 +376,8 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     raised even though the DB has a perfectly good answer for it).
 
     ratio_source values:
-      'unit_conversions' -- a unit_conversions row exists for (pid, unit)
+      'unit_conversions' -- a unit_conversions row with ratio > 0 exists
+                              for (pid, unit); a ratio-0 row counts as none
       'tier-implied'      -- unit == 'โหล', a โหล tier exists, no
                               unit_conversions row (ratio = 12.0)
       'none'              -- unit == unit_type (ratio trivially 1.0)
@@ -384,6 +385,8 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
                               no unit_conversions row exists for `unit` and
                               it isn't the โหล-implied case — ratio is
                               genuinely not derivable (ratio = None).
+                              Also a non-strict lookup whose only row
+                              has ratio 0 (#720).
                               `resolve_price` must never treat this the
                               same as ratio=1.0: every ratio-dependent
                               number (qty conversion, internal cost/
@@ -407,8 +410,11 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     tier = _find_matching_tier(conn, product_id, unit)
 
     ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
-    if ratio is not None:
+    if ratio is not None and ratio > 0:
         return ratio, 'unit_conversions', tier
+    # A ratio-0 row resolves like no row, except that it never earns the
+    # non-strict miss value 1.0 below: its unit is known NOT to be the base (#720).
+    unusable_row = ratio is not None
     if tier is not None and unit == 'โหล':
         return 12.0, 'tier-implied', tier
     if unit == _unit_word(conn, unit_type):
@@ -424,6 +430,8 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
             f"{pname} (id {product_id}): no ratio known for unit {unit!r} "
             f"(unit_type={unit_type!r}; units that DO resolve: {resolves})"
         )
+    if unusable_row:
+        return None, 'unknown', tier
     return 1.0, 'none', tier
 
 
@@ -871,7 +879,6 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     unit_type = _unit_word(conn, prod['unit_type'])
     target_unit = _unit_word(conn, unit) if unit else unit_type
     ratio, _source, _tier = _resolve_unit(conn, product_id, target_unit, unit_type, strict=False)
-    ratio = ratio or None   # a ratio-0 row is no ratio, not "every bill costs ฿0" (#716)
 
     rows = conn.execute(f"""
         SELECT * FROM sales_transactions st
