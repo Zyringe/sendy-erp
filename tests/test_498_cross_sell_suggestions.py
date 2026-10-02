@@ -842,3 +842,23 @@ def test_helper_takes_no_date_from_date_to_params():
     sig = inspect.signature(customers._cross_sell_suggestions)
     assert 'date_from' not in sig.parameters
     assert 'date_to' not in sig.parameters
+
+
+def test_673_gated_promo_is_not_the_suggested_price(cust):
+    """Cross-sell has no quantity (#673): a promo with a minimum is shown as a
+    condition, never as the price."""
+    conn = cust
+    today, recent, stale = _window_dates(conn)
+    pid = _mk_product(conn, name='สินค้าโปรขั้นต่ำ 673', base=60.0)
+    _set_stock(conn, pid, 50)
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+        " date_start, is_active, min_qty, min_qty_unit) "
+        "VALUES (?, 'ลด 10%', 'percent', 10, '2024-01-01', 1, 1, 'ตัว')", (pid,))
+    conn.commit()
+    _other_shops(conn, pid, 3, prefix='GATED673', date_iso=recent)
+    row = _row(_suggestions(conn, today=today), pid)
+    assert row is not None
+    assert row['price_per_unit'] == pytest.approx(60.0)
+    assert row['promo_affects_price'] is False
+    assert row['promo']['min_qty'] == 1
