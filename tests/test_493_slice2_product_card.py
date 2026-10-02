@@ -683,7 +683,11 @@ def test_673_formula_cell_also_states_the_minimum(cust, tmp_db):
     _line(conn, doc_base='IV67303', suffix=1, pid=pid, date_iso='2026-01-01',
           qty=20, unit_price=90, net=1800, vat_type=0)
     html = _client(tmp_db).get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
-    cells = re.findall(r'<td data-label="ราคาวันนี้"[^>]*>(.*?)</td>', html, re.S)
+    # scope to THIS product's card row (the clone's own promos render too)
+    rows = [r for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.S)
+            if re.search(rf'/products/{pid}[?"]', r)]
+    cells = [c for r in rows
+             for c in re.findall(r'<td data-label="ราคาวันนี้"[^>]*>(.*?)</td>', r, re.S)]
     formula = [c for c in cells if '−10%' in c]
-    assert len(formula) == 1, 'CONTROL: the % formula rendered'
+    assert len(formula) == 1, 'CONTROL: the % formula rendered for this product'
     assert 'ซื้อ ≥ 20 ตัว' in formula[0]
