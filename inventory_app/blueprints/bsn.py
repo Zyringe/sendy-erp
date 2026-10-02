@@ -1581,6 +1581,17 @@ def express_dbf_upload():
                       f'(ถ้าจำเป็นต้องนำเข้าตอนนี้จริงๆ ให้ติ๊ก '
                        f'"นำเข้าต่อโดยไม่มีจุดกู้คืน")', 'danger')
                 return redirect(redirect_to)
+            # Every import_log row past this mark was created by the import
+            # below. If it raises after committing sales lines, the batch id
+            # never comes back, so the failure path rescans by this mark (#695).
+            # Read before the export-date claim, so a failed read cannot
+            # advance the claim for a file that never imported.
+            _wconn = get_connection()
+            try:
+                _log_mark = _wconn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM import_log").fetchone()[0]
+            finally:
+                _wconn.close()
             if forced_older:
                 # Announce execution only after the backup policy allows it.
                 flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({_exp_date} '
@@ -1745,6 +1756,12 @@ def express_dbf_upload():
             except Exception as exc:
                 results['bsn'] = {'ok': False, 'error': str(exc)[:400]}
                 flashes.append(('danger', f'BSN5657 นำเข้าไม่สำเร็จ: {exc}'))
+                # Lines committed before the raise are real and stay; without
+                # this they never reach ตรวจบิล, and a retry changes no lines.
+                try:
+                    rr.scan_batches_after(_log_mark)
+                except Exception as _scan_exc:
+                    flashes.append(('warning', f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}'))
         if 'vat' in classified:
             results['vat'] = {'ok': None, 'status': 'building'}
 

@@ -877,3 +877,120 @@ def test_run_record_carries_first_synced_pending(client, tmp_path, monkeypatch):
                           " WHERE product_id=? AND note LIKE 'BSN%'", (pid,)).fetchone()[0]
     conn.close()
     assert (synced, ledger) == (1, -5), 'the heal itself still happens: no stock behaviour change'
+
+
+# ── #695: a BSN import that raises after committing still reaches ตรวจบิล ──────
+
+def _review_doc(doc_base):
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    try:
+        return conn.execute(
+            "SELECT doc_base FROM txn_review_docs WHERE doc_base = ?", (doc_base,)).fetchone()
+    finally:
+        conn.close()
+
+
+def _wacc_step_raises(monkeypatch):
+    """The sales lines commit, then the post-commit WACC pre-flight raises."""
+    import models.imports as imports_mod
+    from models.wacc import WaccIdentityError
+
+    def _boom(*_a, **_kw):
+        raise WaccIdentityError('forced by test #695', operation='purchase_import')
+    monkeypatch.setattr(imports_mod, 'preflight_batch', _boom)
+
+
+def _map_bsn_695():
+    import config
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    pid = conn.execute("INSERT INTO products (product_name, unit_type) VALUES (?, 'ตัว')",
+                       ('สินค้าทดสอบ #695',)).lastrowid
+    conn.execute("INSERT INTO product_code_mapping (bsn_code, bsn_name, product_id, bsn_unit)"
+                 " VALUES ('bsn-681', 'สินค้าทดสอบ #695', ?, '')", (pid,))
+    conn.commit()
+    conn.close()
+
+
+def test_failed_bsn_import_still_rescans_committed_docs(client, tmp_path, monkeypatch):
+    import config
+    _login(client)
+    _map_bsn_695()
+    _wacc_step_raises(monkeypatch)
+
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('โหล'))
+
+    assert resp.status_code == 200, resp.data[:500]
+    assert 'BSN5657 นำเข้าไม่สำเร็จ'.encode() in resp.data
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    committed = conn.execute(
+        "SELECT COUNT(*) FROM sales_transactions WHERE doc_base='IV7068101'").fetchone()[0]
+    conn.close()
+    assert committed == 1, 'the sales line did not commit, so this test proves nothing'
+    assert _review_doc('IV7068101') is not None, 'committed document never reached ตรวจบิล'
+    assert _doc_flags('IV7068101') == ['R4_UNUSUAL_UNIT']
+
+    # Retry: 0 changed lines, still failing. The review row must stay.
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('โหล'))
+    assert resp.status_code == 200, resp.data[:500]
+    assert _review_doc('IV7068101') is not None
+    assert _doc_flags('IV7068101') == ['R4_UNUSUAL_UNIT']
+
+
+def test_failed_bsn_import_rescan_failure_is_a_warning_only(client, tmp_path, monkeypatch):
+    import json
+    import config
+    import review_rules as rr
+    _login(client)
+    _map_bsn_695()
+    _wacc_step_raises(monkeypatch)
+
+    def _scan_boom(*_a, **_kw):
+        raise RuntimeError('scan exploded #695')
+    monkeypatch.setattr(rr, 'scan_docs', _scan_boom)
+
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('โหล'))
+
+    assert resp.status_code == 200, resp.data[:500]
+    assert 'สแกนตรวจบิลไม่สำเร็จ: scan exploded #695'.encode() in resp.data
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    notes = conn.execute("SELECT notes FROM import_log WHERE filename='express-dbf-upload'"
+                         " ORDER BY id DESC LIMIT 1").fetchone()[0]
+    conn.close()
+    bsn = json.loads(notes)['bsn']
+    assert bsn['ok'] is False
+    assert 'forced by test #695' in bsn['error']
+
+
+def test_failed_bsn_import_rescan_stops_at_the_watermark(client, tmp_path, monkeypatch):
+    """A document from a batch older than this request is not rescanned."""
+    import config
+    _login(client)
+    _map_bsn_695()
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    old_pid = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('เก่า #695', 'ตัว')").lastrowid
+    batch = conn.execute("INSERT INTO import_log (filename, rows_imported, rows_skipped, notes)"
+                         " VALUES ('seed', 0, 0, 'seed')").lastrowid
+    conn.execute(
+        "INSERT INTO sales_transactions (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,"
+        " product_name_raw, customer, customer_code, qty, unit, unit_price, vat_type, discount, total, net,"
+        " synced_to_stock, change_source, change_actor, change_token)"
+        " VALUES (?, '2026-04-24', 'IV9OLD695-1', 'IV9OLD695', ?, 'bsn-old695', 'x', 'c', 'CE', 1, 'โหล',"
+        " 65, 1, '', 65, 65, 1, 'import', 'seed', 'seed-695')", (batch, old_pid))
+    conn.commit()
+    conn.close()
+    import review_rules as rr
+    rr.scan_docs(['IV9OLD695'])
+    assert _review_doc('IV9OLD695') is not None, 'control: the old doc is reviewable'
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute("DELETE FROM txn_review_flags WHERE doc_base='IV9OLD695'")
+    conn.execute("DELETE FROM txn_review_docs WHERE doc_base='IV9OLD695'")
+    conn.commit()
+    conn.close()
+    _wacc_step_raises(monkeypatch)
+
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('โหล'))
+
+    assert resp.status_code == 200, resp.data[:500]
+    assert _review_doc('IV7068101') is not None
+    assert _review_doc('IV9OLD695') is None, 'rescan reached a batch older than the request'
