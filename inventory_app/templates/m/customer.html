@@ -104,7 +104,7 @@
 {% if unpaid %}
 <div class="card mb-3 border-danger">
   <div class="card-header bg-danger-subtle text-danger-emphasis d-flex justify-content-between align-items-center">
-    <span><i class="bi bi-exclamation-circle me-2"></i>บิลค้างชำระ ({{ unpaid|length }}{% if unpaid_total %} จาก ฿{{ '{:,.0f}'.format(unpaid_total) }}{% endif %}){% if unpaid_snapshot_date %} <span class="text-muted small">· ณ {{ unpaid_snapshot_date }}</span>{% endif %}</span>
+    <span><i class="bi bi-exclamation-circle me-2"></i>บิลค้างชำระ ({{ unpaid|length }} จาก ฿{{ '{:,.2f}'.format(unpaid_total) }}){% if unpaid_snapshot_date %} <span class="text-muted small">· ณ {{ unpaid_snapshot_date }}</span>{% endif %}</span>
   </div>
   <div class="list-group list-group-flush">
     {% for b in unpaid %}
@@ -117,6 +117,14 @@
       <div class="fw-600 text-danger">฿{{ '{:,.2f}'.format(b.outstanding) }}</div>
     </a>
     {% endfor %}
+    {# #708: chaseable credits are in the total above; one line, shown positive
+       because the label already says หัก. #}
+    {% if unpaid_credit %}
+    <div class="list-group-item d-flex justify-content-between align-items-center" data-row="credit">
+      <div class="text-subtle small">หักเครดิต</div>
+      <div class="fw-600 text-success">฿{{ '{:,.2f}'.format(-unpaid_credit) }}</div>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% endif %}

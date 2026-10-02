@@ -303,7 +303,8 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     # written-off cards plus the billed of every open invoice.
     open_rows = [r for r in rows if r['status'] in ('partial', 'unpaid')]
     assert open_rows, 'clone has no open invoice; the card split is untested'
-    assert s['paid_billed'] + s['written_off_billed'] \
+    wo_rows = [r for r in rows if r['status'] == 'written_off']
+    assert s['paid_billed'] + sum(r['billed'] for r in wo_rows) \
         + sum(r['billed'] for r in open_rows) == pytest.approx(billed, abs=0.01)
     assert s['partial_remainder'] + s['unpaid_remainder'] \
         == pytest.approx(sum(r['remainder'] for r in open_rows), abs=0.01)
@@ -331,6 +332,30 @@ def test_payment_summary_invariants_on_live_clone(tmp_db):
     assert moved, 'no open invoice has a receipt or credit note; remainder untested'
     assert s['partial_remainder'] + s['unpaid_remainder'] \
         == pytest.approx(sum(oracle.values()), abs=0.01)
+
+    # #709: the written-off card is the forgiven amount, against SQL written
+    # here: billed minus active receipts minus credit notes over every
+    # ar_writeoffs doc in the ledger that was not received in full.
+    conn = sqlite3.connect(tmp_db)
+    forgiven = [rem for (rem,) in conn.execute('''
+        SELECT ROUND(b.billed
+               - COALESCE((SELECT SUM(pi.amount) FROM paid_invoices pi
+                             JOIN received_payments rp ON rp.id = pi.re_id
+                            WHERE rp.cancelled = 0 AND pi.doc_kind = 'IV'
+                              AND pi.doc_no = b.doc), 0)
+               - COALESCE((SELECT SUM(credited_amount) FROM credit_note_amounts
+                            WHERE ref_invoice = b.doc), 0), 2)
+          FROM (SELECT doc_base AS doc,
+                       ROUND(SUM(CASE WHEN vat_type = 2 THEN net * 1.07 ELSE net END), 2) AS billed
+                  FROM sales_transactions
+                 WHERE doc_base IN (SELECT doc_no FROM ar_writeoffs)
+                 GROUP BY doc_base HAVING billed > 0) b
+    ''')]
+    conn.close()
+    forgiven = [f for f in forgiven if round(f, 2) > 0]
+    assert len(forgiven) == s['written_off_count'] > 0, \
+        'clone has no written-off ledger invoice; the forgiven card is untested'
+    assert round(s['written_off_forgiven'], 2) == round(sum(forgiven), 2)
 
     # control: the fixture really does contain the multi-link shape
     conn = sqlite3.connect(tmp_db)

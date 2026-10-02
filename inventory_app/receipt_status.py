@@ -85,18 +85,20 @@ def rows(conn=None, customer=None, customer_code=None, as_of=None):
 
 def summarize(status_rows):
     """Counts per status for the invoices tab, with each card's amount: billed
-    for paid and written_off, the remainder still open for partial and unpaid.
-    The four counts add up to total_bills."""
+    for paid, the remainder still open for partial and unpaid, and the remainder
+    forgiven for written_off (#709). The four counts add up to total_bills."""
     s = {'total_bills': 0, 'paid_billed': 0.0, 'partial_remainder': 0.0,
-         'unpaid_remainder': 0.0, 'written_off_billed': 0.0}
+         'unpaid_remainder': 0.0, 'written_off_forgiven': 0.0}
     s.update({f'{st}_count': 0 for st in STATUSES})
     for r in status_rows:
         s['total_bills'] += 1
         s[f"{r['status']}_count"] += 1
-        if r['status'] in (PAID, WRITTEN_OFF):
-            s[f"{r['status']}_billed"] += r['billed']
+        if r['status'] == PAID:
+            s['paid_billed'] += r['billed']
+        elif r['status'] == WRITTEN_OFF:
+            s['written_off_forgiven'] += r['remainder']
         else:
             s[f"{r['status']}_remainder"] += r['remainder']
-    for k in ('paid_billed', 'partial_remainder', 'unpaid_remainder', 'written_off_billed'):
+    for k in ('paid_billed', 'partial_remainder', 'unpaid_remainder', 'written_off_forgiven'):
         s[k] = round(s[k], 2)
     return s

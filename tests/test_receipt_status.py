@@ -5,6 +5,7 @@ written_off (ตัดหนี้แล้ว). Built on payments_alloc's amoun
 receipt reads partial and a credit note that clears the bill reads paid.
 """
 import random
+import re
 
 import pytest
 
@@ -371,7 +372,80 @@ def test_summary_counts_every_receivable_once(four_statuses):
     assert s['paid_billed'] == pytest.approx(1000.0)
     assert s['partial_remainder'] == pytest.approx(600.0)
     assert s['unpaid_remainder'] == pytest.approx(500.0 + 700.0)
-    assert s['written_off_billed'] == pytest.approx(777.0)
+    assert s['written_off_forgiven'] == pytest.approx(777.0)
+    assert 'written_off_billed' not in s
+
+
+def test_forgiven_is_billed_minus_credit_notes_minus_collected(empty_db_conn):
+    """#709: a write-off forgives only what was still owed."""
+    c = empty_db_conn
+    _ins_sale(c, 'IV-WO-NONE', 'A', 'C-A', '2026-07-01', 1000.0)
+    _ins_sale(c, 'IV-WO-PART', 'A', 'C-A', '2026-07-02', 1000.0)
+    _ins_sale(c, 'IV-WO-CN', 'A', 'C-A', '2026-07-03', 1000.0)
+    r = _ins_receipt(c, 'RE-1', 'A', '2026-07-10')
+    _ins_paid(c, r, 'IV-WO-PART', 250.0)
+    _ins_paid(c, r, 'IV-WO-CN', 100.0)
+    _credit(c, 'SR-1', 'IV-WO-CN', 300.0)
+    for doc in ('IV-WO-NONE', 'IV-WO-PART', 'IV-WO-CN'):
+        _write_off(c, doc)
+    c.commit()
+
+    rows = _rows(c)
+    assert [rows[d]['status'] for d in ('IV-WO-NONE', 'IV-WO-PART', 'IV-WO-CN')] \
+        == ['written_off'] * 3
+    assert rows['IV-WO-NONE']['remainder'] == pytest.approx(1000.0)
+    assert rows['IV-WO-PART']['remainder'] == pytest.approx(750.0)
+    assert rows['IV-WO-CN']['remainder'] == pytest.approx(600.0)
+    s = receipt_status.summarize(rows.values())
+    assert s['written_off_count'] == 3
+    assert s['written_off_forgiven'] == pytest.approx(1000.0 + 750.0 + 600.0)
+
+
+def _invoices_tab_rows():
+    from app import app as a
+    a.config['TESTING'] = True
+    c = a.test_client()
+    with c.session_transaction() as s:
+        s['user_id'] = 1; s['username'] = 'admin'; s['role'] = 'admin'
+    r = c.get('/ar?tab=invoices')
+    assert r.status_code == 200
+    body = r.data.decode()
+    out = {}
+    for tr in re.findall(r'<tr>(.*?)</tr>', body, re.S):
+        doc = re.search(r'>\s*(IV-[A-Z]+)\s*</a>', tr)
+        if doc:
+            cells = dict(re.findall(r'data-col="(\w+)"[^>]*>(.*?)</td>', tr, re.S))
+            out[doc.group(1)] = {k: ' '.join(v.split()) for k, v in cells.items()}
+    return body, out
+
+
+def test_invoices_tab_shows_forgiven_in_status_cell_not_outstanding(four_statuses):
+    """#709 option B: ยอดคงเหลือ stays "–"; the forgiven amount sits in the
+    status cell, muted. Paid, partial and unpaid rows render as before."""
+    c = four_statuses
+    _ins_paid(c, _ins_receipt(c, 'RE-2', 'B', '2026-07-20'), 'IV-WO', 77.0)
+    c.commit()
+    body, rows = _invoices_tab_rows()
+    assert set(rows) == {'IV-PAID', 'IV-PART', 'IV-UNPAID', 'IV-CN', 'IV-WO'}
+
+    wo = rows['IV-WO']
+    assert wo['remainder'] == '–'
+    assert 'ตัดหนี้แล้ว' in wo['status']
+    assert 'data-forgiven="700.00"' in wo['status']
+    assert '฿700.00' in wo['status']
+
+    assert rows['IV-PAID']['remainder'] == '–'
+    assert rows['IV-PART']['remainder'] == '฿600.00'
+    assert rows['IV-UNPAID']['remainder'] == '฿500.00'
+    assert rows['IV-CN']['remainder'] == '฿700.00'
+    for d in ('IV-PAID', 'IV-PART', 'IV-UNPAID', 'IV-CN'):
+        assert 'data-forgiven' not in rows[d]['status'], d
+        assert '฿' not in rows[d]['status'], d
+
+    card = body.split('data-summary="written_off_count"', 1)[1].split('</div>', 2)[1]
+    forgiven = re.search(r'ยอดที่ตัด ([\d,]+) บาท', card)
+    assert forgiven, card
+    assert float(forgiven.group(1).replace(',', '')) == 700.0
 
 
 def test_reconcile_ledger_is_the_open_remainder_per_code(four_statuses):
