@@ -755,7 +755,8 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
         ratio = unit_conversion.word_ratio(conn, pid, unit_type, unit.strip(), ratio_cache)
         if ratio:
             base = (row['base_sell_price'] or 0.0) * ratio
-            promo_price = pl.apply_price_promo(base, ratio, price_promo)
+            promo_price = pl.apply_price_promo(base, ratio, price_promo,
+                                               qty_pieces=None, min_pieces=None)
         else:
             base = promo_price = None
 

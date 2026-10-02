@@ -58,7 +58,22 @@ def _old(path, name, package=None):
         mod.__package__ = package
     sys.modules[name] = mod
     exec(compile(src, f'{BASELINE}:{path}', 'exec'), mod.__dict__)
+    if 'promo_models' in mod.__dict__:
+        mod.promo_models = _baseline_promo_models()
     return mod
+
+
+def _baseline_promo_models():
+    """models.promotions as the baseline called it. #673 made promo_price's
+    quantity keywords required; the baseline passes three arguments. The world
+    below holds no promo with a minimum, so the baseline's call IS the
+    no-quantity call (qty_pieces=None): the gate answers 'none' every time."""
+    import types
+    from models import promotions as current
+    shim = types.SimpleNamespace(**vars(current))
+    shim.promo_price = lambda list_for_unit, ratio, promo: current.promo_price(
+        list_for_unit, ratio, promo, qty_pieces=None, min_pieces=None)
+    return shim
 
 
 def _call(fn, *args):
@@ -256,8 +271,15 @@ def _exact_row(conn, pid, unit):
 def test_call_card(world):
     conn, products = world
     old = _old('inventory_app/call_card.py', '_old_call_card')
-    got_old = {(p['product_id'], p['unit']): p for p in
-               old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
+    # The baseline card imports the CURRENT price_lookup and calls
+    # apply_price_promo with three arguments; see _baseline_promo_models.
+    with pytest.MonkeyPatch.context() as mp:
+        current_apply = price_lookup.apply_price_promo
+        mp.setattr(price_lookup, 'apply_price_promo',
+                   lambda list_for_unit, ratio, promo: current_apply(
+                       list_for_unit, ratio, promo, qty_pieces=None, min_pieces=None))
+        got_old = {(p['product_id'], p['unit']): p for p in
+                   old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
     got_new = {(p['product_id'], p['unit']): p for p in
                call_card._assemble_products(conn, 'ร้านทดสอบ', None, today='2026-09-29')}
     shared = sorted(set(got_old) & set(got_new), key=repr)

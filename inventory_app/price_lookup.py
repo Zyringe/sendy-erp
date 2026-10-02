@@ -46,6 +46,7 @@ Python 3.9+ compatible (no `X | None` syntax) — same constraint as
 sales_filters.py, this runs on prod's older interpreter too.
 """
 import json
+import math
 import re
 import statistics
 from collections import defaultdict
@@ -450,6 +451,49 @@ def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
     return ratio if ratio is not None else 1.0
 
 
+def _chain_ratio(conn, product_id, unit_word, unit_type_word):
+    """Pieces per one `unit_word` for the minimum-quantity gate (#673), or
+    None. The resolver's own chain (a unit_conversions row, else the
+    tier-implied โหล = 12), with `_resolve_unit`'s unknown → 1.0 fallback
+    REJECTED (that fallback is what `_bundle_buy_ratio` degrades to, and why
+    the gate does not reuse it). The ratio must be finite and > 0."""
+    if unit_word == unit_type_word:
+        return 1.0
+    ratio, source, _tier = _resolve_unit(conn, product_id, unit_word, unit_type_word,
+                                         strict=False)
+    if source not in ('unit_conversions', 'tier-implied'):
+        return None
+    if ratio is None or not math.isfinite(ratio) or ratio <= 0:
+        return None
+    return ratio
+
+
+def promo_min_measure(conn, product_id, unit_type, promo, qty, unit):
+    """(qty_pieces, min_pieces) for models.promotions.promo_gate / promo_price
+    — the ONE unit chain both sides of the minimum go through (#673).
+
+    Same หน่วย word on both sides → (qty, min_qty) as written, no ratio
+    needed. Otherwise both convert to pieces through `_chain_ratio`; a side
+    with no ratio comes back None (the gate then reads `unconvertible` for the
+    minimum, `qty_unknown` for the ask). `qty=None` (the caller has no
+    quantity) → qty_pieces None. A promo with no minimum → (None, None): the
+    gate answers from the promo alone. `unit` None = the product's own unit."""
+    if promo is None or promo['min_qty'] is None:
+        return None, None
+    unit_type_word = _unit_word(conn, unit_type)
+    min_word = _unit_word(conn, promo['min_qty_unit'])
+    ask_word = _unit_word(conn, unit) if unit else unit_type_word
+    min_qty = float(promo['min_qty'])
+    if ask_word == min_word:
+        return (float(qty) if qty is not None else None), min_qty
+    min_ratio = _chain_ratio(conn, product_id, min_word, unit_type_word)
+    min_pieces = min_qty * min_ratio if min_ratio is not None else None
+    if qty is None:
+        return None, min_pieces
+    ask_ratio = _chain_ratio(conn, product_id, ask_word, unit_type_word)
+    return (float(qty) * ask_ratio if ask_ratio is not None else None), min_pieces
+
+
 def _resolve_list(conn, product_id, unit_type, base, asked_unit):
     """R1: unit + list. Returns a dict with ratio/ratio_source/answer_unit
     (answer_unit differs from asked_unit only in the dozen-only case, where
@@ -500,7 +544,7 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
     }
 
 
-def apply_price_promo(list_for_unit, ratio, price_promo):
+def apply_price_promo(list_for_unit, ratio, price_promo, *, qty_pieces, min_pieces):
     """R2 list_after_promo. percent (and a 'mixed' row using discount_value
     as a percent — see the module docstring / task-1-report for why: the
     real mixed+discount rows in the catalog carry values like 10/15/20,
@@ -523,8 +567,10 @@ def apply_price_promo(list_for_unit, ratio, price_promo):
     2026-09-09 (card 3): models.effective_price and review_rules' R5 both
     needed it and neither can import upward into price_lookup, so keeping it
     here meant three hand copies that had already drifted on `mixed`. This
-    stays as the name those two callers know; it adds nothing of its own."""
-    return promo_models.promo_price(list_for_unit, ratio, price_promo)
+    stays as the name those two callers know; it adds nothing of its own.
+    The quantity keywords (#673) pass straight through to the gate."""
+    return promo_models.promo_price(list_for_unit, ratio, price_promo,
+                                    qty_pieces=qty_pieces, min_pieces=min_pieces)
 
 
 def batch_active_promos_by_class(conn, product_ids, on_date):
@@ -1146,7 +1192,11 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     # just called via the one function the call card also uses, so the
     # resolver and the call card can never silently pick different rows.
     price_promo, qty_promo = batch_active_promos_by_class(conn, [product_id], today)[product_id]
-    list_after_promo = apply_price_promo(list_info['list_for_unit'], ratio, price_promo)
+    # #673: the minimum-quantity gate, measured in the unit actually asked.
+    qty_pieces, min_pieces = promo_min_measure(conn, product_id, unit_type, price_promo,
+                                               qty, asked_unit)
+    list_after_promo = apply_price_promo(list_info['list_for_unit'], ratio, price_promo,
+                                         qty_pieces=qty_pieces, min_pieces=min_pieces)
     # review round 3: a price promo "applied" iff it actually changed the
     # number — False for the no-promo case (per the ruling) AND for a
     # 'fixed' promo that apply_price_promo left unapplied because ratio

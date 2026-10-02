@@ -70,10 +70,48 @@ def affects_price(promo) -> bool:
     return False
 
 
-def promo_price(list_for_unit, ratio, promo):
+# promo_gate statuses under which a price promo's effect applies (#673).
+GATE_APPLIES = ('none', 'met')
+
+
+def promo_gate(promo, *, qty_pieces, min_pieces):
+    """Does `promo`'s minimum quantity (#673, mig 199) let its price effect
+    apply to this ask? Pure — the caller measures both sides first with
+    price_lookup.promo_min_measure (the one unit chain), so `qty_pieces` and
+    `min_pieces` are in ONE measure (pieces, or the minimum's own unit when the
+    ask is in that same หน่วย word).
+
+      'none'          no minimum (or no price effect at all): applies
+      'met'           asked >= minimum, compared at 4 dp: applies to the WHOLE line
+      'not_met'       asked < minimum
+      'unconvertible' the minimum's unit has no ratio for this product
+      'qty_unknown'   no quantity, or the asked unit has no ratio
+      'missing'       a ยกลัง/ยกล่อง label with no number (Put 2026-10-02: never a
+                      valid gated promo; fail closed)
+
+    Only GATE_APPLIES lets promo_price apply the promo; every other status
+    answers the list price. Never degrades an unknown ratio to 1."""
+    if promo is None or not affects_price(promo):
+        return 'none'
+    if promo['min_qty'] is None:
+        return 'missing' if promo['bundle_condition'] else 'none'
+    if min_pieces is None:
+        return 'unconvertible'
+    if qty_pieces is None:
+        return 'qty_unknown'
+    return 'met' if round(qty_pieces, 4) >= round(min_pieces, 4) else 'not_met'
+
+
+def promo_price(list_for_unit, ratio, promo, *, qty_pieces, min_pieces):
     """THE promo→price application for the whole app. Given a list price for
     some unit and that unit's piece-ratio, return the price after `promo`.
 
+    `qty_pieces` / `min_pieces` are REQUIRED keywords (#673): a call site that
+    never thought about quantity is a TypeError, not a silent discount. They go
+    to promo_gate; a caller with no quantity passes None and a gated promo
+    answers the list.
+
+      - a gated promo whose gate is not GATE_APPLIES → list_for_unit unchanged
       - no promo, or a promo with no price effect (bundle / gift, and a mixed
         row carrying only deal terms) → list_for_unit unchanged
       - 'fixed' → discount_value × ratio (fixed IS the final per-PIECE price).
@@ -87,6 +125,17 @@ def promo_price(list_for_unit, ratio, promo):
     this module so models.effective_price and review_rules can reach it
     without importing upward into price_lookup. Pure — no DB.
     """
+    if promo is None:
+        return list_for_unit
+    if promo_gate(promo, qty_pieces=qty_pieces, min_pieces=min_pieces) not in GATE_APPLIES:
+        return list_for_unit
+    return promo_price_if_met(list_for_unit, ratio, promo)
+
+
+def promo_price_if_met(list_for_unit, ratio, promo):
+    """The price `promo` WOULD give if its minimum were met — the ungated math
+    promo_price applies once the gate allows it. For detection/display only
+    (R5's "discount given below the minimum"); never a quote."""
     if promo is None:
         return list_for_unit
     if promo['promo_type'] == 'fixed':
@@ -118,6 +167,8 @@ def effective_price(product, conn=None) -> float:
     Now: select the price-slot promo, then hand it to promo_price(). Both
     steps are the app's single definition, shared with price_lookup and the
     mig-177 trigger.
+
+    No quantity here (#673): a promo with a minimum is not this price.
     """
     owned = conn is None
     if owned:
@@ -125,7 +176,8 @@ def effective_price(product, conn=None) -> float:
     try:
         price_promo, _qty_promo = get_active_promos_by_class(
             product['id'], date.today().isoformat(), conn)
-        return promo_price(product['base_sell_price'], 1.0, price_promo)
+        return promo_price(product['base_sell_price'], 1.0, price_promo,
+                           qty_pieces=None, min_pieces=None)
     finally:
         if owned:
             conn.close()

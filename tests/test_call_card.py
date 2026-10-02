@@ -505,7 +505,8 @@ def _assemble_db():
             id INTEGER PRIMARY KEY, product_id INTEGER, promo_name TEXT, promo_type TEXT,
             discount_value REAL, date_start TEXT, date_end TEXT, is_active INTEGER, created_at TEXT,
             bundle_buy INTEGER, bundle_free INTEGER, bundle_unit TEXT, bundle_condition TEXT,
-            bundle_tiers_json TEXT, gift_desc TEXT, gift_qty TEXT, source TEXT
+            bundle_tiers_json TEXT, gift_desc TEXT, gift_qty TEXT, source TEXT,
+            min_qty REAL, min_qty_unit TEXT
         );
         CREATE TABLE product_price_tiers (
             id INTEGER PRIMARY KEY, product_id INTEGER, qty_label TEXT, price REAL,

@@ -101,7 +101,8 @@ def _get_active_promo_on_date(conn, product_id: int, date_iso: str):
     today — R5 must check historical data, not the current catalog state.
     """
     return conn.execute("""
-        SELECT id, promo_name, promo_type, discount_value
+        SELECT id, promo_name, promo_type, discount_value,
+               bundle_condition, min_qty, min_qty_unit
         FROM promotions
         WHERE product_id = ? AND is_active = 1
           AND (date_start IS NULL OR date_start <= ?)
@@ -123,7 +124,8 @@ def _promo_expected_per_base_unit(product, promo) -> Optional[float]:
     """
     if not promo_models.affects_price(promo):
         return None
-    return promo_models.promo_price(product['base_sell_price'], 1.0, promo)
+    return promo_models.promo_price(product['base_sell_price'], 1.0, promo,
+                                    qty_pieces=None, min_pieces=None)
 
 
 # ── R3 median helpers ─────────────────────────────────────────────────────────

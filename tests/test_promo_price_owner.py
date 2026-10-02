@@ -57,6 +57,7 @@ def _promo(promo_type, discount_value=None, bundle_buy=None, bundle_free=None,
         'promo_type': promo_type, 'discount_value': discount_value,
         'bundle_buy': bundle_buy, 'bundle_free': bundle_free,
         'gift_desc': gift_desc, 'gift_qty': gift_qty,
+        'min_qty': None, 'min_qty_unit': None, 'bundle_condition': None,   # no minimum (#673)
     }
 
 
@@ -102,7 +103,8 @@ CASES = [
 
 @pytest.mark.parametrize('promo,list_for_unit,ratio,expected', CASES)
 def test_promo_price_is_the_one_implementation(promo, list_for_unit, ratio, expected):
-    assert promo_models.promo_price(list_for_unit, ratio, promo) == expected
+    assert promo_models.promo_price(list_for_unit, ratio, promo,
+                                    qty_pieces=1, min_pieces=None) == expected
 
 
 def test_apply_price_promo_delegates_and_cannot_drift():
@@ -110,8 +112,8 @@ def test_apply_price_promo_delegates_and_cannot_drift():
     for every case — this is the guard that stops the two copies diverging again."""
     assert len(CASES) == 9, 'the agreement matrix must cover every promo_type'
     for promo, list_for_unit, ratio, expected in CASES:
-        assert pl.apply_price_promo(list_for_unit, ratio, promo) == \
-            promo_models.promo_price(list_for_unit, ratio, promo)
+        assert pl.apply_price_promo(list_for_unit, ratio, promo, qty_pieces=1, min_pieces=None) == \
+            promo_models.promo_price(list_for_unit, ratio, promo, qty_pieces=1, min_pieces=None)
 
 
 # ── B · the Python predicate and the SQL predicate must agree ────────────────
