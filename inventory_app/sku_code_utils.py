@@ -211,7 +211,8 @@ def resolve_sku_fields(conn, fields: dict) -> dict:
     `cat_short_code`/`brand_short_code` keys `build_sku_code` reads — the
     same FK resolution `regenerate_for_product`'s SELECT does for a saved
     row (categories.short_code via category_id, brands.short_code via
-    brand_id). Also derives a not-yet-inserted "other" color the same way
+    brand_id). Typed brands use the brand module's matching and supplied-code
+    normalization rules. Also derives a not-yet-inserted "other" color the same way
     `create_structured_product` would (uppercase, first 10 chars) so the
     color segment agrees with reality even before the new color row exists.
     Everything else in `fields` passes through untouched — `build_sku_code`
@@ -226,9 +227,10 @@ def resolve_sku_fields(conn, fields: dict) -> dict:
         row = conn.execute("SELECT short_code FROM brands WHERE id=?",
                            (fields['brand_id'],)).fetchone()
         out['brand_short_code'] = row['short_code'] if row else None
-    # brand_other_name: create_structured_product inserts the new brand row
-    # WITHOUT a short_code, so both preview and reality agree the segment is
-    # simply absent — nothing to resolve here.
+    elif fields.get('brand_other_name'):
+        from models.brands import preview_brand_short_code
+        out['brand_short_code'] = preview_brand_short_code(
+            conn, fields['brand_other_name'], fields.get('brand_other_short_code'))
     if not out.get('color_code') and fields.get('color_code_other'):
         out['color_code'] = fields['color_code_other'].strip().upper()[:10]
     return out

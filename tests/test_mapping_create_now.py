@@ -345,3 +345,131 @@ def test_create_now_surfaces_a_silent_collision_suffix(tmp_db, monkeypatch):
     assert warning is not None, \
         "a collision suffix was applied but create_now returned no warning"
     assert f'-{new_pid}' in warning, warning
+
+
+@pytest.fixture
+def typed_manager_client(empty_db_conn, monkeypatch):
+    conn = empty_db_conn
+    category_id = conn.execute(
+        "INSERT INTO categories (code, name_th, short_code, sort_order) "
+        "VALUES ('chemical', 'สารเคมี', 'CHM', 100)"
+    ).lastrowid
+    user_id = conn.execute(
+        "INSERT INTO users (username, password_hash, role) "
+        "VALUES ('typed-brand-manager', 'unused-session-test', 'manager')"
+    ).lastrowid
+    conn.commit()
+    monkeypatch.setenv('SKIP_DB_INIT', '1')
+    from app import app
+
+    app.config['TESTING'] = True
+    client = app.test_client()
+    with client.session_transaction() as session:
+        session.update(user_id=user_id, username='typed-brand-manager', role='manager')
+    return client, conn, category_id
+
+
+def _typed_mapping_fields(category_id):
+    return _fields(
+        'ZZTYPED-BRAND', category_id=category_id,
+        sub_category='น้ำยา', sub_category_short_code='LIQ',
+        model=None, size='500ml', color_code=None,
+        brand_other_name='SONAX', brand_other_short_code=' sonax ',
+    )
+
+
+def _typed_guard_counts(conn):
+    return tuple(conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+                 for table in ('products', 'brands', 'pending_product_suggestions',
+                               'product_code_mapping', 'stock_levels', 'audit_log'))
+
+
+@pytest.mark.parametrize('is_active', [0, 1])
+@pytest.mark.parametrize('stored_code,expected', [
+    (None, 'CHM-LIQ-SONAX-500ml'),
+    ('SNX', 'CHM-LIQ-SNX-500ml'),
+])
+def test_typed_brand_exact_duplicate_refuses_before_writes_then_confirms(
+        typed_manager_client, is_active, stored_code, expected):
+    client, conn, category_id = typed_manager_client
+    fields = _typed_mapping_fields(category_id)
+    if stored_code is not None:
+        conn.execute(
+            "INSERT INTO brands (code, name, short_code) VALUES ('sonax', 'SONAX', ?)",
+            (stored_code,),
+        )
+        fields['brand_other_short_code'] = 'WRONG'
+    duplicate_id = conn.execute(
+        "INSERT INTO products (product_name, sku_code, unit_type, is_active) "
+        "VALUES ('น้ำยาเดิม', ?, 'ตัว', ?)", (expected, is_active),
+    ).lastrowid
+    conn.commit()
+    before = _typed_guard_counts(conn)
+    assert before[:5] == (1, int(stored_code is not None), 0, 0, 0)
+
+    response = client.post('/mapping/save', json={
+        'mappings': [dict(fields, action='create_now')],
+    })
+    assert response.status_code == 409, response.data[:500]
+    body = response.get_json()
+    assert body['ok'] is False
+    assert body['duplicate_kind'] == 'sku_code'
+    assert body['duplicate_of']['id'] == duplicate_id
+    assert body['duplicate_of']['sku_code'] == expected
+    assert body['duplicate_of']['is_active'] == is_active
+    assert _typed_guard_counts(conn) == before
+
+    confirmed = client.post('/mapping/save', json={
+        'mappings': [dict(fields, action='create_now', confirm_duplicate=True)],
+    })
+    assert confirmed.status_code == 200, confirmed.data[:500]
+    created = confirmed.get_json()
+    assert created['ok'] is True
+    assert 'warning' not in created
+    product_id = created['product_id']
+    assert product_id != duplicate_id
+    product = conn.execute(
+        'SELECT sku_code, product_name, created_via FROM products WHERE id=?',
+        (product_id,),
+    ).fetchone()
+    assert product is not None
+    assert tuple(product) == (
+        f'{expected}-{product_id}', fields['suggested_name'], 'smart_mapping',
+    )
+    assert _typed_guard_counts(conn)[:5] == (2, 1, 1, 1, 1)
+    suggestion = conn.execute(
+        'SELECT status, approved_product_id FROM pending_product_suggestions '
+        'WHERE bsn_code=?', (fields['bsn_code'],),
+    ).fetchone()
+    assert tuple(suggestion) == ('approved', product_id)
+    mapping = conn.execute(
+        'SELECT product_id FROM product_code_mapping WHERE bsn_code=?',
+        (fields['bsn_code'],),
+    ).fetchone()
+    assert mapping[0] == product_id
+
+
+def test_typed_brand_does_not_refuse_false_unbranded_collision(typed_manager_client):
+    client, conn, category_id = typed_manager_client
+    duplicate_id = conn.execute(
+        "INSERT INTO products (product_name, sku_code, category_id, size, unit_type) "
+        "VALUES ('น้ำยาไม่มีแบรนด์', 'CHM-LIQ-500ml', ?, '500ml', 'ตัว')",
+        (category_id,),
+    ).lastrowid
+    conn.commit()
+    fields = _typed_mapping_fields(category_id)
+    response = client.post('/mapping/save', json={
+        'mappings': [dict(fields, action='create_now')],
+    })
+    assert response.status_code == 200, response.data[:500]
+    body = response.get_json()
+    assert body['ok'] is True
+    assert 'warning' not in body
+    assert body['product_id'] != duplicate_id
+    products = conn.execute('SELECT id, sku_code FROM products ORDER BY id').fetchall()
+    assert len(products) == 2
+    assert [tuple(row) for row in products] == [
+        (duplicate_id, 'CHM-LIQ-500ml'),
+        (body['product_id'], 'CHM-LIQ-SONAX-500ml'),
+    ]
+    assert _typed_guard_counts(conn)[:5] == (2, 1, 1, 1, 1)

@@ -331,17 +331,18 @@ def preview_identity():
         mirrors.
 
     `fields` (JSON body, all optional): category_id, sub_category,
-    sub_category_short_code, series, brand_id, model, size, color_code,
-    color_code_other, packaging_th, condition, pack_variant. Same key shapes
+    sub_category_short_code, series, brand_id, brand_other_name,
+    brand_other_short_code, model, size, color_code, color_code_other,
+    packaging_th, condition, pack_variant. Same key shapes
     create_structured_product itself accepts (packaging_th, not the staging
     table's `packaging` column name) — this is the create-shaped preview,
     not the stage-shaped payload.
 
-    Known simplification: color_th and brand_other_name are NOT resolved
-    here (mirrors preview_name, which also ignores color_th — the canonical
-    Thai colour word always comes from color_code via color_finish_codes,
-    never from free text). A clone always carries real FK ids, so neither
-    gap is reachable from the clone flow that motivated this endpoint.
+    SKU prediction resolves typed brands using the stored short code for an
+    existing brand, or the supplied trimmed uppercase short code for a new one.
+    Name prediction still ignores brand_other_name and color_th: the canonical
+    Thai colour word comes from color_code via color_finish_codes, never from
+    free text. A clone carries real FK ids.
     """
     fields = request.get_json(silent=True) or {}
     conn = get_connection()
