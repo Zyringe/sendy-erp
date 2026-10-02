@@ -1,4 +1,12 @@
--- Rollback 199.
+.bail on
+-- Rollback 199. Run it with the sqlite3 CLI: sqlite3 "$DB" < this file.
+--
+-- `.bail on` (line 1) is load-bearing: without it the CLI reports the
+-- precondition's RAISE(ABORT) and then keeps executing the next statements,
+-- so the DROP COLUMNs below ran and ungated every live minimum anyway
+-- (/interrogate on the PR 1 diff, 2026-10-02). The migration runner never
+-- executes rollback files; it is a dot-command, so do not feed this file to
+-- Python's executescript().
 --
 -- Precondition ABORTS when any is_active = 1 promo carries a minimum: dropping
 -- the column would silently UNGATE it (its discount would apply to one piece).
