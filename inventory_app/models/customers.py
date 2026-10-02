@@ -360,7 +360,8 @@ def _customer_product_cards(conn, where, params, product_rows, include_cost=Fals
         # here — .claude/rules/quoting-and-pricing.md).
         # Called at the customer's LAST quantity (Put, 2026-09-11, slice 3) so
         # the internal margin counts a bundle's free units when that order
-        # size reaches the bundle; the price itself does not depend on qty.
+        # size reaches the bundle, and (#673) a promo with a minimum quantity
+        # applies only when that order size meets it.
         resolved = None
         try:
             resolved = price_lookup.resolve_price(
@@ -378,8 +379,11 @@ def _customer_product_cards(conn, where, params, product_rows, include_cost=Fals
             # keeps on the plain promo_summary text: a fixed promo's
             # discount_value IS the final price, not a percentage to print
             # in this formula's shape).
+            # #673: APPLIED, not "a promo exists" — a promo whose minimum
+            # this order size does not meet would print "60 −10% = 60".
             promo_affects_price = (
-                price_promo is not None and price_promo['promo_type'] != 'fixed'
+                resolved['list']['price_promo_applied']
+                and price_promo['promo_type'] != 'fixed'
                 and price_promo['discount_value'] is not None
             )
             card['today'] = {
@@ -534,8 +538,10 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
             continue
 
         try:
+            # No quantity on a suggestion (#673): a promo with a minimum is
+            # shown as its condition, never as the price.
             resolved = price_lookup.resolve_price(conn, product_id=r['product_id'],
-                                                   unit=None, today=today)
+                                                   unit=None, qty=None, today=today)
         except ValueError:
             continue
         if resolved['list']['list_for_unit'] == 0:
@@ -551,7 +557,8 @@ def _cross_sell_suggestions(conn, customer_code, today=None, limit=10):
 
         price_promo = resolved['list']['price_promo']
         promo_affects_price = (
-            price_promo is not None and price_promo['promo_type'] != 'fixed'
+            resolved['list']['price_promo_applied']          # #673: applied, not offered
+            and price_promo['promo_type'] != 'fixed'
             and price_promo['discount_value'] is not None
         )
         ratio = resolved['unit']['ratio']

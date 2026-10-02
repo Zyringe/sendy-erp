@@ -46,6 +46,7 @@ Python 3.9+ compatible (no `X | None` syntax) — same constraint as
 sales_filters.py, this runs on prod's older interpreter too.
 """
 import json
+import math
 import re
 import statistics
 from collections import defaultdict
@@ -364,6 +365,13 @@ def _known_ratio_units(conn, product_id):
     return units
 
 
+def usable_ratio(ratio):
+    """Is a stored unit_conversions ratio a ratio at all? A row whose ratio is
+    0, negative or not finite counts as NO row (#720). The one rule both
+    `_resolve_unit` and `measure_ratio` read."""
+    return ratio is not None and math.isfinite(ratio) and ratio > 0
+
+
 def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     """(ratio, ratio_source, tier_row) for `unit`.
 
@@ -410,7 +418,7 @@ def _resolve_unit(conn, product_id, unit, unit_type, strict=False):
     tier = _find_matching_tier(conn, product_id, unit)
 
     ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
-    if ratio is not None and ratio > 0:
+    if usable_ratio(ratio):
         return ratio, 'unit_conversions', tier
     # A ratio <= 0 row resolves like no row, except that it never earns the
     # non-strict miss value 1.0 below: its unit is known NOT to be the base (#720).
@@ -448,6 +456,102 @@ def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
         return 1.0
     ratio = unit_conversion.conversion_ratio(conn, product_id, _unit_word(conn, bundle_unit))
     return ratio if ratio is not None else 1.0
+
+
+def measure_ratio(conn, product_id, unit_type, unit, cache=None):
+    """Pieces per one `unit` of this product, or None — THE bill-measurement
+    contract (#673 fix round): every place that turns a quantity in some unit
+    into pieces reads it here, the bill's cash per piece, a bill's qualification
+    for a promo minimum, the ask's, the minimum's own, last_paid and R6.
+
+    Order: the unit's own base-unit word → 1.0; else the RAW spelling's
+    unit_conversions row, then `_resolve_unit` on its หน่วย word (that word's
+    row, else the tier-implied 12 when a โหล tier exists). A row is usable only
+    by `usable_ratio` (#720: a ratio <= 0 row is no row), so both functions
+    read one rule; tests/test_673_measure_contract.py pins them together.
+    Never the unknown → 1.0 fallback `_resolve_unit(strict=False)` ends on.
+
+    Raw spelling first matters: a product may carry `หล = 6` (a half-dozen
+    pack, by its own row) beside `โหล = 12`; a `หล` bill is 6 pieces here, both
+    for its cash and for a minimum. `cache` is the caller's dict, keyed on
+    (product_id, unit)."""
+    if cache is not None and (product_id, unit) in cache:
+        return cache[(product_id, unit)]
+    if not unit or _unit_word(conn, unit) == _unit_word(conn, unit_type):
+        ratio = 1.0
+    else:
+        # the raw spelling's own row first; else the resolver's chain on the
+        # หน่วย word (its row, then the tier-implied โหล), minus its unknown →
+        # 1.0 fallback
+        ratio = unit_conversion.conversion_ratio(conn, product_id, unit)
+        if not usable_ratio(ratio):
+            ratio, source, _tier = _resolve_unit(conn, product_id, _unit_word(conn, unit),
+                                                 unit_type, strict=False)
+            if source not in ('unit_conversions', 'tier-implied'):
+                ratio = None
+    if cache is not None:
+        cache[(product_id, unit)] = ratio
+    return ratio
+
+
+def min_qty_unit_problem(conn, product_id, unit_type, min_qty_unit):
+    """Why `min_qty_unit` cannot carry a promo minimum on this product, or
+    None when it can (#673 write-time refusal: promotions' writers and the
+    catalog importer refuse it, the resolver's promo_min_unconvertible flag is
+    only the backstop). The message lists the units that DO resolve."""
+    unit = (min_qty_unit or '').strip()
+    if unit and measure_ratio(conn, product_id, unit_type, unit) is not None:
+        return None
+    resolves = []
+    for u in [_unit_word(conn, unit_type)] + _known_ratio_units(conn, product_id) + ['โหล']:
+        if u not in resolves and measure_ratio(conn, product_id, unit_type, u) is not None:
+            resolves.append(u)
+    return (f"หน่วยขั้นต่ำ '{min_qty_unit}' แปลงเป็น{_unit_word(conn, unit_type)}ไม่ได้"
+            f"สำหรับสินค้านี้ — หน่วยที่ใช้ได้: {', '.join(resolves)}")
+
+
+def promo_min_measure(conn, product_id, unit_type, promo, qty, unit):
+    """(qty_pieces, min_pieces) for models.promotions.promo_gate / promo_price.
+
+    Both sides through `measure_ratio`. Only when NEITHER side has a ratio and
+    both are the same หน่วย word are they compared as written. A side with no
+    measure comes back None (the gate reads `unconvertible` for the minimum,
+    `qty_unknown` for the ask). `qty=None` (no quantity) → qty_pieces None. A
+    promo with no minimum → (None, None). `unit` None = the product's unit."""
+    if promo is None or promo['min_qty'] is None:
+        return None, None
+    ask_unit = unit or unit_type
+    min_qty = float(promo['min_qty'])
+    min_ratio = measure_ratio(conn, product_id, unit_type, promo['min_qty_unit'])
+    ask_ratio = measure_ratio(conn, product_id, unit_type, ask_unit)
+    if (min_ratio is None and ask_ratio is None
+            and _unit_word(conn, ask_unit) == _unit_word(conn, promo['min_qty_unit'])):
+        return (float(qty) if qty is not None else None), min_qty
+    min_pieces = min_qty * min_ratio if min_ratio is not None else None
+    if qty is None or ask_ratio is None:
+        return None, min_pieces
+    return float(qty) * ask_ratio, min_pieces
+
+
+def gate_for_ask(conn, product_id, unit_type, promo, qty, unit):
+    """promo_gate status for `qty` of `unit` against `promo`'s minimum — the
+    one call every site makes (resolver ask, bills, R5 lines)."""
+    qty_pieces, min_pieces = promo_min_measure(conn, product_id, unit_type, promo, qty, unit)
+    return promo_models.promo_gate(promo, qty_pieces=qty_pieces, min_pieces=min_pieces)
+
+
+_GATE_TEXT = {
+    'not_met': 'ไม่ถึงขั้นต่ำ',
+    'qty_unknown': 'ยังไม่ระบุจำนวน',
+    'unconvertible': 'แปลงหน่วยขั้นต่ำเป็นชิ้นไม่ได้',
+    'missing': 'ไม่ได้ระบุจำนวนขั้นต่ำ',
+}
+
+
+def gate_text(status):
+    """Thai reason a promo is not applied for this gate status, or None when it
+    applies. The one wording the breadcrumb, the flags and R5 print."""
+    return _GATE_TEXT.get(status)
 
 
 def _resolve_list(conn, product_id, unit_type, base, asked_unit):
@@ -498,33 +602,6 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
         'list_source': list_source,
         'tier_equals_base_x_ratio': tier_equals_base_x_ratio,
     }
-
-
-def apply_price_promo(list_for_unit, ratio, price_promo):
-    """R2 list_after_promo. percent (and a 'mixed' row using discount_value
-    as a percent — see the module docstring / task-1-report for why: the
-    real mixed+discount rows in the catalog carry values like 10/15/20,
-    which are percentages, not final per-piece prices; a FIXED final price
-    of ฿10-20 on a ฿35-250 product is not a real catalog price. 27 of the 28
-    active mixed rows on prod 2026-09-08 carry one) → list ×
-    (1 − d/100) — this branch never needs `ratio`. fixed → discount_value
-    × ratio (fixed IS the final per-PIECE price, mirrors
-    models.promotions.effective_price) — when `ratio is None` (review
-    round 2: a tier answers the price but no piece-ratio is derivable),
-    that per-piece conversion cannot be computed; the fixed promo is left
-    unapplied (list_for_unit unchanged) rather than guessed.
-
-    Public (task-2-brief.md PR C / 2e, C1) — `resolve_price` calls it, and
-    `call_card._assemble_products` calls it too. Tested directly (no DB
-    needed — it's pure) in tests/test_price_lookup.py, not only through
-    resolve_price.
-
-    ⚠ The math itself moved DOWN to models.promotions.promo_price on
-    2026-09-09 (card 3): models.effective_price and review_rules' R5 both
-    needed it and neither can import upward into price_lookup, so keeping it
-    here meant three hand copies that had already drifted on `mixed`. This
-    stays as the name those two callers know; it adds nothing of its own."""
-    return promo_models.promo_price(list_for_unit, ratio, price_promo)
 
 
 def batch_active_promos_by_class(conn, product_ids, on_date):
@@ -706,7 +783,7 @@ def _tier_epoch(conn, product_id, unit):
     return max(ev['at'][:10] for ev in survivors) if survivors else None
 
 
-def _epoch_candidates(conn, product_id, unit, today):
+def _epoch_candidates(conn, product_id, unit, today, promo_counts=None):
     """The 4 epoch sources (R4), each None if not applicable. #555 (rule
     A, Put's ruling 2026-09-16): a source only fires on a GENUINE price
     change — Sendy first learning/recording a price (May-June 2026 is when
@@ -725,6 +802,16 @@ def _epoch_candidates(conn, product_id, unit, today):
                        event, never a first-time recording.
       promo_end     — last price-slot promo that ended with no replacement,
                        date_end + 1 day. Untouched by #555, same reason.
+      (#673, Put 2026-10-02) a price promo with a minimum quantity is a
+      regime change only for an ask that meets it: `promo_counts(promo_row)`
+      says whether this ask sees the promo at all. A current gated promo the
+      ask does not meet is skipped as if absent (so an earlier promo's end
+      can still answer), and the most recent closed promo that COUNTS gives
+      promo_end. `promo_counts` is asked about gated promos only: a promo
+      with no minimum — a ยกลัง/ยกล่อง label with no number included — always
+      counts. Default (no quantity — the call card, peer pricing): no gated
+      promo counts, the same answer promo_price gives a caller with no
+      quantity.
       tier_changed  — see `_tier_epoch`: the tier matching `unit`'s most
                        recent GENUINE price event, with the tier's own
                        first-ever INSERT and any same-price DELETE+INSERT
@@ -745,34 +832,47 @@ def _epoch_candidates(conn, product_id, unit, today):
     if row is not None and row['changed_at']:
         out['base_changed'] = row['changed_at'][:10]
 
+    # Only a promo WITH a minimum is ask-dependent. One without (a ยกลัง /
+    # ยกล่อง label with no number included) was priced for everyone until #673,
+    # so its start and end are a regime change for every ask (prod 2026-10-02:
+    # treating the closed labelled promos as gated moved 34 quotes).
+    def counts(promo):
+        if promo['min_qty'] is None:
+            return True
+        if promo_counts is None:   # no quantity: a gated promo is not applied
+            return False
+        return promo_counts(promo)
+
     price_expr, _qty_expr = promo_models.promo_slot_sql('')
     current = conn.execute(f"""
-        SELECT date_start FROM promotions
+        SELECT * FROM promotions
         WHERE product_id = ? AND is_active = 1
           AND (date_start IS NULL OR date_start <= ?)
           AND (date_end IS NULL OR date_end >= ?)
           AND {price_expr}
         ORDER BY id DESC LIMIT 1
     """, (product_id, today, today)).fetchone()
-    if current is not None:
+    if current is not None and counts(current):
         if current['date_start']:
             out['promo_start'] = current['date_start']
     else:
-        closed = conn.execute(f"""
-            SELECT MAX(date_end) AS d FROM promotions
+        for closed in conn.execute(f"""
+            SELECT * FROM promotions
             WHERE product_id = ? AND {price_expr}
               AND date_end IS NOT NULL
               AND (is_active = 0 OR date_end < ?)
-        """, (product_id, today)).fetchone()
-        if closed is not None and closed['d']:
-            out['promo_end'] = _add_days(closed['d'], 1)
+            ORDER BY date_end DESC, id DESC
+        """, (product_id, today)).fetchall():
+            if counts(closed):
+                out['promo_end'] = _add_days(closed['date_end'], 1)
+                break
 
     out['tier_changed'] = _tier_epoch(conn, product_id, unit)
 
     return out
 
 
-def epochs_for(conn, product_ids, unit_by_pid, today=None):
+def epochs_for(conn, product_ids, unit_by_pid, today=None, promo_counts=None):
     """{pid: date | None} — the most recent price-regime-change date for
     each product, or None if none of the 4 sources apply. `unit_by_pid[pid]`
     is the unit whose tier (if any) should be watched for source 4 — pass
@@ -792,11 +892,14 @@ def epochs_for(conn, product_ids, unit_by_pid, today=None):
     epoch-selection logic — so this is the one and only place that turns
     the 4 candidate sources into a single "most recent" date, exercised on
     every `resolve_price` call, not a parallel, untested bulk-only path.
+
+    `promo_counts` (#673): see `_epoch_candidates`; resolve_price passes its
+    own ask's gate, bulk callers leave it None (no quantity).
     """
     today = today or date.today().isoformat()
     result = {}
     for pid in product_ids:
-        cands = _epoch_candidates(conn, pid, unit_by_pid.get(pid), today)
+        cands = _epoch_candidates(conn, pid, unit_by_pid.get(pid), today, promo_counts)
         vals = [v for v in cands.values() if v]
         result[pid] = max(vals) if vals else None
     return result
@@ -825,7 +928,7 @@ def epochs_for_pairs(conn, pairs, today=None):
     return result
 
 
-def _epoch_with_reason(conn, product_id, unit, today):
+def _epoch_with_reason(conn, product_id, unit, today, promo_counts=None):
     """(epoch_date, epoch_source) — epoch_date comes from `epochs_for`
     itself (so resolve_price's window computation and the public bulk API
     can never silently disagree); epoch_source is recovered by checking
@@ -833,8 +936,9 @@ def _epoch_with_reason(conn, product_id, unit, today):
     date, purely so `resolve_price` can label `window.reason`
     (`epochs_for`'s own return type — {pid: date | None} — carries no
     reason, by the brief's contract)."""
-    cands = _epoch_candidates(conn, product_id, unit, today)
-    epoch = epochs_for(conn, [product_id], {product_id: unit}, today=today)[product_id]
+    cands = _epoch_candidates(conn, product_id, unit, today, promo_counts)
+    epoch = epochs_for(conn, [product_id], {product_id: unit}, today=today,
+                       promo_counts=promo_counts)[product_id]
     epoch_source = None
     if epoch is not None:
         for src, d in cands.items():
@@ -846,7 +950,8 @@ def _epoch_with_reason(conn, product_id, unit, today):
 
 # ── evidence lookups ─────────────────────────────────────────────────────────
 
-def latest_evidence(conn, product_id, customer_code, window_from, unit=None, today=None):
+def latest_evidence(conn, product_id, customer_code, window_from, unit=None, today=None,
+                    skip_row=None):
     """The customer's most recent evidence-filtered bill for this product
     in [`window_from`, `today`] (pass window_from='' for an
     unbounded-from-below search — used by resolve_price for the
@@ -867,6 +972,10 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
     can be answered directly (no conversion needed); a bill in any other
     unit cannot be converted and is skipped, same as an ordinary
     unratioed bill.
+
+    `skip_row(row)` (#673): a bill it returns True for is passed over, as if
+    absent — resolve_price uses it for a bill that got a gated promo's price
+    the current ask is not entitled to.
     """
     if not customer_code:
         return None
@@ -890,6 +999,8 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
 
     cache = {}
     for row in rows:
+        if skip_row is not None and skip_row(row):
+            continue
         if ratio is None:
             # by WORD: a bill spelled `บล` is evidence for an ask in `แผง`
             if _unit_word(conn, row['unit']) != target_unit:
@@ -909,8 +1020,9 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
                 # one row.
                 'unit_price': row['unit_price'],
                 'discount': row['discount'],
+                'bill_unit': row['unit'],   # the bill's own unit, for `qty` (#673)
             }
-        bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
+        bill_ratio = measure_ratio(conn, product_id, unit_type, row['unit'], cache)
         if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
             continue
         cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
@@ -922,6 +1034,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
             'doc_no': row['doc_no'],
             'unit_price': row['unit_price'],   # same row as cash_per_unit
             'discount': row['discount'],
+            'bill_unit': row['unit'],
         }
     return None
 
@@ -987,7 +1100,7 @@ def _customer_context(conn, customer_code, today):
         cache = {}
         cash_list = []
         for r in prows:
-            bill_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
+            bill_ratio = measure_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
             if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
                 continue
             cash_pp = vat_math.cash_from_net(r['net'] / r['qty'], r['vat_type']) / bill_ratio
@@ -1030,8 +1143,20 @@ def _promo_evidence(price_promo, comparable, list_after_promo, ratio):
 # ── breadcrumb (rendering only — not asserted by any test beyond the
 #    dozen-only example in the brief) ────────────────────────────────────────
 
+def _promo_min_text(promo):
+    """'≥ 20 อัน' — a promo's minimum quantity as the breadcrumb/flags print it."""
+    return f"≥ {promo['min_qty']:g} {promo['min_qty_unit']}"
+
+
+def _promo_offer_text(promo):
+    """' ลด 5%' / ' ราคาพิเศษ ฿40' — what the price promo offers."""
+    if promo['promo_type'] == 'fixed':
+        return f" ราคาพิเศษ ฿{promo['discount_value']:g}"
+    return f" ลด {promo['discount_value']:g}%"
+
+
 def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
-                       customer_last, extra_disc):
+                       customer_last, extra_disc, promo_gate='none'):
     lines = []
     ratio = list_info['ratio']
     answer_unit = list_info['answer_unit']
@@ -1053,7 +1178,20 @@ def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
             lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit} (จากช่องราคาแพ็ค)")
     else:
         lines.append(f"ราคาตั้ง {list_info['list_for_unit']:g}/{answer_unit}")
-    if price_promo is not None:
+    if price_promo is not None and promo_gate not in promo_models.GATE_APPLIES:
+        # #673: the promo is offered but this ask does not get it — say so,
+        # with the minimum, instead of announcing a discount nobody is given.
+        if promo_gate == 'missing':
+            lines.append(f"โปร{_promo_offer_text(price_promo)} "
+                         f"ต้องซื้อ{price_promo['bundle_condition']} แต่ไม่ได้ระบุจำนวนขั้นต่ำ "
+                         f"— ไม่ใช้โปร")
+        else:
+            lines.append(f"โปร{_promo_offer_text(price_promo)} เมื่อซื้อ "
+                         f"{_promo_min_text(price_promo)} — {gate_text(promo_gate)} "
+                         f"ใช้ราคาตั้ง")
+    elif price_promo is not None:
+        min_suffix = (f" (ซื้อ {_promo_min_text(price_promo)})"
+                      if price_promo['min_qty'] is not None else '')
         if price_promo['promo_type'] == 'fixed':
             # review round 3: a fixed promo needs `ratio` to convert its
             # per-piece price into answer_unit. When ratio is None it was
@@ -1061,9 +1199,10 @@ def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
             # "ราคาพิเศษ" here would be an over-quote with nothing behind
             # it, exactly the bug this round fixes.
             if ratio is not None:
-                lines.append(f"ราคาพิเศษ {list_after_promo:g}")
+                lines.append(f"ราคาพิเศษ {list_after_promo:g}{min_suffix}")
         elif price_promo['discount_value'] is not None:
-            lines.append(f"ลด {price_promo['discount_value']:g}% → {list_after_promo:g}")
+            lines.append(f"ลด {price_promo['discount_value']:g}% → {list_after_promo:g}"
+                         f"{min_suffix}")
     if basis == 'last_paid' and customer_last is not None:
         lines.append(f"ลูกค้านี้ครั้งล่าสุดได้ {customer_last['cash_per_unit']:g} "
                      f"({customer_last['doc_no']}, {customer_last['date']})")
@@ -1122,7 +1261,11 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     """Pure function: reads conn, never writes. See module docstring + R1-R8
     in task-1-brief.md, and task-1-report.md for the review-round fixes
     (round 1: C1-C3, I1-I7, tier-epoch ruling; round 2: the tier-first
-    ratio ordering and every ratio=None degrade site) applied here."""
+    ratio ordering and every ratio=None degrade site) applied here.
+
+    `qty=None` means the caller has no quantity (#673): a promo with a
+    minimum is then not applied (`qty_unknown`), and answer.qty/line_total
+    are None. An explicit qty is in `unit`."""
     today = today or date.today().isoformat()
 
     prod = _get_product(conn, product_id)
@@ -1146,19 +1289,86 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     # just called via the one function the call card also uses, so the
     # resolver and the call card can never silently pick different rows.
     price_promo, qty_promo = batch_active_promos_by_class(conn, [product_id], today)[product_id]
-    list_after_promo = apply_price_promo(list_info['list_for_unit'], ratio, price_promo)
+    # #673: the minimum-quantity gate, measured in the unit actually asked.
+    # `price_promo` stays the OFFERED promo (display, breadcrumb, flags);
+    # `price_promo_in_effect` is the one this ask is priced with, and
+    # `list_after_promo` is the gated number — so every consumer below that
+    # reads it (answer, breadcrumb, list_higher_than_answer, R6) follows the
+    # gate without branching on it.
+    def _gate_for(promo, ask_qty, ask_unit):
+        return gate_for_ask(conn, product_id, unit_type, promo, ask_qty, ask_unit)
+
+    qty_pieces, min_pieces = promo_min_measure(conn, product_id, unit_type, price_promo,
+                                               qty, asked_unit)
+    promo_gate = promo_models.promo_gate(price_promo, qty_pieces=qty_pieces,
+                                         min_pieces=min_pieces)
+    price_promo_in_effect = (price_promo if promo_gate in promo_models.GATE_APPLIES
+                             else None)
+    list_after_promo = promo_models.promo_price(list_info['list_for_unit'], ratio, price_promo,
+                                                qty_pieces=qty_pieces, min_pieces=min_pieces)
     # review round 3: a price promo "applied" iff it actually changed the
     # number — False for the no-promo case (per the ruling) AND for a
-    # 'fixed' promo that apply_price_promo left unapplied because ratio
+    # 'fixed' promo that promo_price left unapplied because ratio
     # is None (it cannot convert the promo's per-piece price into
     # answer_unit — see promo_not_convertible below). 'percent' is
     # unaffected by ratio and always applies when a promo exists.
-    price_promo_applied = price_promo is not None and list_after_promo != list_info['list_for_unit']
+    price_promo_applied = (price_promo_in_effect is not None
+                           and list_after_promo != list_info['list_for_unit'])
     promo_not_convertible = (
-        price_promo is not None and price_promo['promo_type'] == 'fixed' and ratio is None
+        price_promo_in_effect is not None and price_promo_in_effect['promo_type'] == 'fixed'
+        and ratio is None
     )
 
-    epoch, epoch_source = _epoch_with_reason(conn, product_id, answer_unit, today)
+    # Bill provenance (#673 fix round, item 1): a bill "got the gated price"
+    # iff its line met the minimum of a gated price promo active on ITS date
+    # (open or since closed) AND its cash/piece is at or under that promo's
+    # price × 1.01 (R6's threshold). Such a bill never answers an ask that
+    # does not meet that same promo — not as last_paid, not as `lowest`.
+    # Price-slot promos are read once; the per-date pick mirrors
+    # get_active_promos_by_class (highest id whose window holds the date),
+    # plus deactivated rows that carry the date they stopped.
+    price_expr_all, _qe = promo_models.promo_slot_sql('')
+    slot_promos = conn.execute(f"""
+        SELECT * FROM promotions
+        WHERE product_id = ? AND {price_expr_all}
+          AND (is_active = 1 OR date_end IS NOT NULL)
+        ORDER BY id DESC
+    """, (product_id,)).fetchall()
+    measure_cache = {}
+    list_pp = (list_info['list_for_unit'] / ratio) if ratio else base
+
+    def _promo_on(day):
+        for p in slot_promos:
+            if ((p['date_start'] is None or p['date_start'] <= day)
+                    and (p['date_end'] is None or p['date_end'] >= day)):
+                return p
+        return None
+
+    def _gated_price_promo_of(row):
+        """The gated promo whose price this bill got, or None."""
+        promo = _promo_on(row['date_iso'])
+        if promo is None or promo['min_qty'] is None:
+            return None
+        if _gate_for(promo, row['qty'], row['unit']) != 'met':
+            return None
+        bill_ratio = measure_ratio(conn, product_id, unit_type, row['unit'], measure_cache)
+        if not bill_ratio:
+            return None
+        cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
+        promo_pp = promo_models.promo_price_if_met(list_pp, 1.0, promo)
+        return promo if cash_pp <= promo_pp * 1.01 else None
+
+    def _not_for_this_ask(row):
+        promo = _gated_price_promo_of(row)
+        return (promo is not None
+                and _gate_for(promo, qty, asked_unit) not in promo_models.GATE_APPLIES)
+
+    # Put 2026-10-02 (A): a gated promo starts a price epoch only for an ask
+    # that meets its minimum — adding a gated discount never moves a
+    # below-minimum ask's window, last_paid or lowest.
+    epoch, epoch_source = _epoch_with_reason(
+        conn, product_id, answer_unit, today,
+        promo_counts=lambda p: _gate_for(p, qty, asked_unit) in promo_models.GATE_APPLIES)
     window_from, n_bills, widened = _window(conn, product_id, epoch, today)
     window_reason = epoch_source if (epoch is not None and window_from == epoch) else '12m'
 
@@ -1183,13 +1393,15 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                 continue
             cash_asked = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
         else:
-            bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
+            bill_ratio = measure_ratio(conn, product_id, unit_type, row['unit'], cache)
             if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
                 n_unratioed += 1
                 continue
             cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
             comparable.append((cash_pp, row))
             cash_asked = round(cash_pp * ratio, 2)
+        if _not_for_this_ask(row):
+            continue   # #673: a gated-price bill is not this ask's floor
         if lowest is None or cash_asked < lowest['cash_per_unit']:
             lowest = {
                 'cash_per_unit': cash_asked,
@@ -1215,21 +1427,59 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     customer_last = None
     in_window = False
     price_changed_since_last = False
+    skipped_gated_bill = None
     if customer_code:
-        within = latest_evidence(conn, product_id, customer_code, window_from, unit=answer_unit, today=today)
+        within = latest_evidence(conn, product_id, customer_code, window_from, unit=answer_unit,
+                                 today=today, skip_row=_not_for_this_ask)
+        unfiltered = latest_evidence(conn, product_id, customer_code, window_from,
+                                     unit=answer_unit, today=today)
+        if unfiltered is not None and (within is None or unfiltered['doc_no'] != within['doc_no']):
+            skipped_gated_bill = unfiltered   # it would have answered (#673)
         if within is not None:
             customer_last = within
             in_window = True
         else:
-            broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit, today=today)
+            # context, not an answer: the true last bill, gated or not (an
+            # out-of-window bill never answers last_paid anyway)
+            broad = latest_evidence(conn, product_id, customer_code, '', unit=answer_unit,
+                                    today=today)
             if broad is not None:
                 customer_last = broad
                 in_window = False
                 if epoch is not None and broad['date'] < epoch:
                     price_changed_since_last = True
+        if skipped_gated_bill is not None:
+            # Put's last_paid rule (A): the latest in-window bill is the gated
+            # one, so LIST answers. No older bill stands in for it, not as the
+            # answer and not as "the customer's last" (falling through gave a
+            # ฿385.2 add-on-VAT bill over a ฿350 list, lead repro 2026-10-02).
+            customer_last, in_window, price_changed_since_last = None, False, False
 
-    # R6 promo evidence
-    promo_last_used, promo_stale = _promo_evidence(price_promo, comparable, list_after_promo, ratio)
+    # R6 promo evidence — only for the promo this ask is priced with, and
+    # (#673) only over bills whose own line met its minimum: a small bill at
+    # list price is not evidence the gated promo goes unused.
+    if price_promo_in_effect is not None and price_promo_in_effect['min_qty'] is not None:
+        comparable = [(cpp, r) for cpp, r in comparable
+                      if _gate_for(price_promo_in_effect, r['qty'], r['unit']) == 'met']
+    promo_last_used, promo_stale = _promo_evidence(price_promo_in_effect, comparable,
+                                                   list_after_promo, ratio)
+
+    # Put 2026-10-02 (A): the customer's latest in-window bill got a gated
+    # price this ask is not entitled to — it does not answer, list does (see
+    # the answer below), and the flag says why (#673 fix round: keyed on the
+    # bill's provenance, not qty alone).
+    last_paid_was_min_promo = skipped_gated_bill is not None
+
+    # Put 2026-10-02 (Q6): the ask MEETS the current gated promo's minimum but
+    # the customer's last bill was a small one above the promo price → the
+    # promo answers, flagged. A lower own deal still wins.
+    last_paid_below_min = bool(
+        customer_last is not None and in_window
+        and price_promo_in_effect is not None and price_promo_in_effect['min_qty'] is not None
+        and _gate_for(price_promo_in_effect, customer_last['qty'],
+                      customer_last['bill_unit']) != 'met'
+        and customer_last['cash_per_unit'] > list_after_promo
+    )
 
     # R7 customer context
     cust_row = None
@@ -1257,7 +1507,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         }
 
     # answer (R3 order)
-    if customer_last is not None and in_window:
+    if customer_last is not None and in_window and not last_paid_below_min:
         price = customer_last['cash_per_unit']
         basis = 'last_paid'
     else:
@@ -1282,7 +1532,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     # in the tier unit").
     qty_answer = qty
     pack_only_text = None
-    if list_info['list_source'] == 'dozen-only':
+    if list_info['list_source'] == 'dozen-only' and qty is not None:
         if ratio is not None:
             qty_answer = qty * list_info['asked_ratio'] / ratio
             if qty_answer != round(qty_answer):
@@ -1307,7 +1557,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     if qty_promo is not None and qty_promo['bundle_buy'] and qty_promo['bundle_free'] is not None:
         asked_ratio = list_info['asked_ratio']
         bundle_applies = False
-        if asked_ratio is not None:
+        if asked_ratio is not None and qty is not None:
             qty_pieces = qty * asked_ratio
             bundle_buy_ratio = _bundle_buy_ratio(conn, product_id, qty_promo['bundle_unit'], unit_type)
             bundle_buy_pieces = qty_promo['bundle_buy'] * bundle_buy_ratio
@@ -1322,7 +1572,8 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         }
 
     breadcrumb = _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
-                                    customer_last if in_window else None, extra_disc)
+                                    customer_last if in_window else None, extra_disc,
+                                    promo_gate)
 
     answer = {
         'price_per_unit': price,
@@ -1416,6 +1667,44 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
         })
     if pack_only_text is not None:
         flags.append({'code': 'pack_only', 'text': pack_only_text})
+    if price_promo is not None and promo_gate not in promo_models.GATE_APPLIES:
+        offer = _promo_offer_text(price_promo)
+        if promo_gate == 'missing':
+            flags.append({'code': 'promo_min_missing',
+                          'text': f"โปร{offer} มีเงื่อนไข '{price_promo['bundle_condition']}' "
+                                  f"แต่ไม่ได้ระบุจำนวนขั้นต่ำ — ไม่ใช้โปร ใช้ราคาตั้ง"})
+        else:
+            need = _promo_min_text(price_promo)
+            if promo_gate == 'unconvertible':
+                flags.append({'code': 'promo_min_unconvertible',
+                              'text': f"โปร{offer} ต้องซื้อ {need} แต่แปลงหน่วย "
+                                      f"{price_promo['min_qty_unit']} เป็น{unit_type}ไม่ได้ "
+                                      f"— ไม่ใช้โปร ใช้ราคาตั้ง"})
+            elif promo_gate == 'qty_unknown':
+                flags.append({'code': 'promo_min_qty_unknown',
+                              'text': f"โปร{offer} ต้องซื้อ {need} — ยังไม่ระบุจำนวน "
+                                      f"(หรือหน่วยที่ขอแปลงเป็นชิ้นไม่ได้) ใช้ราคาตั้ง"})
+            else:
+                flags.append({'code': 'promo_min_not_met',
+                              'text': f"ยังไม่ถึงขั้นต่ำโปร{offer}: ต้องซื้อ {need} "
+                                      f"(ขอ {qty:g} {asked_unit}) — ใช้ราคาตั้ง"})
+    if last_paid_was_min_promo:
+        bill_promo = _promo_on(skipped_gated_bill['date'])
+        flags.append({
+            'code': 'last_paid_was_min_promo',
+            'text': (f"ครั้งล่าสุดลูกค้าซื้อถึงขั้นต่ำโปร ({skipped_gated_bill['doc_no']}, "
+                     f"{skipped_gated_bill['date']}) จึงได้ ฿{skipped_gated_bill['cash_per_unit']:g}"
+                     f" — ครั้งนี้{gate_text(_gate_for(bill_promo, qty, asked_unit))}"
+                     f" (ขั้นต่ำ {_promo_min_text(bill_promo)}) ไม่ใช้ราคานั้น"),
+        })
+    if last_paid_below_min:
+        flags.append({
+            'code': 'last_paid_below_min',
+            'text': (f"ครั้งล่าสุดลูกค้าซื้อไม่ถึงขั้นต่ำโปร ({customer_last['doc_no']}, "
+                     f"{customer_last['date']}) ได้ ฿{customer_last['cash_per_unit']:g} — "
+                     f"ครั้งนี้ถึง {_promo_min_text(price_promo_in_effect)} ใช้ราคาโปร "
+                     f"{list_after_promo:g}"),
+        })
 
     return {
         'product': {
@@ -1432,6 +1721,11 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
             'qty_promo': dict(qty_promo) if qty_promo is not None else None,
             'list_after_promo': list_after_promo,
             'price_promo_applied': price_promo_applied,
+            # #673: `price_promo` is the promo OFFERED (it may carry a minimum
+            # this ask does not meet); this one is what the ask is priced with.
+            'price_promo_in_effect': (dict(price_promo_in_effect)
+                                      if price_promo_in_effect is not None else None),
+            'promo_gate': promo_gate,
             'promo_since': price_promo['date_start'] if price_promo is not None else None,
             'promo_source': price_promo['source'] if price_promo is not None else None,
         },

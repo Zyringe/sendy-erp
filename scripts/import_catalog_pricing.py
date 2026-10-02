@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -41,6 +42,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "inventory_app"))
 import bsn_units  # noqa: E402  (needs sys.path above)
+import price_lookup  # noqa: E402
 from models import promotions as promo_models  # noqa: E402
 
 
@@ -56,7 +58,7 @@ class RunAbort(Exception):
 _IDENTITY_FIELDS = (
     "promo_type", "discount_value", "bundle_buy", "bundle_free",
     "bundle_unit", "bundle_condition", "bundle_tiers_json",
-    "gift_desc", "gift_qty",
+    "gift_desc", "gift_qty", "min_qty", "min_qty_unit",
 )
 
 
@@ -206,6 +208,7 @@ def _promo_intents_from_row(row: dict, batch_date: str) -> list:
             "bundle_unit": None, "bundle_condition": None,
             "bundle_tiers_json": None,
             "gift_desc": None, "gift_qty": None,
+            "min_qty": None, "min_qty_unit": None,
             "promo_name": f"catalog {batch_date} (special_price)",
         })
 
@@ -221,10 +224,70 @@ def _promo_intents_from_row(row: dict, batch_date: str) -> list:
             "bundle_tiers_json": row.get("bundle_tiers_json", "").strip() or None,
             "gift_desc": row.get("gift_desc", "").strip() or None,
             "gift_qty": row.get("gift_qty", "").strip() or None,
+            "min_qty": None, "min_qty_unit": None,
             "promo_name": f"catalog {batch_date} (promo)",
         })
 
+    # #673: the row's minimum belongs to its PRICE intent (one per row, B4),
+    # and only to one with no buy-N / gift terms (the mig 199 CHECK).
+    # _check_minimum refuses a minimum that finds no such intent.
+    min_qty = to_float(row.get("min_qty", ""))
+    min_unit = (row.get("min_qty_unit") or "").strip() or None
+    for it in intents:
+        if _takes_minimum(it):
+            it["min_qty"], it["min_qty_unit"] = min_qty, min_unit
     return intents
+
+
+def _takes_minimum(intent):
+    """Can this promo intent carry a minimum quantity? (#673, mig 199 CHECK:
+    a price effect and no bundle_buy / gift_desc on the same row.)"""
+    return (promo_models.affects_price(intent) and intent["bundle_buy"] is None
+            and not intent["gift_desc"])
+
+
+def _check_minimum_units(conn, ops):
+    """RunAbort when an inserted promo's minimum unit has no ratio for its
+    product (#673). Runs inside the import transaction AFTER _execute_ops, so
+    the file's own tiers and the DB state the resolver will read are both
+    there; the caller rolls everything back on the abort."""
+    for pid, full in ops["promo_insert"]:
+        if full.get("min_qty_unit") is None:
+            continue
+        unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
+                                 (pid,)).fetchone()["unit_type"]
+        problem = price_lookup.min_qty_unit_problem(conn, pid, unit_type, full["min_qty_unit"])
+        if problem:
+            raise RunAbort(f"product {pid}: {problem}")
+
+
+def _check_minimum(product_id, row, intents):
+    """RunAbort on a minimum the DB would refuse, or one the resolver could
+    only fail closed on (#673). Called per row before reconciliation."""
+    raw_qty = (row.get("min_qty") or "").strip()
+    raw_unit = (row.get("min_qty_unit") or "").strip()
+    if bool(raw_qty) != bool(raw_unit):
+        raise RunAbort(
+            f"product {product_id}: min_qty and min_qty_unit go together "
+            f"(got {raw_qty!r} / {raw_unit!r}) — ขั้นต่ำต้องมีทั้งจำนวนและหน่วย")
+    if raw_qty:
+        qty = to_float(raw_qty)
+        if qty is None or not math.isfinite(qty) or qty <= 0:
+            raise RunAbort(f"product {product_id}: min_qty must be a number > 0, got {raw_qty!r}")
+        if not any(_takes_minimum(it) for it in intents):
+            raise RunAbort(
+                f"product {product_id}: min_qty {raw_qty} {raw_unit} but the row has no "
+                f"price promo to carry it — ขั้นต่ำใช้ได้กับโปรลดราคาเท่านั้น")
+        # The unit's ratio is judged after this file's tiers are written
+        # (_check_minimum_units): a '1 โหล' tier on the same row is what makes
+        # a 'โหล' minimum convertible on a product with no โหล row.
+    for it in intents:
+        if (it["bundle_condition"] and promo_models.affects_price(it)
+                and it["min_qty"] is None):
+            raise RunAbort(
+                f"product {product_id}: promo carries '{it['bundle_condition']}' but no "
+                f"min_qty — a label with no number cannot be enforced (Put 2026-10-02); "
+                f"add min_qty + min_qty_unit from the catalogue")
 
 
 def plan_writes_for_row(row: dict, current_base_sell_price: float, batch_date: str):
@@ -377,6 +440,18 @@ def _reconcile_promos(conn, product_id, intents, batch_date):
             )
         touched.append((occ, occ_price, occ_qty))
 
+    # #673: replacing a gated price occupant with an ungated intent would
+    # silently drop the minimum (the discount would apply to one piece).
+    price_intent_min = [it["min_qty"] for it in intents if it["_price"]]
+    for occ, occ_price, _occ_qty in touched:
+        if occ_price and occ["min_qty"] is not None and not any(
+                m is not None for m in price_intent_min):
+            raise RunAbort(
+                f"product {product_id}: promo {occ['id']} has a minimum "
+                f"({occ['min_qty']:g} {occ['min_qty_unit']}) and this row's price promo "
+                f"has none — a re-import would wipe the ขั้นต่ำ. Put min_qty + "
+                f"min_qty_unit in the file.")
+
     # Match each intent to an occupant that exactly matches its slot-set AND
     # its offer identity → preserved (no write for either side).
     preserved_intent_idx = set()
@@ -423,7 +498,7 @@ def _reconcile_promos(conn, product_id, intents, batch_date):
 # Column names in the catalog CSV that carry a หน่วย. `bundle_unit` is a bare
 # unit; the tier labels are a COUNT plus a unit ('1 โหล'), and only the unit
 # part of those is translated — the count is the tier's identity.
-_UNIT_COLUMNS = ("bundle_unit",)
+_UNIT_COLUMNS = ("bundle_unit", "min_qty_unit")
 _TIER_LABEL_COLUMNS = ("tier1_qty_label", "tier2_qty_label")
 
 
@@ -509,6 +584,7 @@ def _build_ops(conn, rows_all, batch_date, limit):
         # qty_label). A spelling the map does not know is left as written.
         r = _translate_units(conn, r)
         plan = plan_writes_for_row(r, current_base, batch_date)
+        _check_minimum(pid, r, plan["promo_intents"])
 
         if plan["update_base"] is not None:
             ops["base"].append((pid, plan["update_base"][0]))
@@ -558,12 +634,12 @@ def _execute_ops(conn, ops):
                 product_id, promo_name, promo_type, discount_value,
                 date_start, date_end, source,
                 bundle_buy, bundle_free, bundle_unit, bundle_condition,
-                bundle_tiers_json, gift_desc, gift_qty
+                bundle_tiers_json, gift_desc, gift_qty, min_qty, min_qty_unit
             ) VALUES (
                 :product_id, :promo_name, :promo_type, :discount_value,
                 :date_start, :date_end, :source,
                 :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
-                :bundle_tiers_json, :gift_desc, :gift_qty
+                :bundle_tiers_json, :gift_desc, :gift_qty, :min_qty, :min_qty_unit
             )
         """, {**full, "product_id": pid})
         inserted_promo_ids.append(cur.lastrowid)
@@ -723,6 +799,7 @@ def run_import(csv_path: Path, db_path: Path, commit: bool, limit: Optional[int]
 
         # Pass 2 — execute, then verify by re-read in the SAME transaction.
         inserted_promo_ids = _execute_ops(conn, ops)
+        _check_minimum_units(conn, ops)
         _assert_invariants(conn, ops, inserted_promo_ids)
 
         mode = "COMMIT" if commit else "DRY RUN"

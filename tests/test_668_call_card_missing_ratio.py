@@ -51,25 +51,23 @@ def _row(conn, unit, ratios=(), promo=None):
 def test_unit_with_no_usable_ratio_has_no_price(conn, ratios):
     p = _row(conn, 'กล่อง', ratios, promo=8)
     assert p['base'] is None
-    assert p['customer_price'] is None
     assert p['ratio_missing'] is True
 
 
 def test_variant_spelling_reads_its_word_row(conn):
     p = _row(conn, 'หล', [('โหล', 12.0)], promo=8)
-    assert (p['base'], p['customer_price'], p['ratio_missing']) == (1200.0, 96.0, False)
+    assert (p['base'], p['ratio_missing']) == (1200.0, False)
 
 
 def test_base_unit_with_surrounding_spaces_is_the_base_unit(conn):
     p = _row(conn, ' ตัว ', [], promo=8)
-    assert (p['base'], p['customer_price'], p['ratio_missing']) == (100.0, 8.0, False)
+    assert (p['base'], p['ratio_missing']) == (100.0, False)
 
 
-@pytest.mark.parametrize('unit,want', [('โหล', (1200.0, 96.0)), ('', (100.0, 8.0)),
-                                       ('ตัว', (100.0, 8.0))])
+@pytest.mark.parametrize('unit,want', [('โหล', (1200.0,)), ('', (100.0,)), ('ตัว', (100.0,))])
 def test_converted_rows_are_unchanged(conn, unit, want):
     p = _row(conn, unit, [('โหล', 12.0)], promo=8)
-    assert (p['base'], p['customer_price'], p['ratio_missing']) == want + (False,)
+    assert (p['base'], p['ratio_missing']) == want + (False,)
 
 
 def test_rendered_card_says_no_ratio_instead_of_the_base_price(conn):

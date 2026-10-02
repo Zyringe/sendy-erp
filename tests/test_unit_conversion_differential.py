@@ -58,7 +58,22 @@ def _old(path, name, package=None):
         mod.__package__ = package
     sys.modules[name] = mod
     exec(compile(src, f'{BASELINE}:{path}', 'exec'), mod.__dict__)
+    if 'promo_models' in mod.__dict__:
+        mod.promo_models = _baseline_promo_models()
     return mod
+
+
+def _baseline_promo_models():
+    """models.promotions as the baseline called it. #673 made promo_price's
+    quantity keywords required; the baseline passes three arguments. The world
+    below holds no promo with a minimum, so the baseline's call IS the
+    no-quantity call (qty_pieces=None): the gate answers 'none' every time."""
+    import types
+    from models import promotions as current
+    shim = types.SimpleNamespace(**vars(current))
+    shim.promo_price = lambda list_for_unit, ratio, promo: current.promo_price(
+        list_for_unit, ratio, promo, qty_pieces=None, min_pieces=None)
+    return shim
 
 
 def _call(fn, *args):
@@ -153,6 +168,16 @@ def test_resolve_and_bundle(world):
                     == _call(price_lookup._bundle_buy_ratio, conn, pid, u, ut)), (pid, u)
 
 
+def _without_673_keys(out):
+    """#673 added two keys to `list`. The world holds no promo with a minimum,
+    so they must say exactly that (gate 'none', the promo in effect IS the
+    promo offered); then they are dropped so the rest compares by repr."""
+    lst = out['list']
+    assert lst.pop('promo_gate') == 'none'
+    assert lst.pop('price_promo_in_effect') == lst['price_promo']
+    return out
+
+
 def test_resolve_price_end_to_end(world):
     conn, products = world
     old = _old('inventory_app/price_lookup.py', '_old_price_lookup')
@@ -161,7 +186,7 @@ def test_resolve_price_end_to_end(world):
         for u in [None, 'โหล', 'หล', 'กุรุส', 'แผง']:
             for cust in (None, 'ร้านทดสอบ'):
                 args = dict(product_id=pid, customer_code=cust, unit=u, qty=2, today='2026-09-29')
-                got = _call(lambda: price_lookup.resolve_price(conn, **args))
+                got = _call(lambda: _without_673_keys(price_lookup.resolve_price(conn, **args)))
                 want = _call(lambda: old.resolve_price(conn, **args))
                 if want == 'raises ZeroDivisionError' and not got.startswith('raises'):
                     fixed_716 += 1
@@ -256,8 +281,16 @@ def _exact_row(conn, pid, unit):
 def test_call_card(world):
     conn, products = world
     old = _old('inventory_app/call_card.py', '_old_call_card')
-    got_old = {(p['product_id'], p['unit']): p for p in
-               old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
+    # The baseline card imports the CURRENT price_lookup and calls
+    # apply_price_promo with three arguments; see _baseline_promo_models.
+    with pytest.MonkeyPatch.context() as mp:
+        from models import promotions as current_promos
+        mp.setattr(price_lookup, 'apply_price_promo',
+                   lambda list_for_unit, ratio, promo: current_promos.promo_price(
+                       list_for_unit, ratio, promo, qty_pieces=None, min_pieces=None),
+                   raising=False)   # #673 removed the pass-through the baseline calls
+        got_old = {(p['product_id'], p['unit']): p for p in
+                   old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
     got_new = {(p['product_id'], p['unit']): p for p in
                call_card._assemble_products(conn, 'ร้านทดสอบ', None, today='2026-09-29')}
     shared = sorted(set(got_old) & set(got_new), key=repr)
@@ -265,7 +298,8 @@ def test_call_card(world):
     seen = {'same ratio': 0, 'new ratio': 0, 'miss': 0}
     for k in shared:
         old_p, new_p = got_old[k], got_new[k]
-        assert new_p.keys() == old_p.keys() | {'ratio_missing'}, k
+        # #673 dropped the never-rendered `customer_price`.
+        assert new_p.keys() == (old_p.keys() - {'customer_price'}) | {'ratio_missing'}, k
         for f in sorted(old_p.keys() - CARD_C_FIELDS - CARD_668_FIELDS):
             assert repr(old_p[f]) == repr(new_p[f]), (k, f)
         # #668: the price fields may move only where the ratio itself moved.
@@ -276,12 +310,11 @@ def test_call_card(world):
         bsp = conn.execute("SELECT base_sell_price FROM products WHERE id = ?", (pid,)).fetchone()[0]
         if new_r is None:
             seen['miss'] += 1
-            assert (new_p['base'], new_p['customer_price'], new_p['ratio_missing']) == (None, None, True), k
+            assert (new_p['base'], new_p['ratio_missing']) == (None, True), k
         elif new_r == old_r:
             seen['same ratio'] += 1
             assert new_p['ratio_missing'] is False, k
-            for f in ('base', 'customer_price'):
-                assert repr(old_p[f]) == repr(new_p[f]), (k, f)
+            assert repr(old_p['base']) == repr(new_p['base']), k
         else:
             seen['new ratio'] += 1
             assert new_p['ratio_missing'] is False, k

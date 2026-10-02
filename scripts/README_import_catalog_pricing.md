@@ -60,6 +60,18 @@ product/row/promo IDs, and exits non-zero. Never skip-a-row-and-continue.
 All reads and writes happen inside one `BEGIN IMMEDIATE` transaction. Any
 failure rolls back everything; dry-run always rolls back.
 
+## Minimum quantity (`min_qty`, `min_qty_unit`, #673)
+
+Optional columns. The minimum belongs to the row's price promo (special
+price, or a percent/fixed/mixed-with-discount promo with no buy-N / gift
+terms); `min_qty_unit` is read through the unit map like `bundle_unit`, and
+both are part of the offer identity. The run aborts when: one column is set
+without the other or the number is not > 0; the row has no price promo to
+carry it; the unit has no ratio for that product (the message lists the
+units that do); a price promo carries `bundle_condition` (ยกลัง/ยกล่อง) with
+no minimum; or a live price promo already has a minimum and the row's price
+promo has none (a re-import would otherwise wipe it).
+
 ## Promo-name labels
 
 INSERTed promo rows carry a `promo_name` derived from `--batch-date` (cosmetic

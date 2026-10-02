@@ -2,7 +2,7 @@
 
 Three modules answered "what does this promo do to the price?" differently for a
 `mixed` row: models.promotions.effective_price ignored it, price_lookup.apply_price_promo
-applied discount_value as a percent, review_rules._promo_expected_per_base_unit skipped it.
+applied discount_value as a percent, review_rules' R5 helper skipped it.
 Measured on PROD 2026-09-08: 28 active `mixed` rows, 27 carrying a percent, all own-brand,
 so /products/<id> showed a price 10-20% above the one the quote resolver gave the customer.
 
@@ -42,7 +42,7 @@ pl = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(pl)
 assert pl.__file__.endswith(_os.path.join('inventory_app', 'price_lookup.py')), (
     f'wrong price_lookup loaded: {pl.__file__}')
-assert hasattr(pl, 'apply_price_promo'), 'control: the resolver must expose apply_price_promo'
+assert hasattr(pl, 'resolve_price'), 'control: the resolver must expose resolve_price'
 
 from models import promotions as promo_models
 import review_rules
@@ -57,6 +57,7 @@ def _promo(promo_type, discount_value=None, bundle_buy=None, bundle_free=None,
         'promo_type': promo_type, 'discount_value': discount_value,
         'bundle_buy': bundle_buy, 'bundle_free': bundle_free,
         'gift_desc': gift_desc, 'gift_qty': gift_qty,
+        'min_qty': None, 'min_qty_unit': None, 'bundle_condition': None,   # no minimum (#673)
     }
 
 
@@ -102,16 +103,8 @@ CASES = [
 
 @pytest.mark.parametrize('promo,list_for_unit,ratio,expected', CASES)
 def test_promo_price_is_the_one_implementation(promo, list_for_unit, ratio, expected):
-    assert promo_models.promo_price(list_for_unit, ratio, promo) == expected
-
-
-def test_apply_price_promo_delegates_and_cannot_drift():
-    """price_lookup's public entry point must return exactly what the owner returns,
-    for every case — this is the guard that stops the two copies diverging again."""
-    assert len(CASES) == 9, 'the agreement matrix must cover every promo_type'
-    for promo, list_for_unit, ratio, expected in CASES:
-        assert pl.apply_price_promo(list_for_unit, ratio, promo) == \
-            promo_models.promo_price(list_for_unit, ratio, promo)
+    assert promo_models.promo_price(list_for_unit, ratio, promo,
+                                    qty_pieces=1, min_pieces=None) == expected
 
 
 # ── B · the Python predicate and the SQL predicate must agree ────────────────
@@ -184,30 +177,50 @@ def test_effective_price_no_promo_is_base(tmp_db_conn, product):
 
 # ── D · review_rules R5 ──────────────────────────────────────────────────────
 
-def test_r5_expects_a_price_for_a_mixed_row_with_a_percent():
+# _promo_expected_per_base_unit was folded into review_rules._r5_flags (#673 fix
+# round: R5 prices from the sold unit's canonical list), so these drive R5 itself.
+
+def _r5_on(conn, pid, unit_price):
+    line = {'product_id': pid, 'unit': 'ตัว', 'unit_price': unit_price, 'qty': 1,
+            'net': unit_price, 'total': unit_price, 'bsn_code': 'X', 'product_name_raw': 'x',
+            'ref_invoice': '', 'date_iso': '2026-10-01', 'customer_code': 'TSTC3',
+            'doc_no': 'IVC3-1', 'doc_base': 'IVC3'}
+    return [f for f in review_rules._check_row_rules(conn, line)
+            if f['rule_code'] == 'R5_PROMO_MISMATCH']
+
+
+@pytest.fixture
+def r5_product(tmp_db_conn):
+    pid = tmp_db_conn.execute(
+        "INSERT INTO products (product_name, unit_type, base_sell_price, cost_price, is_active) "
+        "VALUES ('TEST card3 r5', 'ตัว', 90, 10, 1)").lastrowid
+    tmp_db_conn.commit()
+    return pid
+
+
+def test_r5_expects_a_price_for_a_mixed_row_with_a_percent(tmp_db_conn, r5_product):
     """R5_PROMO_MISMATCH skipped every mixed row, so 27 own-brand products were
     exempt from the bill-review price check."""
-    got = review_rules._promo_expected_per_base_unit(
-        {'base_sell_price': 90.00},
-        _promo('mixed', 20.0, bundle_buy=12, bundle_free=1))
-    assert got == 72.00
+    _add_promo(tmp_db_conn, r5_product, 'mixed', discount_value=20.0, bundle_buy=12,
+               bundle_free=1)
+    assert len(_r5_on(tmp_db_conn, r5_product, 90.0)) == 1     # at list: flagged
+    assert _r5_on(tmp_db_conn, r5_product, 72.0) == []         # at 90 − 20%: clean
 
 
-def test_r5_skips_a_mixed_row_with_no_percent():
-    assert review_rules._promo_expected_per_base_unit(
-        {'base_sell_price': 90.00},
-        _promo('mixed', None, bundle_buy=12, bundle_free=1)) is None
+def test_r5_skips_a_mixed_row_with_no_percent(tmp_db_conn, r5_product):
+    _add_promo(tmp_db_conn, r5_product, 'mixed', bundle_buy=12, bundle_free=1)
+    assert _r5_on(tmp_db_conn, r5_product, 90.0) == []
 
 
-def test_r5_skips_bundle_and_gift():
-    for p in (_promo('bundle', None, bundle_buy=1, bundle_free=1),
-              _promo('gift', None, gift_desc='x', gift_qty='1')):
-        assert review_rules._promo_expected_per_base_unit(
-            {'base_sell_price': 90.00}, p) is None
+@pytest.mark.parametrize('kw', [dict(promo_type='bundle', bundle_buy=1, bundle_free=1),
+                                dict(promo_type='gift', gift_desc='x', gift_qty='1')])
+def test_r5_skips_bundle_and_gift(tmp_db_conn, r5_product, kw):
+    _add_promo(tmp_db_conn, r5_product, kw.pop('promo_type'), **kw)
+    assert _r5_on(tmp_db_conn, r5_product, 90.0) == []
 
 
-def test_r5_percent_and_fixed_unchanged():
-    assert review_rules._promo_expected_per_base_unit(
-        {'base_sell_price': 90.00}, _promo('percent', 10.0)) == 81.00
-    assert review_rules._promo_expected_per_base_unit(
-        {'base_sell_price': 90.00}, _promo('fixed', 45.0)) == 45.00
+@pytest.mark.parametrize('ptype,value,expected', [('percent', 10.0, 81.0), ('fixed', 45.0, 45.0)])
+def test_r5_percent_and_fixed_unchanged(tmp_db_conn, r5_product, ptype, value, expected):
+    _add_promo(tmp_db_conn, r5_product, ptype, discount_value=value)
+    assert _r5_on(tmp_db_conn, r5_product, expected) == []
+    assert len(_r5_on(tmp_db_conn, r5_product, 90.0)) == 1

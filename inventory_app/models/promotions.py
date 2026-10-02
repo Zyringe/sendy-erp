@@ -70,10 +70,48 @@ def affects_price(promo) -> bool:
     return False
 
 
-def promo_price(list_for_unit, ratio, promo):
+# promo_gate statuses under which a price promo's effect applies (#673).
+GATE_APPLIES = ('none', 'met')
+
+
+def promo_gate(promo, *, qty_pieces, min_pieces):
+    """Does `promo`'s minimum quantity (#673, mig 199) let its price effect
+    apply to this ask? Pure — the caller measures both sides first with
+    price_lookup.promo_min_measure (price_lookup.measure_ratio, the one
+    measurement contract), so `qty_pieces` and `min_pieces` are in ONE measure.
+    Sites with a connection call price_lookup.gate_for_ask.
+
+      'none'          no minimum (or no price effect at all): applies
+      'met'           asked >= minimum, compared at 4 dp: applies to the WHOLE line
+      'not_met'       asked < minimum
+      'unconvertible' the minimum's unit has no ratio for this product
+      'qty_unknown'   no quantity, or the asked unit has no ratio
+      'missing'       a ยกลัง/ยกล่อง label with no number (Put 2026-10-02: never a
+                      valid gated promo; fail closed)
+
+    Only GATE_APPLIES lets promo_price apply the promo; every other status
+    answers the list price. Never degrades an unknown ratio to 1."""
+    if promo is None or not affects_price(promo):
+        return 'none'
+    if promo['min_qty'] is None:
+        return 'missing' if promo['bundle_condition'] else 'none'
+    if min_pieces is None:
+        return 'unconvertible'
+    if qty_pieces is None:
+        return 'qty_unknown'
+    return 'met' if round(qty_pieces, 4) >= round(min_pieces, 4) else 'not_met'
+
+
+def promo_price(list_for_unit, ratio, promo, *, qty_pieces, min_pieces):
     """THE promo→price application for the whole app. Given a list price for
     some unit and that unit's piece-ratio, return the price after `promo`.
 
+    `qty_pieces` / `min_pieces` are REQUIRED keywords (#673): a call site that
+    never thought about quantity is a TypeError, not a silent discount. They go
+    to promo_gate; a caller with no quantity passes None and a gated promo
+    answers the list.
+
+      - a gated promo whose gate is not GATE_APPLIES → list_for_unit unchanged
       - no promo, or a promo with no price effect (bundle / gift, and a mixed
         row carrying only deal terms) → list_for_unit unchanged
       - 'fixed' → discount_value × ratio (fixed IS the final per-PIECE price).
@@ -83,10 +121,21 @@ def promo_price(list_for_unit, ratio, promo):
       - 'percent', and a 'mixed' row carrying a discount_value → list ×
         (1 − d/100), rounded 2dp. This branch never needs `ratio`.
 
-    Was price_lookup.apply_price_promo, which now delegates here; it lives in
-    this module so models.effective_price and review_rules can reach it
-    without importing upward into price_lookup. Pure — no DB.
+    Pure — no DB. models.effective_price is the one caller that cannot import
+    price_lookup (models sits under it); every other caller reaches it
+    directly (#673 removed price_lookup.apply_price_promo, a pass-through).
     """
+    if promo is None:
+        return list_for_unit
+    if promo_gate(promo, qty_pieces=qty_pieces, min_pieces=min_pieces) not in GATE_APPLIES:
+        return list_for_unit
+    return promo_price_if_met(list_for_unit, ratio, promo)
+
+
+def promo_price_if_met(list_for_unit, ratio, promo):
+    """The price `promo` WOULD give if its minimum were met — the ungated math
+    promo_price applies once the gate allows it. For detection/display only
+    (R5's "discount given below the minimum"); never a quote."""
     if promo is None:
         return list_for_unit
     if promo['promo_type'] == 'fixed':
@@ -118,6 +167,8 @@ def effective_price(product, conn=None) -> float:
     Now: select the price-slot promo, then hand it to promo_price(). Both
     steps are the app's single definition, shared with price_lookup and the
     mig-177 trigger.
+
+    No quantity here (#673): a promo with a minimum is not this price.
     """
     owned = conn is None
     if owned:
@@ -125,10 +176,47 @@ def effective_price(product, conn=None) -> float:
     try:
         price_promo, _qty_promo = get_active_promos_by_class(
             product['id'], date.today().isoformat(), conn)
-        return promo_price(product['base_sell_price'], 1.0, price_promo)
+        return promo_price(product['base_sell_price'], 1.0, price_promo,
+                           qty_pieces=None, min_pieces=None)
     finally:
         if owned:
             conn.close()
+
+
+def min_qty_problem(conn, product_id, data):
+    """Why `data`'s minimum quantity (#673, mig 199) cannot be saved on this
+    product, or None. Every promotion writer asks this first (#673 fix round:
+    the route was the only gate). The DB CHECK is the final gate; this names
+    the problem and refuses what the CHECK cannot see: a unit with no ratio
+    for this product, and a ยกลัง/ยกล่อง label with no number (Put 2026-10-02).
+    """
+    import math
+    import price_lookup   # here, not at module level: price_lookup imports this module
+    # validate the word create/replace will STORE, not the raw spelling typed:
+    # 'หล' with its own row could pass while the stored 'โหล' cannot be measured
+    raw_unit = (data.get('min_qty_unit') or '').strip()
+    min_qty = data.get('min_qty')
+    min_unit = bsn_units.normalize_unit(raw_unit, conn=conn) if raw_unit else None
+    shaped = {'promo_type': data.get('promo_type'), 'discount_value': data.get('discount_value')}
+    if min_qty is None and min_unit is None:
+        if data.get('bundle_condition') and affects_price(shaped):
+            return (f'เงื่อนไข "{data["bundle_condition"]}" ต้องระบุจำนวนขั้นต่ำ '
+                    f'(จำนวน + หน่วย) ไม่อย่างนั้นระบบใช้โปรนี้ไม่ได้')
+        return None
+    if min_qty is None or min_unit is None:
+        return 'ระบุจำนวนขั้นต่ำและหน่วยให้ครบทั้งคู่ (หรือเว้นว่างทั้งคู่)'
+    try:
+        min_qty = float(min_qty)
+    except (TypeError, ValueError):
+        return 'จำนวนขั้นต่ำต้องเป็นตัวเลข'
+    if not (math.isfinite(min_qty) and min_qty > 0):
+        return 'จำนวนขั้นต่ำต้องมากกว่า 0'
+    if not affects_price(shaped) or data.get('bundle_buy') is not None or data.get('gift_desc'):
+        return 'จำนวนขั้นต่ำใช้ได้กับโปรลดราคาเท่านั้น (ลด % / ราคาพิเศษ) ไม่ใช้กับโปรแถม'
+    row = conn.execute("SELECT unit_type FROM products WHERE id = ?", (product_id,)).fetchone()
+    if row is None:
+        return None   # the products FK refuses the insert anyway
+    return price_lookup.min_qty_unit_problem(conn, product_id, row['unit_type'], min_unit)
 
 
 def create_promotion(data: dict) -> int:
@@ -139,9 +227,15 @@ def create_promotion(data: dict) -> int:
     Required keys: product_id, promo_name, promo_type.
     Optional: discount_value, date_start, date_end, bundle_buy, bundle_free,
               bundle_unit, bundle_condition, bundle_tiers_json,
-              gift_desc, gift_qty.
+              gift_desc, gift_qty, min_qty, min_qty_unit (#673; the unit is
+              stored as its หน่วย word, like bundle_unit). An invalid
+              minimum raises ValueError (min_qty_problem) before any write.
     """
     conn = get_connection()
+    problem = min_qty_problem(conn, data["product_id"], data)
+    if problem:
+        conn.close()
+        raise ValueError(problem)
     full = {
         "product_id":        data["product_id"],
         "promo_name":        data["promo_name"],
@@ -157,6 +251,9 @@ def create_promotion(data: dict) -> int:
         "bundle_tiers_json": data.get("bundle_tiers_json"),
         "gift_desc":         data.get("gift_desc"),
         "gift_qty":          data.get("gift_qty"),
+        "min_qty":           data.get("min_qty"),
+        "min_qty_unit":      bsn_units.normalize_unit(
+            (data.get("min_qty_unit") or "").strip(), conn=conn) or None,
     }
     try:
         cur = conn.execute("""
@@ -164,12 +261,12 @@ def create_promotion(data: dict) -> int:
                 product_id, promo_name, promo_type, discount_value,
                 date_start, date_end,
                 bundle_buy, bundle_free, bundle_unit, bundle_condition,
-                bundle_tiers_json, gift_desc, gift_qty
+                bundle_tiers_json, gift_desc, gift_qty, min_qty, min_qty_unit
             ) VALUES (
                 :product_id, :promo_name, :promo_type, :discount_value,
                 :date_start, :date_end,
                 :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
-                :bundle_tiers_json, :gift_desc, :gift_qty
+                :bundle_tiers_json, :gift_desc, :gift_qty, :min_qty, :min_qty_unit
             )
         """, full)
         conn.commit()
@@ -324,6 +421,10 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
             return False, 'ไม่สามารถตั้งวันเริ่มโปรย้อนหลังได้ (การย้อนวันจะเขียนทับหลักฐานราคาที่ผ่านมา)', None
         new_end = data.get('date_end')
 
+        problem = min_qty_problem(conn, product_id, data)
+        if problem:
+            return False, problem, None
+
         occupies_price, occupies_qty = promo_slots_for(
             conn, data['promo_type'], data.get('discount_value'),
             data.get('bundle_buy'), data.get('gift_desc'))
@@ -374,6 +475,9 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
                 "bundle_tiers_json": data.get("bundle_tiers_json"),
                 "gift_desc":         data.get("gift_desc"),
                 "gift_qty":          data.get("gift_qty"),
+                "min_qty":           data.get("min_qty"),
+                "min_qty_unit":      bsn_units.normalize_unit(
+                    (data.get("min_qty_unit") or "").strip(), conn=conn) or None,
                 "source":            "manual",
             }
             cur = conn.execute("""
@@ -381,12 +485,13 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
                     product_id, promo_name, promo_type, discount_value,
                     date_start, date_end,
                     bundle_buy, bundle_free, bundle_unit, bundle_condition,
-                    bundle_tiers_json, gift_desc, gift_qty, source
+                    bundle_tiers_json, gift_desc, gift_qty, min_qty, min_qty_unit, source
                 ) VALUES (
                     :product_id, :promo_name, :promo_type, :discount_value,
                     :date_start, :date_end,
                     :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
-                    :bundle_tiers_json, :gift_desc, :gift_qty, :source
+                    :bundle_tiers_json, :gift_desc, :gift_qty, :min_qty, :min_qty_unit,
+                    :source
                 )
             """, full)
             new_id = cur.lastrowid

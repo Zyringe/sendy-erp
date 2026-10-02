@@ -31,6 +31,7 @@ import statistics
 from typing import Optional, List
 
 import config
+import price_lookup
 import unit_conversion
 from models import promotions as promo_models
 
@@ -95,35 +96,18 @@ def _get_ratio(conn, product_id: int, bsn_unit: str, unit_type: str):
 # ── Promo helper (date-parameterized, NOT get_active_promotion()) ─────────────
 
 def _get_active_promo_on_date(conn, product_id: int, date_iso: str):
-    """Return the most recent active promo for product on date_iso.
+    """The PRICE-slot promo active for product on date_iso, or None.
 
-    Mirrors get_active_promotion() semantics but uses date_iso instead of
-    today — R5 must check historical data, not the current catalog state.
+    R5 checks historical data, so it asks for date_iso rather than today. It
+    reads the same slot-aware selection the resolver uses
+    (promo_models.get_active_promos_by_class): until #673 this took the newest
+    row of ANY type, so a later bundle/gift promo hid an earlier percent one
+    and R5 never checked the discount (behaviour change, its own commit).
+    SELECT * carries min_qty / min_qty_unit / bundle_condition for the gate.
     """
-    return conn.execute("""
-        SELECT id, promo_name, promo_type, discount_value
-        FROM promotions
-        WHERE product_id = ? AND is_active = 1
-          AND (date_start IS NULL OR date_start <= ?)
-          AND (date_end   IS NULL OR date_end   >= ?)
-        ORDER BY id DESC
-        LIMIT 1
-    """, (product_id, date_iso, date_iso)).fetchone()
-
-
-def _promo_expected_per_base_unit(product, promo) -> Optional[float]:
-    """Expected per-base-unit price under `promo`, or None when the promo has
-    no price effect at all (bundle / gift, and a mixed row carrying only deal
-    terms) — R5's caller reads None as "nothing to check".
-
-    ⚠ Until 2026-09-09 this skipped every `mixed` row, which exempted 27
-    own-brand products from R5_PROMO_MISMATCH even though their mixed rows
-    carry a real percent. It now asks models.promotions, the one owner of both
-    questions, instead of re-typing the branches (card 3).
-    """
-    if not promo_models.affects_price(promo):
-        return None
-    return promo_models.promo_price(product['base_sell_price'], 1.0, promo)
+    price_promo, _qty_promo = promo_models.get_active_promos_by_class(
+        product_id, date_iso, conn)
+    return price_promo
 
 
 # ── R3 median helpers ─────────────────────────────────────────────────────────
@@ -493,7 +477,6 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     unit_price = float(row.get('unit_price') or 0)
     qty = float(row.get('qty') or 0)
     net = float(row.get('net') or 0)
-    total = float(row.get('total') or 0)
     bsn_code = row.get('bsn_code') or ''
     raw_name = row.get('product_name_raw') or ''
     ref_invoice = row.get('ref_invoice') or ''
@@ -551,9 +534,12 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
                 'unit_sold': unit, 'unit_type': unit_type,
             }, ensure_ascii=False),
         })
-        # No ratio → R2/R5 cannot compute accurate per-base-unit price
+        # No exact ratio → R2 cannot compute a per-base-unit price. R5 measures
+        # the line through price_lookup.measure_ratio (#673: a tier-implied
+        # dozen still has a list and a promo); it skips a unit it cannot price.
         # Still run R3 (uses unit_price directly, no ratio)
         if not skip_price:
+            flags.extend(_r5_flags(conn, product_id, unit_type, base_sell_price, row))
             med, src = _r3_history(conn, doc_base, product_id, unit,
                                    customer_code or None, date_iso)
             if med is not None and med > 0:
@@ -635,55 +621,109 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
 
     # ── R5_PROMO_MISMATCH ────────────────────────────────────────────────────
     if not skip_price:
-        promo = _get_active_promo_on_date(conn, product_id, date_iso)
-        if promo is not None:
-            expected_per_base = _promo_expected_per_base_unit(
-                {'base_sell_price': base_sell_price}, promo
-            )
-            if expected_per_base is not None:
-                # What the customer was charged per sold unit: after the LINE
-                # discount (the usual way a promo is keyed), before the doc-level
-                # cash discount (a payment term, not the promo). Raw unit_price
-                # misses the line discount; net/qty adds the 2% cash discount,
-                # past R5_TOLERANCE (#475). qty > 0 here: skip_price covers <= 0.
-                line_price = total / qty
-                # Scale expected to the sold unit
-                expected_per_sold = expected_per_base * ratio
-                # Check if sold at base_sell_price × ratio (not applying promo)
-                base_per_sold = base_sell_price * ratio
-                sold_at_full_price = abs(line_price - base_per_sold) / (base_per_sold or 1) <= R5_TOLERANCE
-
-                # Pass if within R5_TOLERANCE of expected promo price
-                within_promo = abs(line_price - expected_per_sold) / (expected_per_sold or 1) <= R5_TOLERANCE
-
-                # Pass if matches any price tier (a tier is a list price, so it
-                # is matched against the price as keyed)
-                tier_match = _matches_tier(conn, product_id, unit_price)
-
-                if not within_promo and not tier_match:
-                    if sold_at_full_price:
-                        msg = (
-                            f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
-                            f'แต่ขาย {line_price:.2f} — ไม่ได้ใช้โปร?'
-                        )
-                    else:
-                        msg = (
-                            f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
-                            f'แต่ขาย {line_price:.2f}'
-                        )
-                    flags.append({
-                        'rule_code': 'R5_PROMO_MISMATCH',
-                        'severity': 'medium',
-                        'message_th': msg,
-                        'details_json': json.dumps({
-                            'promo_name': promo['promo_name'],
-                            'promo_type': promo['promo_type'],
-                            'expected': round(expected_per_sold, 2),
-                            'observed': round(line_price, 2),
-                        }, ensure_ascii=False),
-                    })
+        flags.extend(_r5_flags(conn, product_id, unit_type, base_sell_price, row))
 
     return flags
+
+
+def _sold_unit_list(conn, product_id, unit_type, base_sell_price, unit):
+    """(list price for one `unit`, pieces per `unit`) the way the resolver
+    prices it: a tier answering that unit first, else base × ratio, the ratio
+    from price_lookup.measure_ratio (#673 fix round). (None, None) when the
+    unit cannot be priced."""
+    ratio = price_lookup.measure_ratio(conn, product_id, unit_type, unit)
+    word = price_lookup._unit_word(conn, unit) if unit else price_lookup._unit_word(conn, unit_type)
+    tier = price_lookup._find_matching_tier(conn, product_id, word) if word else None
+    if tier is not None:
+        return float(tier['price']), ratio
+    if ratio is None:
+        return None, None
+    return base_sell_price * ratio, ratio
+
+
+def _r5_flags(conn, product_id, unit_type, base_sell_price, row) -> List[dict]:
+    """R5_PROMO_MISMATCH for one priced line.
+
+    Expected prices come from the CANONICAL list of the sold unit
+    (_sold_unit_list: tier first, as the resolver). What the customer was
+    charged per sold unit: after the LINE discount (the usual way a promo is
+    keyed), before the doc-level cash discount (a payment term, not the
+    promo). Raw unit_price misses the line discount; net/qty adds the 2% cash
+    discount, past R5_TOLERANCE (#475).
+
+    #673: a promo with a minimum is measured on THIS line
+    (price_lookup.gate_for_ask). Below it the line is expected at list, and
+    ANY discount below list is flagged "ให้ส่วนลดโปรแต่ไม่ถึงขั้นต่ำ" — no tier
+    excuses it. At or above it (and for a promo with no minimum), as before:
+    a line at list says "ไม่ได้ใช้โปร?", a line priced at another tier passes.
+    """
+    unit = row.get('unit') or ''
+    qty = float(row.get('qty') or 0)
+    total = float(row.get('total') or 0)
+    unit_price = float(row.get('unit_price') or 0)
+    promo = _get_active_promo_on_date(conn, product_id, row.get('date_iso') or '')
+    if promo is None or not promo_models.affects_price(promo) or qty <= 0:
+        return []
+    list_per_sold, ratio = _sold_unit_list(conn, product_id, unit_type, base_sell_price, unit)
+    if not list_per_sold:
+        return []
+    line_price = total / qty
+    sold_at_full_price = abs(line_price - list_per_sold) / list_per_sold <= R5_TOLERANCE
+    gate = price_lookup.gate_for_ask(conn, product_id, unit_type, promo, qty, unit)
+
+    if gate not in promo_models.GATE_APPLIES:
+        if line_price < list_per_sold * (1 - R5_TOLERANCE):
+            if gate == 'missing':
+                why = f'{price_lookup.gate_text(gate)} ({promo["bundle_condition"]})'
+            elif gate == 'qty_unknown':
+                # the line HAS a quantity; its unit just has no piece ratio
+                why = (f'หน่วย{unit}นี้แปลงเป็นชิ้นไม่ได้ เทียบขั้นต่ำ '
+                       f'{promo["min_qty"]:g} {promo["min_qty_unit"]}ไม่ได้')
+            else:
+                why = f'{price_lookup.gate_text(gate)} {promo["min_qty"]:g} {promo["min_qty_unit"]}'
+            return [{
+                'rule_code': 'R5_PROMO_MISMATCH',
+                'severity': 'medium',
+                'message_th': (
+                    f'ให้ส่วนลดโปรแต่{why} — โปร "{promo["promo_name"]}" '
+                    f'ขาย {line_price:.2f} ราคาตั้ง {list_per_sold:.2f}'
+                ),
+                'details_json': json.dumps({
+                    'promo_name': promo['promo_name'],
+                    'promo_type': promo['promo_type'],
+                    'gate': gate,
+                    'min_qty': promo['min_qty'],
+                    'min_qty_unit': promo['min_qty_unit'],
+                    'expected': round(list_per_sold, 2),
+                    'observed': round(line_price, 2),
+                }, ensure_ascii=False),
+            }]
+        return []
+
+    expected_per_sold = promo_models.promo_price_if_met(list_per_sold, ratio, promo)
+    within_promo = abs(line_price - expected_per_sold) / (expected_per_sold or 1) <= R5_TOLERANCE
+    # Another tier's price (a quantity tier, not this unit's own list) is a
+    # list price too, matched against the price as keyed.
+    tier_match = (not sold_at_full_price) and _matches_tier(conn, product_id, unit_price)
+    if within_promo or tier_match:
+        return []
+    if sold_at_full_price:
+        msg = (f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
+               f'แต่ขาย {line_price:.2f} — ไม่ได้ใช้โปร?')
+    else:
+        msg = (f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
+               f'แต่ขาย {line_price:.2f}')
+    return [{
+        'rule_code': 'R5_PROMO_MISMATCH',
+        'severity': 'medium',
+        'message_th': msg,
+        'details_json': json.dumps({
+            'promo_name': promo['promo_name'],
+            'promo_type': promo['promo_type'],
+            'expected': round(expected_per_sold, 2),
+            'observed': round(line_price, 2),
+        }, ensure_ascii=False),
+    }]
 
 
 def _matches_tier(conn, product_id: int, unit_price: float) -> bool:

@@ -193,14 +193,12 @@ def test_options_family(conn):
 
 # ── word (stripped): the call card (#668) ── exact: the quote CLI, the stock writer, review ──
 
-# unit -> (base, customer_price) with a fixed promo of ฿8 per piece. The card
-# reads the word family on the stripped unit (#668): ` ตัว` is the base unit,
-# `หล` and `กุรุส` find their word's row, and a unit with no usable ratio (a
-# ratio-0 row is none) carries no price at all.
-CALL_CARD = {None: (100.0, 8.0), '': (100.0, 8.0), 'ตัว': (100.0, 8.0),
-             ' ตัว': (100.0, 8.0), 'โหล': (1200.0, 96.0), 'หล': (1200.0, 96.0),
-             'กุรุส': (14400.0, 1152.0), 'กร': (14400.0, 1152.0), 'แผง': (None, None),
-             'กล่อง': (None, None)}
+# unit -> base (list price for the row's unit). The card reads the word family
+# on the stripped unit (#668): ` ตัว` is the base unit, `หล` and `กุรุส` find
+# their word's row, and a unit with no usable ratio (a ratio-0 row is none)
+# carries no price at all. (#673 removed the never-rendered promo price.)
+CALL_CARD = {None: 100.0, '': 100.0, 'ตัว': 100.0, ' ตัว': 100.0, 'โหล': 1200.0,
+             'หล': 1200.0, 'กุรุส': 14400.0, 'กร': 14400.0, 'แผง': None, 'กล่อง': None}
 
 
 def test_call_card_family(conn):
@@ -215,8 +213,8 @@ def test_call_card_family(conn):
             (f'IVCC-{i}', f'IVCC{i}', pid, u, 1000 + i))
     # Card C P3: the customer key ('ร้านทดสอบ', a bill name: these rows carry no code) replaces the name list.
     products = call_card._assemble_products(conn, 'ร้านทดสอบ', None, today='2026-09-29')
-    got = sorted((p['unit'], p['base'], p['customer_price']) for p in products)
-    want = sorted(((u or ''), b, c) for u, (b, c) in CALL_CARD.items())
+    got = sorted(((p['unit'], p['base']) for p in products), key=repr)
+    want = sorted((((u or ''), b) for u, b in CALL_CARD.items()), key=repr)
     assert got == want
 
 

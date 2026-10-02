@@ -111,21 +111,29 @@ class TestCreatePromotionExtended:
         assert row == ('gift', 'ดจ.สแตนเลส', '20 ดอก')
 
     def test_create_mixed_with_condition(self, tmp_db):
+        """#673: the ยกลัง label needs its number (a label alone is refused,
+        test_673_persist_min_qty.py)."""
         import models
         pid = _first_product_without_active_promos(tmp_db)
+        conn = sqlite3.connect(tmp_db)
+        unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
+                                 (pid,)).fetchone()[0]
+        conn.close()
         promo_id = models.create_promotion({
             'product_id': pid,
             'promo_name': 'test ยกลัง 5%',
             'promo_type': 'mixed',
             'discount_value': 5,
             'bundle_condition': 'ยกลัง',
+            'min_qty': 20,
+            'min_qty_unit': unit_type,
         })
         conn = sqlite3.connect(tmp_db)
         row = conn.execute(
-            "SELECT promo_type, discount_value, bundle_condition FROM promotions WHERE id = ?",
-            (promo_id,)).fetchone()
+            "SELECT promo_type, discount_value, bundle_condition, min_qty FROM promotions "
+            "WHERE id = ?", (promo_id,)).fetchone()
         conn.close()
-        assert row == ('mixed', 5.0, 'ยกลัง')
+        assert row == ('mixed', 5.0, 'ยกลัง', 20.0)
 
     def test_create_bundle_without_buy_fails_check(self, tmp_db):
         """DB CHECK enforces bundle requires bundle_buy NOT NULL."""
@@ -187,7 +195,13 @@ class TestPromotionNewRoute:
         assert found == ('ดจ.สแตนเลส', '20 ดอก')
 
     def test_post_mixed_with_condition(self, admin_client, tmp_db):
+        """#673: a ยกลัง label on a price promo now needs its number (a label
+        alone is refused, test_673_persist_min_qty.py); with one it saves."""
         pid = _first_active_product_id(tmp_db)
+        conn = sqlite3.connect(tmp_db)
+        unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
+                                 (pid,)).fetchone()[0]
+        conn.close()
         r = admin_client.post(
             f'/products/{pid}/promotions/new',
             data={
@@ -195,17 +209,19 @@ class TestPromotionNewRoute:
                 'promo_type': 'mixed',
                 'discount_value': '5',
                 'bundle_condition': 'ยกลัง',
+                'min_qty': '20',
+                'min_qty_unit': unit_type,
             },
             follow_redirects=False,
         )
         assert r.status_code == 302
         conn = sqlite3.connect(tmp_db)
         found = conn.execute(
-            "SELECT discount_value, bundle_condition FROM promotions "
+            "SELECT discount_value, bundle_condition, min_qty FROM promotions "
             "WHERE product_id = ? AND promo_name = 'route ยกลัง'",
             (pid,)).fetchone()
         conn.close()
-        assert found == (5.0, 'ยกลัง')
+        assert found == (5.0, 'ยกลัง', 20.0)
 
     def test_post_bundle_missing_buy_rerenders_form(self, admin_client, tmp_db):
         """Server-side validation catches missing bundle_buy before DB."""

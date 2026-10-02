@@ -486,12 +486,10 @@ def product_detail(product_id):
     if vat_mode:
         promotions, active_promo, price_tiers = [], None, []
         locations = []
-        sell_price = product['base_sell_price']
     else:
         promotions = models.get_promotions(product_id, conn=book_conn)
         active_promo = models.get_active_promotion(product_id, conn=book_conn)
         price_tiers = models.get_product_price_tiers(product_id, conn=book_conn)
-        sell_price = models.effective_price(product, conn=book_conn)
         locations = models.get_product_locations(product_id, conn=book_conn)
     # 2d: the promo table judged each row by a bare `is_active`, so a promo
     # closed by DATE (date_end past, is_active still 1 — the state 2a's
@@ -570,7 +568,6 @@ def product_detail(product_id):
                            promos_closed=promos_closed,
                            active_promo=active_promo,
                            price_tiers=price_tiers,
-                           sell_price=sell_price,
                            txns=txns,
                            txn_page=txn_page,
                            txn_pages=txn_pages,
@@ -899,6 +896,8 @@ def promotion_new(product_id):
                 'bundle_condition': _opt_str(f.get('bundle_condition')),
                 'gift_desc':        _opt_str(f.get('gift_desc')),
                 'gift_qty':         _opt_str(f.get('gift_qty')),
+                'min_qty':          _opt_float(f.get('min_qty')),
+                'min_qty_unit':     _opt_str(f.get('min_qty_unit')),
             }
             # Parse the dates here so a non-ISO value lands in THIS handler with
             # a friendly message. Without it, replace_promotion's date maths

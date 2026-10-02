@@ -53,7 +53,18 @@ def _make_db(tmp_path, name="test.db"):
             discount_value REAL,
             date_start TEXT,
             date_end TEXT,
-            is_active INTEGER DEFAULT 1
+            is_active INTEGER DEFAULT 1,
+            bundle_buy INTEGER,
+            gift_desc TEXT,
+            bundle_condition TEXT,
+            min_qty REAL,
+            min_qty_unit TEXT
+        );
+
+        -- read by R5 through price_lookup.measure_ratio (#673 fix round)
+        CREATE TABLE IF NOT EXISTS unit_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book TEXT, spelling TEXT, word TEXT, created_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS product_price_tiers (

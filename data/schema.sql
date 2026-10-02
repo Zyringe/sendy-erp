@@ -1443,7 +1443,13 @@ CREATE TABLE "promotions" (
     bundle_tiers_json TEXT,
     gift_desc         TEXT,
     gift_qty          TEXT, source TEXT
-  CHECK (source IS NULL OR source IN ('catalog-import','manual')),
+  CHECK (source IS NULL OR source IN ('catalog-import','manual')), min_qty REAL, min_qty_unit TEXT CHECK (
+  (min_qty IS NULL AND min_qty_unit IS NULL)
+  OR (typeof(min_qty) IN ('integer','real') AND min_qty > 0
+      AND min_qty_unit IS NOT NULL AND trim(min_qty_unit) <> ''
+      AND (promo_type IN ('percent','fixed') OR (promo_type = 'mixed' AND discount_value IS NOT NULL))
+      AND bundle_buy IS NULL AND gift_desc IS NULL)
+),
 
     -- Type enum + shape integrity per type
     CHECK (
@@ -3770,6 +3776,8 @@ BEGIN
             'gift_desc',         OLD.gift_desc,
             'gift_qty',          OLD.gift_qty,
             'source',            OLD.source,
+            'min_qty',           OLD.min_qty,
+            'min_qty_unit',      OLD.min_qty_unit,
             'is_active',         OLD.is_active
         )
     );
@@ -3794,6 +3802,8 @@ BEGIN
             'gift_desc',         NEW.gift_desc,
             'gift_qty',          NEW.gift_qty,
             'source',            NEW.source,
+            'min_qty',           NEW.min_qty,
+            'min_qty_unit',      NEW.min_qty_unit,
             'date_start',        NEW.date_start,
             'date_end',          NEW.date_end,
             'is_active',         NEW.is_active
@@ -3816,6 +3826,8 @@ WHEN (
     OR OLD.gift_desc         IS NOT NEW.gift_desc
     OR OLD.gift_qty          IS NOT NEW.gift_qty
     OR OLD.source            IS NOT NEW.source
+    OR OLD.min_qty           IS NOT NEW.min_qty
+    OR OLD.min_qty_unit      IS NOT NEW.min_qty_unit
     OR OLD.date_start        IS NOT NEW.date_start
     OR OLD.date_end          IS NOT NEW.date_end
     OR OLD.is_active         IS NOT NEW.is_active
@@ -3837,6 +3849,8 @@ BEGIN
         UNION ALL SELECT 'gift_desc',                 OLD.gift_desc,                 NEW.gift_desc                 WHERE OLD.gift_desc         IS NOT NEW.gift_desc
         UNION ALL SELECT 'gift_qty',                  OLD.gift_qty,                  NEW.gift_qty                  WHERE OLD.gift_qty          IS NOT NEW.gift_qty
         UNION ALL SELECT 'source',                    OLD.source,                    NEW.source                    WHERE OLD.source            IS NOT NEW.source
+        UNION ALL SELECT 'min_qty',                   OLD.min_qty,                   NEW.min_qty                   WHERE OLD.min_qty           IS NOT NEW.min_qty
+        UNION ALL SELECT 'min_qty_unit',              OLD.min_qty_unit,              NEW.min_qty_unit              WHERE OLD.min_qty_unit      IS NOT NEW.min_qty_unit
         UNION ALL SELECT 'date_start',                OLD.date_start,                NEW.date_start                WHERE OLD.date_start        IS NOT NEW.date_start
         UNION ALL SELECT 'date_end',                  OLD.date_end,                  NEW.date_end                  WHERE OLD.date_end          IS NOT NEW.date_end
         UNION ALL SELECT 'is_active',                 OLD.is_active,                 NEW.is_active                 WHERE OLD.is_active         IS NOT NEW.is_active

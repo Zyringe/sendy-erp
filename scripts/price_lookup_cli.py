@@ -293,9 +293,11 @@ def _resolve_line(conn, line, today):
     if errors:
         return {'error': '; '.join(errors)}
 
+    # No `qty` is passed through as None (#673): the resolver then has no
+    # quantity, so a promo with a minimum is not applied and answer.qty /
+    # line_total are null. Defaulting to 1 here would read as "one piece"
+    # and silently decide every gated promo's outcome.
     qty = line.get('qty')
-    if qty is None:
-        qty = 1
     extra_disc = line.get('extra_disc')
     if extra_disc is None:
         extra_disc = 0.0

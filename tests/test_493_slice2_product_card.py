@@ -626,3 +626,68 @@ def test_call_card_summary_region_is_phak_not_the_retired_region_id(tmp_db):
     data = models.get_customer_summary_by_code(TEST_CODE)
     assert data['region'] == customer_geo.region_of('123 ถ.สุขุมวิท ชลบุรี')
     assert data['region'] == 'ภาคตะวันออก'  # control: the address really parses
+
+
+# ── #673: a promo with a minimum quantity, priced at the last order's qty ────
+
+def _gated_promo(conn, pid, min_qty=20, unit='ตัว'):
+    conn.execute(
+        "INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+        " date_start, is_active, min_qty, min_qty_unit) "
+        "VALUES (?, 'ลด 10% ขั้นต่ำ', 'percent', 10, '2024-01-01', 1, ?, ?)",
+        (pid, min_qty, unit))
+    conn.commit()
+
+
+def test_673_last_order_below_minimum_shows_list_not_the_formula(cust):
+    """promo_affects_price = APPLIED, not "a promo exists": otherwise the page
+    prints "100 −10% = 100" for an order below the minimum."""
+    conn, pid = cust
+    _gated_promo(conn, pid)
+    _line(conn, doc_base='IV67301', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=5, unit_price=100, net=500, vat_type=0)
+    import models
+    card = _card(models.get_customer_summary_by_code(TEST_CODE), pid)
+    assert card['today']['price_per_unit'] == pytest.approx(100.0)
+    assert card['today']['promo_affects_price'] is False
+    assert card['today']['promo']['min_qty'] == 20     # still shown, as a condition
+
+
+def test_673_last_order_at_minimum_shows_the_formula(cust):
+    conn, pid = cust
+    _gated_promo(conn, pid)
+    _line(conn, doc_base='IV67302', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=20, unit_price=90, net=1800, vat_type=0)
+    import models
+    card = _card(models.get_customer_summary_by_code(TEST_CODE), pid)
+    assert card['today']['price_per_unit'] == pytest.approx(90.0)
+    assert card['today']['promo_affects_price'] is True
+
+
+def test_673_promo_summary_prints_the_minimum():
+    from app import app as a
+    tpl = a.jinja_env.from_string(
+        "{% from 'macros.html' import promo_summary %}{{ promo_summary(p) }}")
+    gated = {'promo_type': 'percent', 'discount_value': 10, 'min_qty': 20.0,
+             'min_qty_unit': 'อัน', 'bundle_tiers_json': None}
+    plain = dict(gated, min_qty=None, min_qty_unit=None)
+    assert tpl.render(p=gated).strip() == 'ลด 10% · ซื้อ ≥ 20 อัน'
+    assert tpl.render(p=plain).strip() == 'ลด 10%'          # control
+
+
+def test_673_formula_cell_also_states_the_minimum(cust, tmp_db):
+    """Codex (fix round, item 7): when the gate is met the cell renders
+    "100.00 −10% = 90.00" — the condition that earned it must show too."""
+    conn, pid = cust
+    _gated_promo(conn, pid)
+    _line(conn, doc_base='IV67303', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=20, unit_price=90, net=1800, vat_type=0)
+    html = _client(tmp_db).get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    # scope to THIS product's card row (the clone's own promos render too)
+    rows = [r for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.S)
+            if re.search(rf'/products/{pid}[?"]', r)]
+    cells = [c for r in rows
+             for c in re.findall(r'<td data-label="ราคาวันนี้"[^>]*>(.*?)</td>', r, re.S)]
+    formula = [c for c in cells if '−10%' in c]
+    assert len(formula) == 1, 'CONTROL: the % formula rendered for this product'
+    assert 'ซื้อ ≥ 20 ตัว' in formula[0]
