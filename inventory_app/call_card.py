@@ -695,12 +695,9 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
                 for pe in (r.get('peers') or []):
                     pe['name'] = name_map.get(pe['code']) or pe['code']
 
-    # Every product's ratios in one query, no per-product churn. A ratio of 0
-    # answers nothing here.
     if product_rows:
         pid_list = list({row['product_id'] for row in product_rows if row['product_id']})
         ph = ",".join("?" * len(pid_list))
-        uc_map = {k: r for k, r in unit_conversion.exact_ratios(conn, pid_list).items() if r}
 
         # C1: ONE promo-slot selector, shared verbatim with
         # price_lookup.resolve_price — a qty (bundle/gift) promo can no
@@ -733,37 +730,34 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
         for r in order_rows:
             orders_map.setdefault(r['product_id'], []).append(dict(r))
     else:
-        uc_map = {}
         promo_batch = {}
         tiers_map = {}
         orders_map = {}
 
     products = []
+    ratio_cache = {}
     for row in product_rows:
         pid = row['product_id']
         unit = row['unit'] or ''
-        base = row['base_sell_price'] or 0.0
         unit_type = row['unit_type'] or ''
-
-        # Unit-aware base price + the ratio apply_price_promo needs for a
-        # 'fixed' promo (its discount_value is per-PIECE — see
-        # price_lookup.apply_price_promo's docstring). ratio stays None
-        # when unit != unit_type and no unit_conversions row answers it —
-        # the pre-existing degrade for `base` itself (out of this PR's
-        # scope); apply_price_promo's own ratio=None branch then leaves a
-        # 'fixed' promo unapplied rather than guessing, same as the resolver.
-        if unit and unit_type and unit != unit_type:
-            ratio = uc_map.get((pid, unit))
-            if ratio:
-                base = base * ratio
-        else:
-            ratio = 1.0
 
         # C1: price_promo only — a qty (bundle/gift) promo never changes
         # per-unit price (mirrors price_lookup.resolve_price exactly; the
         # bundle/gift terms are shown via `promo` below, not priced here).
         price_promo, qty_promo = promo_batch.get(pid, (None, None))
-        promo_price = pl.apply_price_promo(base, ratio, price_promo)
+
+        # Unit-aware base price + the ratio apply_price_promo needs for a
+        # 'fixed' promo (its discount_value is per-PIECE). The ratio is found
+        # by unit WORD, the way price evidence finds a bill's (#668), after
+        # stripping the bill's spaces so ` ตัว` is the base unit. No ratio, or
+        # a ratio of 0, is a miss: the row carries no price and the card says
+        # ไม่มีอัตราแปลง, never the base-unit price beside a กล่อง line.
+        ratio = unit_conversion.word_ratio(conn, pid, unit_type, unit.strip(), ratio_cache)
+        if ratio:
+            base = (row['base_sell_price'] or 0.0) * ratio
+            promo_price = pl.apply_price_promo(base, ratio, price_promo)
+        else:
+            base = promo_price = None
 
         # Display promo: price_promo when one occupies that slot, else
         # qty_promo (bundle/gift) so the card still shows a deal with no
@@ -854,11 +848,12 @@ def _assemble_products(conn, key, canon_code, today=None, rows=None):
             'total_net':       row['total_net'],
             'doc_count':       row['doc_count'],
             'last_buy':        row['last_buy'],
-            'base':            round(base, 2),
+            'base':            round(base, 2) if base is not None else None,
             'promo_label':     promo_label,
             'promo':           dict(promo) if promo else None,
             'price_tiers':     tiers_map.get(pid, []),
-            'customer_price':  round(promo_price, 2),
+            'customer_price':  round(promo_price, 2) if promo_price is not None else None,
+            'ratio_missing':   not ratio,
             'customer_median': peer.get('customer_median'),
             'customer_latest': cust_latest,
             'customer_latest_list': cust_latest_list,

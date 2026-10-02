@@ -13,11 +13,11 @@ its own miss action:
 
   family    entry point          base-unit compare   lookup                        miss
   word      word_ratio           unit WORD           spelling, then its word       None: price evidence skips the bill
+  word      word_ratio, stripped unit WORD          spelling, then its word       None or 0: the call card shows ไม่มีอัตราแปลง, no price (#668)
   resolve   conversion_ratio     (caller, row wins)  spelling, then a word scan    price_lookup._resolve_unit decides
   bundle    conversion_ratio     unit WORD           the word, then a word scan    1.0 silent (promo gating, Q16)
   exact     exact_ratio          raw spelling        that spelling only            None: the quote CLI skips the bill, R4 flags it
   stock     exact_ratio(strip)   spelling, stripped  that spelling only            None: stock holds the line, the remap preflight lists it
-  exact     exact_ratios         (caller)            that spelling only            the call card keeps its price unconverted
   options   exact_ratios         (caller)            every stored row              n/a: the VAT-sub selector lists them all
   SQL       base_qty_sql & co.   raw, COALESCE ''    exact join                    1.0, counted by unratioed_line_sql
 
@@ -126,8 +126,8 @@ def exact_ratio(conn, product_id, unit_type, unit, *, strip=False) -> Optional[f
 def exact_ratios(conn, product_ids) -> dict:
     """{(product_id, bsn_unit): ratio} for every stored row of `product_ids`,
     in one query. Row order is whatever SQLite returns (no ORDER BY, as the
-    readers it replaced had none). No base-unit entry is added and nothing is filtered: the call card drops a
-    ratio of 0, the VAT-sub unit selector lists it."""
+    readers it replaced had none). No base-unit entry is added and nothing is filtered: the VAT-sub
+    unit selector lists a ratio of 0 too."""
     ph = ",".join("?" * len(product_ids))
     rows = conn.execute(
         f"SELECT product_id, bsn_unit, ratio FROM unit_conversions WHERE product_id IN ({ph})",

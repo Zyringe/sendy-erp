@@ -246,8 +246,8 @@
 - **บรรทัดไม่มีอัตราแปลง (unratioed line)** — a bill line whose หน่วย has no conversion ratio for
   its product. Each place that reads it does something different, deliberately (`docs/adr/0019`).
   The stock ledger holds it (สต๊อกไม่ตัด). Price evidence skips it. COGS and the marketplace sold
-  count take it as 1 and show how many lines they did that for. The call card keeps its price
-  unconverted. The fix is always the same: add the ratio on `/unit-conversions`.
+  count take it as 1 and show how many lines they did that for. The call card shows no price for it,
+  only "ไม่มีอัตราแปลง" (#668). The fix is always the same: add the ratio on `/unit-conversions`.
 
 - **เปลี่ยนหน่วยฐาน (rebase)** — changing a product's base unit, for example from กุรุส to ตัว.
   Stock, the ledger, cost, prices and every ratio are rescaled together, so no quantity or value

@@ -31,9 +31,10 @@ reopens as soon as a non-canonical spelling comes back.
    (`tests/test_unit_reader_census.py`) makes every other direct `SELECT`/`JOIN` on the table a writer
    or an exemption with a reason.
 2. **Each reader family keeps its own rule under its own name.** No flag chooses between them.
-   `word_ratio` (the price resolver's bill lookup), `conversion_ratio` (the row lookup that
-   `_resolve_unit` and `_bundle_buy_ratio` build on), `exact_ratio` / `exact_ratios` (exact spelling, for
-   the quote CLI, the call card and the VAT-sub selector), and the COGS SQL trio (`base_qty_sql`,
+   `word_ratio` (the price resolver's bill lookup, and since #668 the call card's, on the stripped unit),
+   `conversion_ratio` (the row lookup that `_resolve_unit` and `_bundle_buy_ratio` build on),
+   `exact_ratio` / `exact_ratios` (exact spelling, for the quote CLI and the VAT-sub selector), and the
+   COGS SQL trio (`base_qty_sql`,
    `unit_conversion_join`, `unratioed_line_sql`). The stock side reads through
    `exact_ratio(..., strip=True)`: the stock writer (`bsn_sync._get_base_qty`, kept as a thin wrapper
    that owns the 4-dp round) and the remap preflight (`mapping.missing_unit_ratios`). `strip` applies to
@@ -50,13 +51,14 @@ reopens as soon as a non-canonical spelling comes back.
    | customer-page cost block (`word_ratio`) | the figure shows —, never a ratio of 1 |
    | COGS (`base_qty_sql`) | costed at 1, counted, and disclosed on `/accounting` |
    | marketplace sold count | counted at 1 and disclosed on the product page (Q14) |
-   | call card | the base price stays unconverted and a fixed promo is not applied |
+   | call card (`word_ratio`, #668) | no price: ราคาตั้ง and the promo modal say ไม่มีอัตราแปลง and link to `/unit-conversions`; a ratio of 0 is a miss |
    | promo bundle gating (`_bundle_buy_ratio`) | 1.0, silently |
    | quote CLI | the bill is skipped |
 
-4. **Two silent-1.0 sites are kept on purpose (Q16).** `_bundle_buy_ratio` feeds an internal promo
-   gating check, not a number anyone reads. The call card's unconverted price is #668. Both are
-   named here so that neither one reads as an oversight.
+4. **One silent-1.0 site is kept on purpose (Q16).** `_bundle_buy_ratio` feeds an internal promo
+   gating check, not a number anyone reads; it is named here so it does not read as an oversight.
+   The call card's unconverted price was the second one until #668 (Put, 2026-10-02): it now finds the
+   ratio by word and shows no price on a miss.
 5. **The marketplace sold count moves onto the COGS rule (Q14).** A line in the product's own unit is
    ratio 1, whatever a row keyed on that unit says. Lines with no ratio are counted and disclosed. On
    PROD, no number moved (the 0 base-keyed rows above).
