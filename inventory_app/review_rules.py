@@ -31,6 +31,7 @@ import statistics
 from typing import Optional, List
 
 import config
+import price_lookup
 import unit_conversion
 from models import promotions as promo_models
 
@@ -113,9 +114,11 @@ def _get_active_promo_on_date(conn, product_id: int, date_iso: str):
 
 
 def _promo_expected_per_base_unit(product, promo) -> Optional[float]:
-    """Expected per-base-unit price under `promo`, or None when the promo has
-    no price effect at all (bundle / gift, and a mixed row carrying only deal
-    terms) — R5's caller reads None as "nothing to check".
+    """Per-base-unit price `promo` gives when it applies (its minimum met,
+    #673), or None when the promo has no price effect at all (bundle / gift,
+    and a mixed row carrying only deal terms) — R5's caller reads None as
+    "nothing to check". Whether THIS line meets the minimum is the caller's
+    gate (promo_models.promo_gate), not this function's.
 
     ⚠ Until 2026-09-09 this skipped every `mixed` row, which exempted 27
     own-brand products from R5_PROMO_MISMATCH even though their mixed rows
@@ -124,8 +127,7 @@ def _promo_expected_per_base_unit(product, promo) -> Optional[float]:
     """
     if not promo_models.affects_price(promo):
         return None
-    return promo_models.promo_price(product['base_sell_price'], 1.0, promo,
-                                    qty_pieces=None, min_pieces=None)
+    return promo_models.promo_price_if_met(product['base_sell_price'], 1.0, promo)
 
 
 # ── R3 median helpers ─────────────────────────────────────────────────────────
@@ -662,7 +664,43 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
                 # is matched against the price as keyed)
                 tier_match = _matches_tier(conn, product_id, unit_price)
 
-                if not within_promo and not tier_match:
+                # #673: a promo with a minimum quantity, measured on THIS
+                # line through the resolver's unit chain. Below it the line
+                # is expected at list (no "ไม่ได้ใช้โปร?"); a line that got the
+                # promo price anyway is its own finding, and a tier that
+                # happens to equal that price does not excuse it.
+                qty_pieces, min_pieces = price_lookup.promo_min_measure(
+                    conn, product_id, unit_type, promo, qty, unit)
+                gate = promo_models.promo_gate(promo, qty_pieces=qty_pieces,
+                                               min_pieces=min_pieces)
+
+                if gate not in promo_models.GATE_APPLIES:
+                    if within_promo and not sold_at_full_price:
+                        if gate == 'missing':
+                            why = f'ไม่ได้ระบุจำนวนขั้นต่ำ ({promo["bundle_condition"]})'
+                        elif gate == 'unconvertible':
+                            why = (f'แปลงหน่วยขั้นต่ำ {promo["min_qty"]:g} '
+                                   f'{promo["min_qty_unit"]} เป็น{unit_type}ไม่ได้')
+                        else:
+                            why = f'ไม่ถึงขั้นต่ำ {promo["min_qty"]:g} {promo["min_qty_unit"]}'
+                        flags.append({
+                            'rule_code': 'R5_PROMO_MISMATCH',
+                            'severity': 'medium',
+                            'message_th': (
+                                f'ให้ส่วนลดโปรแต่{why} — โปร "{promo["promo_name"]}" '
+                                f'ขาย {line_price:.2f} ราคาตั้ง {base_per_sold:.2f}'
+                            ),
+                            'details_json': json.dumps({
+                                'promo_name': promo['promo_name'],
+                                'promo_type': promo['promo_type'],
+                                'gate': gate,
+                                'min_qty': promo['min_qty'],
+                                'min_qty_unit': promo['min_qty_unit'],
+                                'expected': round(base_per_sold, 2),
+                                'observed': round(line_price, 2),
+                            }, ensure_ascii=False),
+                        })
+                elif not within_promo and not tier_match:
                     if sold_at_full_price:
                         msg = (
                             f'มีโปร "{promo["promo_name"]}" คาดราคา {expected_per_sold:.2f} '
