@@ -673,3 +673,17 @@ def test_673_promo_summary_prints_the_minimum():
     plain = dict(gated, min_qty=None, min_qty_unit=None)
     assert tpl.render(p=gated).strip() == 'ลด 10% · ซื้อ ≥ 20 อัน'
     assert tpl.render(p=plain).strip() == 'ลด 10%'          # control
+
+
+def test_673_formula_cell_also_states_the_minimum(cust, tmp_db):
+    """Codex (fix round, item 7): when the gate is met the cell renders
+    "100.00 −10% = 90.00" — the condition that earned it must show too."""
+    conn, pid = cust
+    _gated_promo(conn, pid)
+    _line(conn, doc_base='IV67303', suffix=1, pid=pid, date_iso='2026-01-01',
+          qty=20, unit_price=90, net=1800, vat_type=0)
+    html = _client(tmp_db).get(f'/customer/code/{quote(TEST_CODE)}').data.decode()
+    cells = re.findall(r'<td data-label="ราคาวันนี้"[^>]*>(.*?)</td>', html, re.S)
+    formula = [c for c in cells if '−10%' in c]
+    assert len(formula) == 1, 'CONTROL: the % formula rendered'
+    assert 'ซื้อ ≥ 20 ตัว' in formula[0]
