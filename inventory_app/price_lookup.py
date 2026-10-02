@@ -451,64 +451,93 @@ def _bundle_buy_ratio(conn, product_id, bundle_unit, unit_type):
     return ratio if ratio is not None else 1.0
 
 
-def _chain_ratio(conn, product_id, unit_word, unit_type_word):
-    """Pieces per one `unit_word` for the minimum-quantity gate (#673), or
-    None. The resolver's own chain (a unit_conversions row, else the
-    tier-implied โหล = 12), with `_resolve_unit`'s unknown → 1.0 fallback
-    REJECTED (that fallback is what `_bundle_buy_ratio` degrades to, and why
-    the gate does not reuse it). The ratio must be finite and > 0."""
-    if unit_word == unit_type_word:
-        return 1.0
-    ratio, source, _tier = _resolve_unit(conn, product_id, unit_word, unit_type_word,
-                                         strict=False)
-    if source not in ('unit_conversions', 'tier-implied'):
-        return None
-    if ratio is None or not math.isfinite(ratio) or ratio <= 0:
-        return None
+def measure_ratio(conn, product_id, unit_type, unit, cache=None):
+    """Pieces per one `unit` of this product, or None — THE bill-measurement
+    contract (#673 fix round): every place that turns a quantity in some unit
+    into pieces reads it here, the bill's cash per piece, a bill's qualification
+    for a promo minimum, the ask's, the minimum's own, last_paid and R6.
+
+    Order: the unit's own base-unit word → 1.0; else the RAW spelling's
+    unit_conversions row, then the row of its หน่วย word
+    (unit_conversion.word_ratio); else, for a โหล, the tier-implied 12 when a
+    โหล tier exists. A ratio that is 0, negative or not finite is no ratio.
+    Never the unknown → 1.0 fallback `_resolve_unit(strict=False)` ends on.
+
+    Raw spelling first matters: a product may carry `หล = 6` (a half-dozen
+    pack, by its own row) beside `โหล = 12`; a `หล` bill is 6 pieces here, both
+    for its cash and for a minimum. `cache` is the caller's dict, keyed on
+    (product_id, unit)."""
+    if cache is not None and (product_id, unit) in cache:
+        return cache[(product_id, unit)]
+    ratio = unit_conversion.word_ratio(conn, product_id, unit_type, unit, {})
+    if ratio is not None:
+        ratio = ratio if (math.isfinite(ratio) and ratio > 0) else None
+    elif (_unit_word(conn, unit) == 'โหล'
+          and _find_matching_tier(conn, product_id, 'โหล') is not None):
+        ratio = 12.0
+    if cache is not None:
+        cache[(product_id, unit)] = ratio
     return ratio
 
 
 def min_qty_unit_problem(conn, product_id, unit_type, min_qty_unit):
     """Why `min_qty_unit` cannot carry a promo minimum on this product, or
-    None when it can (#673 write-time refusal: the route and the catalog
-    importer refuse it, the resolver's promo_min_unconvertible flag is only
-    the backstop). The message lists the units that DO resolve."""
-    unit_type_word = _unit_word(conn, unit_type)
-    word = _unit_word(conn, (min_qty_unit or '').strip())
-    if word and _chain_ratio(conn, product_id, word, unit_type_word) is not None:
+    None when it can (#673 write-time refusal: promotions' writers and the
+    catalog importer refuse it, the resolver's promo_min_unconvertible flag is
+    only the backstop). The message lists the units that DO resolve."""
+    unit = (min_qty_unit or '').strip()
+    if unit and measure_ratio(conn, product_id, unit_type, unit) is not None:
         return None
     resolves = []
-    for u in [unit_type_word] + _known_ratio_units(conn, product_id) + ['โหล']:
-        if u not in resolves and _chain_ratio(conn, product_id, u, unit_type_word) is not None:
+    for u in [_unit_word(conn, unit_type)] + _known_ratio_units(conn, product_id) + ['โหล']:
+        if u not in resolves and measure_ratio(conn, product_id, unit_type, u) is not None:
             resolves.append(u)
-    return (f"หน่วยขั้นต่ำ '{min_qty_unit}' แปลงเป็น{unit_type_word}ไม่ได้สำหรับสินค้านี้ "
-            f"— หน่วยที่ใช้ได้: {', '.join(resolves)}")
+    return (f"หน่วยขั้นต่ำ '{min_qty_unit}' แปลงเป็น{_unit_word(conn, unit_type)}ไม่ได้"
+            f"สำหรับสินค้านี้ — หน่วยที่ใช้ได้: {', '.join(resolves)}")
 
 
 def promo_min_measure(conn, product_id, unit_type, promo, qty, unit):
-    """(qty_pieces, min_pieces) for models.promotions.promo_gate / promo_price
-    — the ONE unit chain both sides of the minimum go through (#673).
+    """(qty_pieces, min_pieces) for models.promotions.promo_gate / promo_price.
 
-    Same หน่วย word on both sides → (qty, min_qty) as written, no ratio
-    needed. Otherwise both convert to pieces through `_chain_ratio`; a side
-    with no ratio comes back None (the gate then reads `unconvertible` for the
-    minimum, `qty_unknown` for the ask). `qty=None` (the caller has no
-    quantity) → qty_pieces None. A promo with no minimum → (None, None): the
-    gate answers from the promo alone. `unit` None = the product's own unit."""
+    Both sides through `measure_ratio`. Only when NEITHER side has a ratio and
+    both are the same หน่วย word are they compared as written. A side with no
+    measure comes back None (the gate reads `unconvertible` for the minimum,
+    `qty_unknown` for the ask). `qty=None` (no quantity) → qty_pieces None. A
+    promo with no minimum → (None, None). `unit` None = the product's unit."""
     if promo is None or promo['min_qty'] is None:
         return None, None
-    unit_type_word = _unit_word(conn, unit_type)
-    min_word = _unit_word(conn, promo['min_qty_unit'])
-    ask_word = _unit_word(conn, unit) if unit else unit_type_word
+    ask_unit = unit or unit_type
     min_qty = float(promo['min_qty'])
-    if ask_word == min_word:
+    min_ratio = measure_ratio(conn, product_id, unit_type, promo['min_qty_unit'])
+    ask_ratio = measure_ratio(conn, product_id, unit_type, ask_unit)
+    if (min_ratio is None and ask_ratio is None
+            and _unit_word(conn, ask_unit) == _unit_word(conn, promo['min_qty_unit'])):
         return (float(qty) if qty is not None else None), min_qty
-    min_ratio = _chain_ratio(conn, product_id, min_word, unit_type_word)
     min_pieces = min_qty * min_ratio if min_ratio is not None else None
-    if qty is None:
+    if qty is None or ask_ratio is None:
         return None, min_pieces
-    ask_ratio = _chain_ratio(conn, product_id, ask_word, unit_type_word)
-    return (float(qty) * ask_ratio if ask_ratio is not None else None), min_pieces
+    return float(qty) * ask_ratio, min_pieces
+
+
+def gate_for_ask(conn, product_id, unit_type, promo, qty, unit):
+    """promo_gate status for `qty` of `unit` against `promo`'s minimum — the
+    one call every site makes (resolver ask, bills, R5 lines)."""
+    qty_pieces, min_pieces = promo_min_measure(conn, product_id, unit_type, promo, qty, unit)
+    return promo_models.promo_gate(promo, qty_pieces=qty_pieces, min_pieces=min_pieces)
+
+
+_GATE_TEXT = {
+    'not_met': 'ยังไม่ถึงขั้นต่ำ',
+    'qty_unknown': 'ยังไม่ระบุจำนวน',
+    'unconvertible': 'แปลงหน่วยขั้นต่ำเป็นชิ้นไม่ได้',
+    'missing': 'ไม่ได้ระบุจำนวนขั้นต่ำ',
+}
+
+
+def gate_text(status):
+    """Thai reason a promo is not applied for this gate status, or None when it
+    applies. The one wording the breadcrumb, the flags and R5 print."""
+    return _GATE_TEXT.get(status)
 
 
 def _resolve_list(conn, product_id, unit_type, base, asked_unit):
@@ -559,35 +588,6 @@ def _resolve_list(conn, product_id, unit_type, base, asked_unit):
         'list_source': list_source,
         'tier_equals_base_x_ratio': tier_equals_base_x_ratio,
     }
-
-
-def apply_price_promo(list_for_unit, ratio, price_promo, *, qty_pieces, min_pieces):
-    """R2 list_after_promo. percent (and a 'mixed' row using discount_value
-    as a percent — see the module docstring / task-1-report for why: the
-    real mixed+discount rows in the catalog carry values like 10/15/20,
-    which are percentages, not final per-piece prices; a FIXED final price
-    of ฿10-20 on a ฿35-250 product is not a real catalog price. 27 of the 28
-    active mixed rows on prod 2026-09-08 carry one) → list ×
-    (1 − d/100) — this branch never needs `ratio`. fixed → discount_value
-    × ratio (fixed IS the final per-PIECE price, mirrors
-    models.promotions.effective_price) — when `ratio is None` (review
-    round 2: a tier answers the price but no piece-ratio is derivable),
-    that per-piece conversion cannot be computed; the fixed promo is left
-    unapplied (list_for_unit unchanged) rather than guessed.
-
-    Public (task-2-brief.md PR C / 2e, C1) — `resolve_price` calls it, and
-    `call_card._assemble_products` calls it too. Tested directly (no DB
-    needed — it's pure) in tests/test_price_lookup.py, not only through
-    resolve_price.
-
-    ⚠ The math itself moved DOWN to models.promotions.promo_price on
-    2026-09-09 (card 3): models.effective_price and review_rules' R5 both
-    needed it and neither can import upward into price_lookup, so keeping it
-    here meant three hand copies that had already drifted on `mixed`. This
-    stays as the name those two callers know; it adds nothing of its own.
-    The quantity keywords (#673) pass straight through to the gate."""
-    return promo_models.promo_price(list_for_unit, ratio, price_promo,
-                                    qty_pieces=qty_pieces, min_pieces=min_pieces)
 
 
 def batch_active_promos_by_class(conn, product_ids, on_date):
@@ -992,7 +992,7 @@ def latest_evidence(conn, product_id, customer_code, window_from, unit=None, tod
                 'discount': row['discount'],
                 'bill_unit': row['unit'],   # the bill's own unit, for `qty` (#673)
             }
-        bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
+        bill_ratio = measure_ratio(conn, product_id, unit_type, row['unit'], cache)
         if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
             continue
         cash_pp = vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']) / bill_ratio
@@ -1070,7 +1070,7 @@ def _customer_context(conn, customer_code, today):
         cache = {}
         cash_list = []
         for r in prows:
-            bill_ratio = unit_conversion.word_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
+            bill_ratio = measure_ratio(conn, pid, prod['unit_type'], r['unit'], cache)
             if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
                 continue
             cash_pp = vat_math.cash_from_net(r['net'] / r['qty'], r['vat_type']) / bill_ratio
@@ -1125,13 +1125,6 @@ def _promo_offer_text(promo):
     return f" ลด {promo['discount_value']:g}%"
 
 
-_GATE_REASON = {
-    'not_met': 'ยังไม่ถึงขั้นต่ำ',
-    'qty_unknown': 'ยังไม่ระบุจำนวน',
-    'unconvertible': 'แปลงหน่วยขั้นต่ำเป็นชิ้นไม่ได้',
-}
-
-
 def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
                        customer_last, extra_disc, promo_gate='none'):
     lines = []
@@ -1164,7 +1157,7 @@ def _build_breadcrumb(list_info, price_promo, list_after_promo, basis,
                          f"— ไม่ใช้โปร")
         else:
             lines.append(f"โปร{_promo_offer_text(price_promo)} เมื่อซื้อ "
-                         f"{_promo_min_text(price_promo)} — {_GATE_REASON[promo_gate]} "
+                         f"{_promo_min_text(price_promo)} — {gate_text(promo_gate)} "
                          f"ใช้ราคาตั้ง")
     elif price_promo is not None:
         min_suffix = (f" (ซื้อ {_promo_min_text(price_promo)})"
@@ -1273,9 +1266,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
     # reads it (answer, breadcrumb, list_higher_than_answer, R6) follows the
     # gate without branching on it.
     def _gate_for(promo, ask_qty, ask_unit):
-        q_pieces, m_pieces = promo_min_measure(conn, product_id, unit_type, promo,
-                                               ask_qty, ask_unit)
-        return promo_models.promo_gate(promo, qty_pieces=q_pieces, min_pieces=m_pieces)
+        return gate_for_ask(conn, product_id, unit_type, promo, ask_qty, ask_unit)
 
     qty_pieces, min_pieces = promo_min_measure(conn, product_id, unit_type, price_promo,
                                                qty, asked_unit)
@@ -1283,11 +1274,11 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                                          min_pieces=min_pieces)
     price_promo_in_effect = (price_promo if promo_gate in promo_models.GATE_APPLIES
                              else None)
-    list_after_promo = apply_price_promo(list_info['list_for_unit'], ratio, price_promo,
-                                         qty_pieces=qty_pieces, min_pieces=min_pieces)
+    list_after_promo = promo_models.promo_price(list_info['list_for_unit'], ratio, price_promo,
+                                                qty_pieces=qty_pieces, min_pieces=min_pieces)
     # review round 3: a price promo "applied" iff it actually changed the
     # number — False for the no-promo case (per the ruling) AND for a
-    # 'fixed' promo that apply_price_promo left unapplied because ratio
+    # 'fixed' promo that promo_price left unapplied because ratio
     # is None (it cannot convert the promo's per-piece price into
     # answer_unit — see promo_not_convertible below). 'percent' is
     # unaffected by ratio and always applies when a promo exists.
@@ -1328,7 +1319,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                 continue
             cash_asked = round(vat_math.cash_from_net(row['net'] / row['qty'], row['vat_type']), 2)
         else:
-            bill_ratio = unit_conversion.word_ratio(conn, product_id, unit_type, row['unit'], cache)
+            bill_ratio = measure_ratio(conn, product_id, unit_type, row['unit'], cache)
             if not bill_ratio:   # None or a ratio-0 row: no usable ratio (#716)
                 n_unratioed += 1
                 continue
@@ -1595,7 +1586,7 @@ def resolve_price(conn, *, product_id, customer_code=None, unit=None, qty=1,
                                       f"{price_promo['min_qty_unit']} เป็น{unit_type}ไม่ได้ "
                                       f"— ไม่ใช้โปร ใช้ราคาตั้ง"})
             elif promo_gate == 'qty_unknown':
-                flags.append({'code': 'promo_min_not_met',
+                flags.append({'code': 'promo_min_qty_unknown',
                               'text': f"โปร{offer} ต้องซื้อ {need} — ยังไม่ระบุจำนวน "
                                       f"(หรือหน่วยที่ขอแปลงเป็นชิ้นไม่ได้) ใช้ราคาตั้ง"})
             else:

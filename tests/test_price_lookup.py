@@ -1662,44 +1662,44 @@ def test_r3_fixed_promo_applies_normally_when_ratio_known(db):
 # C1: two shared helpers, tested directly (not only through resolve_price).
 # ══════════════════════════════════════════════════════════════════════════
 
-# ── C1a: apply_price_promo (public, pure — no DB needed) ────────────────────
+# ── C1a: promo_price (pure — no DB needed; apply_price_promo was removed, #673) ────────────────────
 
-def test_apply_price_promo_none_passthrough():
-    assert pl.apply_price_promo(100.0, 1.0, None, qty_pieces=1, min_pieces=None) == 100.0
+def test_promo_price_none_passthrough():
+    assert promo_models.promo_price(100.0, 1.0, None, qty_pieces=1, min_pieces=None) == 100.0
 
 
-def test_apply_price_promo_percent():
+def test_promo_price_percent():
     promo = {'promo_type': 'percent', 'discount_value': 10.0, 'min_qty': None, 'bundle_condition': None}
-    assert pl.apply_price_promo(200.0, 1.0, promo, qty_pieces=1, min_pieces=None) == 180.0
+    assert promo_models.promo_price(200.0, 1.0, promo, qty_pieces=1, min_pieces=None) == 180.0
 
 
-def test_apply_price_promo_fixed_uses_ratio():
+def test_promo_price_fixed_uses_ratio():
     """fixed's discount_value is per-PIECE -- must be multiplied by ratio
     to become the per-answer-unit price (a dozen line: 18/piece * 12)."""
     promo = {'promo_type': 'fixed', 'discount_value': 18.0, 'min_qty': None, 'bundle_condition': None}
-    assert pl.apply_price_promo(240.0, 12.0, promo, qty_pieces=1, min_pieces=None) == 216.0
+    assert promo_models.promo_price(240.0, 12.0, promo, qty_pieces=1, min_pieces=None) == 216.0
 
 
-def test_apply_price_promo_fixed_ratio_none_left_unapplied():
+def test_promo_price_fixed_ratio_none_left_unapplied():
     """When ratio is unknown (a tier answers the price but no piece
     equivalent is derivable) a fixed promo cannot be converted -- leave
     list_for_unit unchanged rather than guessing ratio=1."""
     promo = {'promo_type': 'fixed', 'discount_value': 18.0, 'min_qty': None, 'bundle_condition': None}
-    assert pl.apply_price_promo(500.0, None, promo, qty_pieces=1, min_pieces=None) == 500.0
+    assert promo_models.promo_price(500.0, None, promo, qty_pieces=1, min_pieces=None) == 500.0
 
 
-def test_apply_price_promo_mixed_treated_as_percent():
+def test_promo_price_mixed_treated_as_percent():
     """A 'mixed' row's discount_value is a PERCENT (see the module
     docstring) -- same branch as 'percent', never needs ratio."""
     promo = {'promo_type': 'mixed', 'discount_value': 20.0, 'min_qty': None, 'bundle_condition': None}
-    assert pl.apply_price_promo(100.0, None, promo, qty_pieces=1, min_pieces=None) == 80.0
+    assert promo_models.promo_price(100.0, None, promo, qty_pieces=1, min_pieces=None) == 80.0
 
 
-def test_apply_price_promo_bundle_no_discount_value_unchanged():
+def test_promo_price_bundle_no_discount_value_unchanged():
     """bundle/gift promos (and a 'mixed' row with discount_value NULL)
     never change per-unit price."""
     promo = {'promo_type': 'bundle', 'discount_value': None, 'min_qty': None, 'bundle_condition': None}
-    assert pl.apply_price_promo(100.0, 1.0, promo, qty_pieces=1, min_pieces=None) == 100.0
+    assert promo_models.promo_price(100.0, 1.0, promo, qty_pieces=1, min_pieces=None) == 100.0
 
 
 # ── C1b: batch_active_promos_by_class (tested directly, then through both

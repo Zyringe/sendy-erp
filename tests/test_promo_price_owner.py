@@ -42,7 +42,7 @@ pl = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(pl)
 assert pl.__file__.endswith(_os.path.join('inventory_app', 'price_lookup.py')), (
     f'wrong price_lookup loaded: {pl.__file__}')
-assert hasattr(pl, 'apply_price_promo'), 'control: the resolver must expose apply_price_promo'
+assert hasattr(pl, 'resolve_price'), 'control: the resolver must expose resolve_price'
 
 from models import promotions as promo_models
 import review_rules
@@ -105,15 +105,6 @@ CASES = [
 def test_promo_price_is_the_one_implementation(promo, list_for_unit, ratio, expected):
     assert promo_models.promo_price(list_for_unit, ratio, promo,
                                     qty_pieces=1, min_pieces=None) == expected
-
-
-def test_apply_price_promo_delegates_and_cannot_drift():
-    """price_lookup's public entry point must return exactly what the owner returns,
-    for every case — this is the guard that stops the two copies diverging again."""
-    assert len(CASES) == 9, 'the agreement matrix must cover every promo_type'
-    for promo, list_for_unit, ratio, expected in CASES:
-        assert pl.apply_price_promo(list_for_unit, ratio, promo, qty_pieces=1, min_pieces=None) == \
-            promo_models.promo_price(list_for_unit, ratio, promo, qty_pieces=1, min_pieces=None)
 
 
 # ── B · the Python predicate and the SQL predicate must agree ────────────────

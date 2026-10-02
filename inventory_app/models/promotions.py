@@ -77,9 +77,9 @@ GATE_APPLIES = ('none', 'met')
 def promo_gate(promo, *, qty_pieces, min_pieces):
     """Does `promo`'s minimum quantity (#673, mig 199) let its price effect
     apply to this ask? Pure — the caller measures both sides first with
-    price_lookup.promo_min_measure (the one unit chain), so `qty_pieces` and
-    `min_pieces` are in ONE measure (pieces, or the minimum's own unit when the
-    ask is in that same หน่วย word).
+    price_lookup.promo_min_measure (price_lookup.measure_ratio, the one
+    measurement contract), so `qty_pieces` and `min_pieces` are in ONE measure.
+    Sites with a connection call price_lookup.gate_for_ask.
 
       'none'          no minimum (or no price effect at all): applies
       'met'           asked >= minimum, compared at 4 dp: applies to the WHOLE line
@@ -121,9 +121,9 @@ def promo_price(list_for_unit, ratio, promo, *, qty_pieces, min_pieces):
       - 'percent', and a 'mixed' row carrying a discount_value → list ×
         (1 − d/100), rounded 2dp. This branch never needs `ratio`.
 
-    Was price_lookup.apply_price_promo, which now delegates here; it lives in
-    this module so models.effective_price and review_rules can reach it
-    without importing upward into price_lookup. Pure — no DB.
+    Pure — no DB. models.effective_price is the one caller that cannot import
+    price_lookup (models sits under it); every other caller reaches it
+    directly (#673 removed price_lookup.apply_price_promo, a pass-through).
     """
     if promo is None:
         return list_for_unit

@@ -88,8 +88,6 @@ def test_promo_price_requires_the_quantity_keywords():
         promo_models.promo_price(100.0, 1.0, _promo())                       # noqa
     with pytest.raises(TypeError):
         promo_models.promo_price(100.0, 1.0, _promo(), qty_pieces=1)         # noqa
-    with pytest.raises(TypeError):
-        pl.apply_price_promo(100.0, 1.0, _promo())                           # noqa
 
 
 @pytest.mark.parametrize('qty_pieces,min_pieces,expected', [

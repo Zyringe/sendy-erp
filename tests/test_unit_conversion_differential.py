@@ -284,10 +284,11 @@ def test_call_card(world):
     # The baseline card imports the CURRENT price_lookup and calls
     # apply_price_promo with three arguments; see _baseline_promo_models.
     with pytest.MonkeyPatch.context() as mp:
-        current_apply = price_lookup.apply_price_promo
+        from models import promotions as current_promos
         mp.setattr(price_lookup, 'apply_price_promo',
-                   lambda list_for_unit, ratio, promo: current_apply(
-                       list_for_unit, ratio, promo, qty_pieces=None, min_pieces=None))
+                   lambda list_for_unit, ratio, promo: current_promos.promo_price(
+                       list_for_unit, ratio, promo, qty_pieces=None, min_pieces=None),
+                   raising=False)   # #673 removed the pass-through the baseline calls
         got_old = {(p['product_id'], p['unit']): p for p in
                    old._assemble_products(conn, ['ร้านทดสอบ'], None, today='2026-09-29')}
     got_new = {(p['product_id'], p['unit']): p for p in
