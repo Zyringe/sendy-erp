@@ -960,3 +960,37 @@ def test_failed_bsn_import_rescan_failure_is_a_warning_only(client, tmp_path, mo
     bsn = json.loads(notes)['bsn']
     assert bsn['ok'] is False
     assert 'forced by test #695' in bsn['error']
+
+
+def test_failed_bsn_import_rescan_stops_at_the_watermark(client, tmp_path, monkeypatch):
+    """A document from a batch older than this request is not rescanned."""
+    import config
+    _login(client)
+    _map_bsn_695()
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    old_pid = conn.execute("INSERT INTO products (product_name, unit_type) VALUES ('เก่า #695', 'ตัว')").lastrowid
+    batch = conn.execute("INSERT INTO import_log (filename, rows_imported, rows_skipped, notes)"
+                         " VALUES ('seed', 0, 0, 'seed')").lastrowid
+    conn.execute(
+        "INSERT INTO sales_transactions (batch_id, date_iso, doc_no, doc_base, product_id, bsn_code,"
+        " product_name_raw, customer, customer_code, qty, unit, unit_price, vat_type, discount, total, net,"
+        " synced_to_stock, change_source, change_actor, change_token)"
+        " VALUES (?, '2026-04-24', 'IV9OLD695-1', 'IV9OLD695', ?, 'bsn-old695', 'x', 'c', 'CE', 1, 'โหล',"
+        " 65, 1, '', 65, 65, 1, 'import', 'seed', 'seed-695')", (batch, old_pid))
+    conn.commit()
+    conn.close()
+    import review_rules as rr
+    rr.scan_docs(['IV9OLD695'])
+    assert _review_doc('IV9OLD695') is not None, 'control: the old doc is reviewable'
+    conn = sqlite3.connect(config.DATABASE_PATH)
+    conn.execute("DELETE FROM txn_review_flags WHERE doc_base='IV9OLD695'")
+    conn.execute("DELETE FROM txn_review_docs WHERE doc_base='IV9OLD695'")
+    conn.commit()
+    conn.close()
+    _wacc_step_raises(monkeypatch)
+
+    resp = _upload(client, tmp_path, monkeypatch, _one_line_sale('โหล'))
+
+    assert resp.status_code == 200, resp.data[:500]
+    assert _review_doc('IV7068101') is not None
+    assert _review_doc('IV9OLD695') is None, 'rescan reached a batch older than the request'

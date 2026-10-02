@@ -1581,6 +1581,17 @@ def express_dbf_upload():
                       f'(ถ้าจำเป็นต้องนำเข้าตอนนี้จริงๆ ให้ติ๊ก '
                        f'"นำเข้าต่อโดยไม่มีจุดกู้คืน")', 'danger')
                 return redirect(redirect_to)
+            # Every import_log row past this mark was created by the import
+            # below. If it raises after committing sales lines, the batch id
+            # never comes back, so the failure path rescans by this mark (#695).
+            # Read before the export-date claim, so a failed read cannot
+            # advance the claim for a file that never imported.
+            _wconn = get_connection()
+            try:
+                _log_mark = _wconn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM import_log").fetchone()[0]
+            finally:
+                _wconn.close()
             if forced_older:
                 # Announce execution only after the backup policy allows it.
                 flash(f'นำเข้าทับด้วยไฟล์ที่เก่ากว่า ({_exp_date} '
@@ -1590,15 +1601,6 @@ def express_dbf_upload():
                 if not claimed:
                     raise RuntimeError(
                         'express import watermark changed while import lock was held')
-            # Every import_log row past this mark was created by the import
-            # below. If it raises after committing sales lines, the batch id
-            # never comes back, so the failure path rescans by this mark (#695).
-            _wconn = get_connection()
-            try:
-                _log_mark = _wconn.execute(
-                    "SELECT COALESCE(MAX(id), 0) FROM import_log").fetchone()[0]
-            finally:
-                _wconn.close()
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a
                 # daily upload only ever needs the recent window, and that window
