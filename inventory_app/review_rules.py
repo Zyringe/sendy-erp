@@ -477,7 +477,6 @@ def _check_row_rules(conn, row: dict) -> List[dict]:
     unit_price = float(row.get('unit_price') or 0)
     qty = float(row.get('qty') or 0)
     net = float(row.get('net') or 0)
-    total = float(row.get('total') or 0)
     bsn_code = row.get('bsn_code') or ''
     raw_name = row.get('product_name_raw') or ''
     ref_invoice = row.get('ref_invoice') or ''
