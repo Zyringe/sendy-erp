@@ -133,7 +133,7 @@ def customer_detail(customer_code):
     unpaid = unpaid_full[:5]
     # The chaseable NET, as /ar shows it (#708); credits get their own line.
     unpaid_total = statement['total']
-    unpaid_credit = round(sum(c['outstanding'] for c in statement['credits']), 2)
+    unpaid_credit = statement['credit_total']
     unpaid_snapshot_date = statement['snapshot_date']
     # What was REMOVED from that total (ADR 0012, #468). This surface renders
     # only the phone-sized count.

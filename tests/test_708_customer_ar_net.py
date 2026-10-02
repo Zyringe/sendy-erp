@@ -41,6 +41,7 @@ def test_statement_splits_chaseable_into_bills_and_credits(tmp_db):
     assert [r['doc_no'] for r in st['bills']] == ['ZZEX-CR-BILL']
     assert [r['doc_no'] for r in st['credits']] == ['ZZEX-CR-CREDIT']
     assert st['total'] == pytest.approx(950.00)
+    assert st['credit_total'] == pytest.approx(-250.00)
     assert sum(r['outstanding'] for r in st['bills'] + st['credits']) \
         == pytest.approx(st['total'])
 
@@ -72,7 +73,9 @@ def test_mobile_customer_card_shows_the_net_and_a_credit_line(tmp_db):
 
     assert 'ZZEX-CR-BILL' in card
     assert 'ZZEX-CR-CREDIT' not in card
-    assert 'จาก ฿950' in card, card[:300]
+    header = re.search(r'จาก ฿(-?[\d,]+\.\d\d)', card)
+    assert header, card[:300]
+    assert float(header.group(1).replace(',', '')) == 950.00
     credit = re.search(r'data-row="credit"(.*?)</div>\s*</div>', card, re.S)
     assert credit, 'no หักเครดิต line'
     assert 'หักเครดิต' in credit.group(1)

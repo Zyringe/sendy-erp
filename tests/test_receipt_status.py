@@ -5,6 +5,7 @@ written_off (ตัดหนี้แล้ว). Built on payments_alloc's amoun
 receipt reads partial and a credit note that clears the bill reads paid.
 """
 import random
+import re
 
 import pytest
 
@@ -400,14 +401,13 @@ def test_forgiven_is_billed_minus_credit_notes_minus_collected(empty_db_conn):
     assert s['written_off_forgiven'] == pytest.approx(1000.0 + 750.0 + 600.0)
 
 
-def _invoices_tab_rows(status=None):
-    import re
+def _invoices_tab_rows():
     from app import app as a
     a.config['TESTING'] = True
     c = a.test_client()
     with c.session_transaction() as s:
         s['user_id'] = 1; s['username'] = 'admin'; s['role'] = 'admin'
-    r = c.get('/ar?tab=invoices' + (f'&status={status}' if status else ''))
+    r = c.get('/ar?tab=invoices')
     assert r.status_code == 200
     body = r.data.decode()
     out = {}
@@ -443,7 +443,9 @@ def test_invoices_tab_shows_forgiven_in_status_cell_not_outstanding(four_statuse
         assert '฿' not in rows[d]['status'], d
 
     card = body.split('data-summary="written_off_count"', 1)[1].split('</div>', 2)[1]
-    assert 'ยอดที่ตัด 700 บาท' in card, card
+    forgiven = re.search(r'ยอดที่ตัด ([\d,]+) บาท', card)
+    assert forgiven, card
+    assert float(forgiven.group(1).replace(',', '')) == 700.0
 
 
 def test_reconcile_ledger_is_the_open_remainder_per_code(four_statuses):
