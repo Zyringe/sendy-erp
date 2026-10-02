@@ -27,6 +27,16 @@ AP_HEADER = "บริษัท บุญสวัสดิ์ นำชัย �
 RCV_HEADER = "บริษัท บุญสวัสดิ์ นำชัย จำกัด\nรายงานการรับชำระหนี้\nณ วันที่ 31/07/2569\n\n"
 
 
+@pytest.fixture(autouse=True)
+def _upload_folder_restored(monkeypatch):
+    """`_client` points the shared app's UPLOAD_FOLDER at this test's tmp_path.
+    Restore it at teardown, or every later test in the process stages its
+    uploads into a dead test's directory and recreates it after cleanup (#714)."""
+    from app import app as flask_app
+    monkeypatch.setitem(flask_app.config, 'UPLOAD_FOLDER',
+                        flask_app.config['UPLOAD_FOLDER'])
+
+
 def _client(tmp_path):
     from app import app as flask_app
     flask_app.config['UPLOAD_FOLDER'] = str(tmp_path)
