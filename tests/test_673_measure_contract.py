@@ -127,3 +127,41 @@ def test_one_text_helper_names_every_blocking_status():
     assert 'ยังไม่ระบุจำนวน' in texts['qty_unknown']
     for ok in promo_models.GATE_APPLIES:
         assert pl.gate_text(ok) is None
+
+
+# ── one rule with _resolve_unit on unusable rows (#720 rebase, 2026-10-02) ───
+# #720 made _resolve_unit treat a ratio <= 0 row as NO row (so a โหล tier can
+# still answer 12). measure_ratio must read the same rule, not its own.
+
+SHAPES = {
+    'zero dozen row + tier': dict(rows=[('โหล', 0.0)], tiers=[('1 โหล', 90.0)]),
+    'negative dozen row + tier': dict(rows=[('โหล', -12.0)], tiers=[('1 โหล', 90.0)]),
+    'zero dozen row, no tier': dict(rows=[('โหล', 0.0)]),
+    'half-dozen spelling': dict(rows=[('หล', 6.0), ('โหล', 12.0)]),
+    'tier only': dict(tiers=[('1 โหล', 90.0)]),
+    'zero box row': dict(rows=[('กล่อง', 0.0)]),
+    'nothing': dict(),
+}
+
+
+@pytest.mark.parametrize('shape', sorted(SHAPES))
+def test_measure_ratio_and_resolve_unit_agree(db, shape):
+    pid = _product(db, **SHAPES[shape])
+    checked = 0
+    # หน่วย words only: the resolver hands _resolve_unit a word (asked_unit);
+    # a raw spelling with its own row is the half-dozen test above.
+    for unit in ('โหล', 'กล่อง', 'ตัว'):
+        ratio, source, _tier = pl._resolve_unit(db, pid, unit, 'ตัว', strict=False)
+        got = pl.measure_ratio(db, pid, 'ตัว', unit)
+        if source in ('unit_conversions', 'tier-implied') or unit == 'ตัว':
+            assert got == ratio, (shape, unit, got, ratio, source)
+            checked += 1
+        else:
+            assert got is None, (shape, unit, got, ratio, source)
+    assert checked >= 1   # control: the base unit always lands on the equal side
+
+
+def test_zero_dozen_row_falls_to_the_tier_in_both(db):
+    pid = _product(db, rows=[('โหล', 0.0)], tiers=[('1 โหล', 90.0)])
+    assert pl._resolve_unit(db, pid, 'โหล', 'ตัว')[:2] == (12.0, 'tier-implied')
+    assert pl.measure_ratio(db, pid, 'ตัว', 'โหล') == 12.0
