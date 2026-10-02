@@ -793,9 +793,11 @@ def _epoch_candidates(conn, product_id, unit, today, promo_counts=None):
       says whether this ask sees the promo at all. A current gated promo the
       ask does not meet is skipped as if absent (so an earlier promo's end
       can still answer), and the most recent closed promo that COUNTS gives
-      promo_end. Default (no quantity — the call card, peer pricing): only
-      promos with no minimum count, the same answer promo_price gives a
-      caller with no quantity.
+      promo_end. `promo_counts` is asked about gated promos only: a promo
+      with no minimum — a ยกลัง/ยกล่อง label with no number included — always
+      counts. Default (no quantity — the call card, peer pricing): no gated
+      promo counts, the same answer promo_price gives a caller with no
+      quantity.
       tier_changed  — see `_tier_epoch`: the tier matching `unit`'s most
                        recent GENUINE price event, with the tier's own
                        first-ever INSERT and any same-price DELETE+INSERT
@@ -816,10 +818,18 @@ def _epoch_candidates(conn, product_id, unit, today, promo_counts=None):
     if row is not None and row['changed_at']:
         out['base_changed'] = row['changed_at'][:10]
 
-    if promo_counts is None:
-        def promo_counts(promo):
-            return promo_models.promo_gate(promo, qty_pieces=None,
-                                           min_pieces=None) == 'none'
+    # Only a promo WITH a minimum is ask-dependent. One without (a ยกลัง /
+    # ยกล่อง label with no number included) was priced for everyone until #673,
+    # so its start and end are a regime change for every ask (prod 2026-10-02:
+    # treating the closed labelled promos as gated moved 34 quotes).
+    asked_counts = promo_counts
+
+    def promo_counts(promo):
+        if promo['min_qty'] is None:
+            return True
+        if asked_counts is None:   # no quantity: a gated promo is not applied
+            return False
+        return asked_counts(promo)
     price_expr, _qty_expr = promo_models.promo_slot_sql('')
     current = conn.execute(f"""
         SELECT * FROM promotions
