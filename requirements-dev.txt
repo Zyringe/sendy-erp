@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8.4,<9
+# Parallel runs: `pytest -n 6` (#714). Plain `pytest` stays serial.
+pytest-xdist>=3.8,<4
