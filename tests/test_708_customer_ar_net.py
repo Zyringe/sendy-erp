@@ -2,7 +2,7 @@
 chaseable NET, the same total /ar and the dunning page show.
 
 The bill list still lists positive bills only (ADR 0012). Chaseable credit rows
-appear as one หักเครดิต line, so the listed bills plus that line equal the total.
+appear as one หักเครดิต line, so the listed bills minus that line (shown positive) equal the total.
 Fixture: `test_ar_excluded_docs._seed`, whose CREDIT_CODE customer has a bill
 of 1,200.00, a chaseable credit of -250.00 and an excluded RE row of 400.00.
 """
@@ -59,7 +59,7 @@ def test_desktop_customer_page_shows_the_net_and_a_credit_line(tmp_db):
     credit = re.search(r'<tr data-row="credit">(.*?)</tr>', card, re.S)
     assert credit, 'no หักเครดิต line'
     assert 'หักเครดิต' in credit.group(1)
-    assert _amounts(credit.group(1)) == [-250.00]
+    assert _amounts(credit.group(1)) == [250.00], "shown positive under หักเครดิต"
     foot = card.split('<tfoot', 1)[1]
     assert _amounts(foot) == [950.00]
 
@@ -79,7 +79,7 @@ def test_mobile_customer_card_shows_the_net_and_a_credit_line(tmp_db):
     credit = re.search(r'data-row="credit"(.*?)</div>\s*</div>', card, re.S)
     assert credit, 'no หักเครดิต line'
     assert 'หักเครดิต' in credit.group(1)
-    assert _amounts(credit.group(1)) == [-250.00]
+    assert _amounts(credit.group(1)) == [250.00], "shown positive under หักเครดิต"
 
 
 @pytest.mark.parametrize('url', ['/customer/code/{}', '/m/customer/code/{}'])

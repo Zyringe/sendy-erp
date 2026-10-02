@@ -423,11 +423,12 @@
           <td class="text-end pe-3 text-danger fw-medium">{{ b.outstanding | fmt_price }}</td>
         </tr>
         {% endfor %}
-        {# #708: chaseable credits, so the bills above plus this line = รวม. #}
+        {# #708: chaseable credits, so the bills above minus this line = รวม.
+           Shown positive: the label already says หัก. #}
         {% if unpaid_credit %}
         <tr data-row="credit">
           <td colspan="2" class="ps-3 text-subtle">หักเครดิต</td>
-          <td class="text-end pe-3 text-success">{{ unpaid_credit | fmt_price }}</td>
+          <td class="text-end pe-3 text-success">{{ (-unpaid_credit) | fmt_price }}</td>
         </tr>
         {% endif %}
       </tbody>
