@@ -359,3 +359,84 @@ def test_cli_line_without_qty_has_no_quantity(db):
     # control: an explicit qty that meets the minimum is priced with the promo
     met = cli._resolve_line(db, {'product_id': pid, 'qty': 20}, TODAY)['result']
     assert met['answer']['price_per_unit'] == 95.0
+
+
+# ── fix round (/interrogate on the PR 1 diff, item 1 + Put Q6) ───────────────
+# A bill "got the gated price" iff its line met the minimum of a gated price
+# promo active on ITS date (open or closed now) AND its cash/piece is at or
+# under that promo's price × 1.01. Only such bills are kept from answering an
+# ask that does not meet that promo — last_paid and lowest alike.
+
+def test_own_deal_above_the_promo_price_still_answers_a_small_ask(db):
+    """Opus e2 S1: 24 อัน at the customer's own ฿98 (promo would be ฿95) is not
+    the gated price; it keeps answering an ask of 10."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    cust = _customer(db, 'TST673-OD')
+    _bill(db, pid, date_iso=_ago(10), qty=24, unit='อัน', price=98.0, customer=cust)
+    out = rp(db, pid, customer_code=cust, qty=10)
+    assert (out['answer']['basis'], out['answer']['price_per_unit']) == ('last_paid', 98.0)
+    assert 'last_paid_was_min_promo' not in _codes(out)
+
+
+def test_closed_gated_promo_bill_does_not_answer_a_small_ask(db):
+    """Opus e3: the promo ran and closed; a 24 อัน bill at its ฿95 must not make
+    an ask of 10 cheaper (฿95) than an ask of 24 (list after the promo ended)."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60), date_end=_ago(8))
+    cust = _customer(db, 'TST673-CL')
+    _bill(db, pid, date_iso=_ago(20), qty=24, unit='อัน', price=95.0, customer=cust)
+    small = rp(db, pid, customer_code=cust, qty=10)
+    big = rp(db, pid, customer_code=cust, qty=24)
+    assert small['answer']['price_per_unit'] == 100.0
+    assert small['answer']['basis'] == 'list_after_promo'
+    assert 'last_paid_was_min_promo' in _codes(small)
+    assert big['answer']['price_per_unit'] == 100.0
+
+
+def test_lowest_for_a_small_ask_ignores_bills_at_the_gated_price(db):
+    """Fable c: 'ต่ำสุดที่ใครเคยได้' for a 5-piece ask must not be a carton price."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    _bill(db, pid, date_iso=_ago(15), qty=20, unit='อัน', price=95.0, customer='TST673-L1')
+    _bill(db, pid, date_iso=_ago(12), qty=5, unit='อัน', price=100.0, customer='TST673-L2')
+    assert rp(db, pid, qty=5)['context']['lowest']['cash_per_unit'] == 100.0
+    assert rp(db, pid, qty=20)['context']['lowest']['cash_per_unit'] == 95.0   # control
+
+
+def test_met_ask_with_last_bill_below_minimum_at_list_answers_the_promo(db):
+    """Put Q6 (2026-10-02): the ask meets the minimum, the customer's last bill
+    was a small one at list → the promo price, flagged."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    cust = _customer(db, 'TST673-Q6')
+    _bill(db, pid, date_iso=_ago(10), qty=5, unit='อัน', price=100.0, customer=cust)
+    out = rp(db, pid, customer_code=cust, qty=20)
+    assert out['answer']['price_per_unit'] == 95.0
+    assert out['answer']['basis'] == 'list_after_promo'
+    assert 'last_paid_below_min' in _codes(out)
+
+
+def test_met_ask_lower_own_deal_still_wins(db):
+    """Put Q6: a customer whose own small-order deal is under the promo price
+    keeps it."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    cust = _customer(db, 'TST673-Q6b')
+    _bill(db, pid, date_iso=_ago(10), qty=5, unit='อัน', price=93.0, customer=cust)
+    out = rp(db, pid, customer_code=cust, qty=20)
+    assert (out['answer']['basis'], out['answer']['price_per_unit']) == ('last_paid', 93.0)
+    assert 'last_paid_below_min' not in _codes(out)
+
+
+def test_no_quantity_and_a_gated_last_bill_never_says_not_met(db):
+    """Opus/Fable e: with no quantity the flags must not claim the ask is
+    below the minimum."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    cust = _customer(db, 'TST673-NQ')
+    _bill(db, pid, date_iso=_ago(10), qty=20, unit='อัน', price=95.0, customer=cust)
+    out = rp(db, pid, customer_code=cust, qty=None)
+    assert 'promo_min_not_met' not in _codes(out)
+    text = _flag(out, 'last_paid_was_min_promo')
+    assert 'ยังไม่ระบุจำนวน' in text and 'ไม่ถึง' not in text
