@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% set editing = prefill and prefill.editing %}
-{% block title %}{{ 'แก้ไข' if editing else 'สร้าง' }}สูตรแปลง แพ็ค-ตัวหลวม – ERP{% endblock %}
-{% block page_title %}{{ 'แก้ไข' if editing else 'สร้าง' }}สูตรแปลง แพ็ค-ตัวหลวม{% endblock %}
+{% block title %}{{ 'สร้างสูตรแปลงสินค้า' if alert_product else ('แก้ไข' if editing else 'สร้าง') ~ 'สูตรแปลง แพ็ค-ตัวหลวม' }} – ERP{% endblock %}
+{% block page_title %}{{ 'สร้างสูตรแปลงสินค้า' if alert_product else ('แก้ไข' if editing else 'สร้าง') ~ 'สูตรแปลง แพ็ค-ตัวหลวม' }}{% endblock %}
 
 {% block content %}
 <nav aria-label="breadcrumb" class="mb-3">
@@ -46,6 +46,31 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="card mb-3">
         <div class="card-body">
+          {% if alert_product %}
+          <input type="hidden" name="alert_product_id" value="{{ alert_product.id }}">
+          <p class="text-subtle small">บันทึกสูตรทั้ง 2 ทางเท่านั้น สต็อกจะเปลี่ยนเมื่อยืนยันแปลงสินค้าในหน้าถัดไป</p>
+          <div class="mb-3">
+            <label class="form-label fw-500">สินค้าที่ต้องการเพิ่มสต็อก</label>
+            <div class="form-control bg-light">{{ alert_product.product_name }} ({{ alert_product.unit_type }})</div>
+          </div>
+          <div class="mb-3 conv-combo">
+            <label class="form-label fw-500">สินค้าต้นทาง <span class="text-danger">*</span></label>
+            <input type="hidden" name="source_id" value="{{ source_id or '' }}">
+            <input type="text" class="form-control conv-search" autocomplete="off"
+                   placeholder="พิมพ์ชื่อ / รหัส / บาร์โค้ด เพื่อค้นหา…" value="{{ source_name or '' }}">
+            <div class="conv-results"></div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label fw-500" for="alertDirection">อัตราแปลง</label>
+            <select class="form-select mb-2" name="alert_direction" id="alertDirection">
+              <option value="unpack" {{ 'selected' if alert_direction == 'unpack' else '' }}>ใช้ต้นทาง 1 หน่วย → ได้สินค้าที่ต้องการตามจำนวนด้านล่าง</option>
+              <option value="pack" {{ 'selected' if alert_direction == 'pack' else '' }}>ใช้ต้นทางตามจำนวนด้านล่าง → ได้สินค้าที่ต้องการ 1 หน่วย</option>
+            </select>
+            <label class="form-label" for="alertRatio">จำนวน (หน่วยสต็อกของสินค้า)</label>
+            <input type="number" id="alertRatio" name="ratio" class="form-control" min="1" step="1"
+                   value="{{ prefill.ratio if prefill else 1 }}" required>
+          </div>
+          {% else %}
           <p class="text-subtle small mb-3">
             ผูก "แพ็ค (แผง)" เข้ากับ "ตัวหลวม (ตัว)" ครั้งเดียวได้ทั้งแพ็คและแกะ —
             ระบบจะสร้าง/อัปเดตสูตรแปลงให้อัตโนมัติ. ถ้าคู่นี้มีอยู่แล้วจะอัปเดตทับ ไม่สร้างซ้ำ.
@@ -111,6 +136,7 @@
             </div>
           </div>
 
+          {% endif %}
           <div class="mt-3">
             <label class="form-label">หมายเหตุ</label>
             <input type="text" name="note" class="form-control" placeholder="ไม่บังคับ"
@@ -120,7 +146,7 @@
       </div>
 
       <div class="d-flex gap-2">
-        <a href="{{ url_for('inventory.conversion_list') }}" class="btn btn-outline-secondary flex-fill">ยกเลิก</a>
+        <a href="{{ url_for('inventory.alerts_view' if alert_product else 'inventory.conversion_list') }}" class="btn btn-outline-secondary flex-fill">ยกเลิก</a>
         <button type="submit" class="btn btn-primary flex-fill fw-500">
           <i class="bi bi-link-45deg me-1"></i>บันทึกคู่
         </button>

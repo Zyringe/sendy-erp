@@ -6,6 +6,10 @@ Imports `get_current_wacc` + `recalculate_waccs_for_products` from `.wacc`
 (the brief's expected conversions->wacc edge).
 """
 
+import hashlib
+import json
+import math
+
 from database import get_connection
 
 from .wacc import (get_current_wacc, recalculate_waccs_for_products,
@@ -13,6 +17,37 @@ from .wacc import (get_current_wacc, recalculate_waccs_for_products,
 from .system_alerts import record_wacc_identity_alert, require_actor_or_alert
 from .conversion_roles import (ROLE_COMPONENT, ROLE_PACKAGING, ConversionRoleError,
                                component_product_id, validate_pack_inputs)
+
+
+def conversion_recipe(formula, inputs):
+    """Fingerprint quantities and identities confirmed in a conversion preview."""
+    recipe = [formula['output_product_id'], formula['output_qty'],
+              sorted((i['product_id'], i['quantity'], i['role'] or '') for i in inputs)]
+    return hashlib.sha256(json.dumps(recipe).encode()).hexdigest()
+
+
+def get_producing_formulas(product_id):
+    """Active recipes for an alert, including every source's available stock."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT cf.id, cf.name, cf.output_qty, i.product_id, i.quantity,
+                   p.product_name, p.unit_type, COALESCE(s.quantity,0) AS current_stock
+              FROM conversion_formulas cf
+              JOIN conversion_formula_inputs i ON i.formula_id=cf.id
+              JOIN products p ON p.id=i.product_id
+              LEFT JOIN stock_levels s ON s.product_id=p.id
+             WHERE cf.output_product_id=? AND cf.is_active=1 AND cf.output_qty>0
+             ORDER BY cf.name, cf.id, i.id
+        """, (product_id,)).fetchall()
+    finally:
+        conn.close()
+    formulas = {}
+    for row in rows:
+        formula = formulas.setdefault(row['id'], dict(id=row['id'], name=row['name'],
+                                      output_qty=row['output_qty'], inputs=[]))
+        formula['inputs'].append(dict(row))
+    return list(formulas.values())
 
 
 def get_conversion_formulas():
@@ -48,7 +83,7 @@ def get_conversion_formula(formula_id):
         conn.close()
         return None, []
     inputs = conn.execute("""
-        SELECT cfi.id, cfi.product_id, cfi.quantity,
+        SELECT cfi.id, cfi.product_id, cfi.quantity, cfi.role,
                p.product_name, p.unit_type,
                COALESCE(sl.quantity, 0) AS current_stock
           FROM conversion_formula_inputs cfi
@@ -134,7 +169,7 @@ def get_buildable(product_ids=None, conn=None):
 
 
 def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='', conn=None,
-                            packaging_id=None, packaging_qty=1):
+                            packaging_id=None, packaging_qty=1, allow_packaging_removal=True):
     """Create or update the conversion formula(s) for a pack↔loose pair, in one
     call (the /conversions pair-mode form). Idempotent — re-running updates the
     matching formula instead of duplicating.
@@ -189,6 +224,7 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
     own = conn is None
     if own:
         conn = get_connection()
+        conn.execute('BEGIN IMMEDIATE')
     try:
         def _pinfo(pid):
             r = conn.execute("SELECT product_name, unit_type FROM products WHERE id=?", (pid,)).fetchone()
@@ -244,6 +280,11 @@ def upsert_pack_unpack_pair(pack_id, loose_id, ratio, direction='both', note='',
                     existing_inputs = conn.execute(
                         "SELECT product_id, quantity, role FROM conversion_formula_inputs"
                         " WHERE formula_id=?", (existing,)).fetchall()
+                    if (not allow_packaging_removal and packaging_id is None
+                            and len(existing_inputs) > 1):
+                        raise ConversionRoleError(
+                            'สินค้าต้นทางมีสูตรที่ใช้วัสดุแพ็คอยู่แล้ว กรุณาตรวจสอบผ่านหน้าแก้ไขสูตร'
+                        )
                     if len(existing_inputs) == 1:
                         existing_component = existing_inputs[0]['product_id']
                     else:
@@ -477,7 +518,7 @@ def get_recent_conversion_runs(limit=5):
 
 
 def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
-                   writeoff_qty=0, run_token=None):
+                   writeoff_qty=0, run_token=None, expected_recipe=None):
     """Run a conversion. `writeoff_qty` = output units scrapped during the run
     (ของเสีย, e.g. 10 แผง → 20 ตัว but 1 broke). Inputs are still fully consumed;
     only GOOD units (expected − writeoff) enter stock; input cost spreads over
@@ -510,9 +551,9 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
           JOIN products p ON p.id = cf.output_product_id
          WHERE cf.id = ?
     """, (formula_id,)).fetchone()
-    if not formula:
+    if not formula or not formula['is_active']:
         conn.close()
-        return False, 'ไม่พบสูตรการแปลง', {}
+        return False, 'ไม่พบสูตรการแปลงที่ใช้งานอยู่', {}
 
     # ── Replay guard ─────────────────────────────────────────────────────────
     # Keyed on the form token and NOTHING else: one page render, one run.
@@ -552,6 +593,19 @@ def run_conversion(formula_id, multiplier, reference_no='', extra_note='',
           LEFT JOIN stock_levels sl ON sl.product_id = cfi.product_id
          WHERE cfi.formula_id = ?
     """, (formula_id,)).fetchall()
+
+    if expected_recipe is not None and conversion_recipe(formula, inputs) != expected_recipe:
+        conn.close()
+        return False, 'สูตรเปลี่ยน กรุณาตรวจสอบจำนวนและยืนยันใหม่', {}
+    if (not inputs or not math.isfinite(formula['output_qty']) or formula['output_qty'] <= 0
+            or any(not math.isfinite(i['quantity']) or i['quantity'] <= 0 for i in inputs)):
+        conn.close()
+        return False, 'สูตรแปลงสินค้าไม่ถูกต้อง กรุณาตรวจสอบสูตร', {}
+    try:
+        validate_pack_inputs(formula['name'], formula['is_active'], inputs)
+    except ConversionRoleError as e:
+        conn.close()
+        return False, str(e), {}
 
     shortage = []
     for inp in inputs:

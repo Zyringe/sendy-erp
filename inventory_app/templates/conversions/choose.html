@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block title %}เลือกสูตรแปลงสินค้า – ERP{% endblock %}
+{% block page_title %}เลือกสูตรแปลงสินค้า{% endblock %}
+{% block content %}
+<p>{{ product.product_name }}: สต็อก {{ product.quantity | fmt_qty }} {{ product.unit_type }}</p>
+<div class="list-group mb-3">
+  {% for formula in formulas %}
+  <a class="list-group-item list-group-item-action" href="{{ url_for('inventory.conversion_run', formula_id=formula.id, alert_product_id=product.id) }}">
+    <div class="fw-500">{{ formula.name }}</div>
+    {% for input in formula.inputs %}
+    <div class="small">ใช้ {{ input.product_name }} {{ input.quantity | fmt_qty }} {{ input.unit_type }} · มี {{ input.current_stock | fmt_qty }} {{ input.unit_type }}</div>
+    {% endfor %}
+    <div class="small text-success">ได้ {{ formula.output_qty | fmt_qty }} {{ product.unit_type }} ต่อรอบ</div>
+  </a>
+  {% endfor %}
+</div>
+<a class="btn btn-outline-secondary" href="{{ url_for('inventory.alerts_view') }}">กลับแจ้งเตือน</a>
+{% endblock %}

@@ -295,6 +295,7 @@ _ENDPOINT_MODULE = {
     # overview
     'dashboard': 'overview',
     'inventory.alerts_view': 'overview',
+    'inventory.alert_conversion': 'operation',
     'inventory.alert_resolve': 'overview',
     'review.index': 'overview',
     'review.scan': 'overview',

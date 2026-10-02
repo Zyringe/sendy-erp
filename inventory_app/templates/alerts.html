@@ -107,6 +107,9 @@
           </td>
           <td class="text-end fw-700 text-danger">{{ a.quantity | fmt_qty }} <span class="text-subtle small">{{ a.unit_type }}</span></td>
           <td>
+            {% if current_role in ('admin', 'manager', 'staff') %}
+            <a href="{{ url_for('inventory.alert_conversion', product_id=a.id) }}" class="btn btn-xs btn-outline-success">แปลงสินค้า</a>
+            {% endif %}
             <button type="button" class="btn btn-xs btn-primary adjust-btn"
                     title="ปรับสต็อก"
                     data-pid="{{ a.id }}"
