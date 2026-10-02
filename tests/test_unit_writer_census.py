@@ -159,7 +159,7 @@ TARGET_COLUMNS = {
     'unit_conversions': ['bsn_unit'],
     'products': ['unit_type'],
     'product_price_tiers': ['qty_label'],
-    'promotions': ['bundle_unit'],
+    'promotions': ['bundle_unit', 'min_qty_unit'],   # min_qty_unit: mig 199 (#673)
     'product_code_mapping': ['bsn_unit'],
     'pending_product_suggestions': ['bsn_unit', 'suggested_unit_type'],
     'express_sales': ['unit'],
