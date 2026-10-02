@@ -39,12 +39,12 @@
     </div>
 
     <div class="card mb-3">
-      <div class="card-header">เปรียบเทียบทั้งหมด (current vs uploaded)</div>
+      <div class="card-header">ตารางที่จำนวนแถวต่างกัน (current vs uploaded)</div>
       <div class="table-responsive">
         <table class="table table-sm mb-0">
           <thead><tr><th>Table</th><th class="text-end">Current</th><th class="text-end">Uploaded</th><th class="text-end">Δ</th></tr></thead>
           <tbody>
-            {% for d in diff_rows %}
+            {% for d in diff_rows if d.current != d.uploaded %}
               <tr class="{% if d.warning %}table-danger{% endif %}">
                 <td><code>{{ d.table }}</code></td>
                 <td class="text-end">{{ d.current }}</td>
