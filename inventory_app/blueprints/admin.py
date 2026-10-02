@@ -371,15 +371,76 @@ def download_db():
 # current (production) DB than in the uploaded file, the upload is blocked
 # pending explicit confirmation — those are the tables where data is added
 # through the running app, so a higher count = data the upload would erase.
+# #680: every table in the schema is either here or in _UPLOAD_DIFF_EXEMPT
+# with a reason (tests/test_upload_db_diff_coverage.py fails on a new one).
 _UPLOAD_DIFF_TABLES = (
-    'sales_transactions', 'purchase_transactions',
+    # Ledgers and imported documents
+    'sales_transactions', 'purchase_transactions', 'transactions',
     'received_payments', 'paid_invoices',
-    'product_code_mapping',
-    'express_sales', 'express_payments_in', 'express_payments_out',
-    'commission_payouts', 'payout_invoices',
-    'transactions',
-    'products', 'customers',
+    'product_code_mapping', 'legacy_product_sku_map', 'xp5_product_mapping',
+    'pending_product_suggestions', 'product_generic_standins',
+    'sales_line_unit_corrections', 'txn_review_docs', 'txn_review_flags',
+    'credit_note_amounts', 'credit_note_imports', 'sr_writeoffs', 'import_log',
+    'express_sales', 'express_sales_orders', 'express_sales_order_lines',
+    'express_payments_in', 'express_payments_out',
+    'express_payment_in_invoice_refs', 'express_payment_out_receive_refs',
+    'express_invoice_refs', 'express_credit_notes', 'express_credit_note_lines',
+    'express_billing_notes', 'express_bank_cheques',
+    'express_ar_outstanding', 'express_ap_outstanding',
+    'express_gl_accounts', 'express_gl_vouchers', 'express_gl_lines',
+    'express_reconcile_events', 'express_reconcile_flags',
+    'express_import_log', 'express_import_watermark',
+    # Money: commission, AR, cashbook, cost and price history, VAT
+    'commission_payouts', 'payout_batches', 'commission_tiers',
+    'commission_assignments', 'commission_overrides', 'commission_customer_reassign',
+    'ar_writeoffs', 'ar_followup_log',
+    'cashbook_accounts', 'cashbook_categories', 'cashbook_transactions',
+    'product_cost_ledger', 'conversion_cost_log',
+    'product_price_history', 'platform_price_history',
+    'vat_sub_groups', 'vat_sub_members', 'vat_sub_product_links',
+    # HR and expenses
+    'employees', 'employee_salary_history', 'employee_wht_history',
+    'employee_leave_entitlements', 'leave_types', 'leave_requests',
+    'company_holidays', 'hr_config',
+    'salary_advances', 'payroll_runs', 'payroll_items',
+    'expense_categories', 'expense_log',
+    # Purchasing and suppliers
+    'purchase_orders', 'purchase_order_lines', 'po_receipts', 'po_sequences',
+    'suppliers', 'supplier_product_mapping', 'supplier_quick_updates',
+    'supplier_catalogue_versions', 'supplier_catalogue_items',
+    'supplier_catalogue_price_history',
+    # Marketplace
+    'marketplace_orders', 'marketplace_order_items', 'marketplace_order_fees',
+    'marketplace_order_invoice', 'marketplace_payouts', 'marketplace_wallet_txns',
+    'marketplace_amount_review', 'marketplace_listing_status',
+    'marketplace_review_dismissals', 'lazada_statement_settlement',
+    'platform_products', 'platform_skus', 'platform_stock_deductions',
+    'ecommerce_listings', 'listing_bundles',
+    # Customers and CRM
+    'customers', 'customer_crm', 'customer_call_log', 'customer_contact_review',
+    'customer_regions', 'regions', 'salespersons',
+    # Catalog master
+    'products', 'product_families', 'product_images', 'product_barcodes',
+    'product_labels', 'product_locations', 'product_price_tiers', 'promotions',
+    'brands', 'categories', 'color_finish_codes',
+    'unit_conversions', 'unit_map', 'conversion_formulas', 'conversion_formula_inputs',
+    'companies', 'label_company_block',
+    # System
+    'users', 'system_alerts',
 )
+
+# Tables deliberately NOT compared, each with the reason a higher current count
+# is not data the upload would erase (or would make the gate fire on every upload).
+_UPLOAD_DIFF_EXEMPT = {
+    'applied_migrations': 'schema bookkeeping: prepare_staged_db migrates the upload '
+                          'before the swap, so a lower count is an older schema, not lost data',
+    'mig171_packaging_th_backfill': 'frozen rollback copy written once by migration 171',
+    'price_change_source': 'one-row scratch slot (CHECK id = 1) the price-history triggers read',
+    'stock_levels': 'one row per product, kept by trigger from transactions; '
+                    'products and transactions are both diffed',
+    'audit_log': 'written by every app write, so prod is always ahead and diffing it would '
+                 'put every upload on the confirmation page; the rows it describes are diffed',
+}
 
 # MASTER_TABLES = tables Put owns on local — replaced from upload in
 # master-only mode. Transaction tables and anything else are preserved
