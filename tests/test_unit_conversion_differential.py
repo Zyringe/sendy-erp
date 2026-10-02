@@ -14,7 +14,9 @@ rows). The test asserts the difference lands on exactly those products.
 
 Since #716 resolve_price also answers where the baseline raised
 ZeroDivisionError: a bill whose unit has a ratio-0 row is now skipped as
-unratioed instead of divided by.
+unratioed instead of divided by. Since #720 `_resolve_unit` skips a ratio-0
+row (the baseline returned 0.0), so asks on a product carrying one may
+differ, or raise ValueError where the baseline priced at ratio 0.
 """
 import functools
 import importlib.util
@@ -121,14 +123,31 @@ def test_conversion_ratio(world):
                     == _call(unit_conversion.conversion_ratio, conn, pid, u)), (pid, u)
 
 
+def _asks_a_ratio_zero_word(conn, pid, unit):
+    """Does the asked unit's WORD have a ratio <= 0 row on this product?"""
+    if not unit:
+        return False
+    word = price_lookup._unit_word(conn, unit)
+    return any(price_lookup._unit_word(conn, r[0]) == word for r in conn.execute(
+        "SELECT bsn_unit FROM unit_conversions WHERE product_id = ? AND ratio <= 0", (pid,)))
+
+
 def test_resolve_and_bundle(world):
     conn, products = world
     old = _old('inventory_app/price_lookup.py', '_old_price_lookup')
+    fixed_720 = 0
     for pid, ut in products.items():
         for u in SPELLINGS + ['ลัง']:
             for strict in (False, True):
-                assert (_call(old._resolve_unit, conn, pid, u, ut, strict)
-                        == _call(price_lookup._resolve_unit, conn, pid, u, ut, strict)), (pid, u)
+                want = _call(old._resolve_unit, conn, pid, u, ut, strict)
+                got = _call(price_lookup._resolve_unit, conn, pid, u, ut, strict)
+                if want.startswith('(0.0, '):   # #720: the baseline handed back a ratio-0 row
+                    assert not got.startswith('(0.0, '), (pid, u)
+                    fixed_720 += 1
+                    continue
+                assert want == got, (pid, u)
+    assert fixed_720 > 0, 'control: the seed still holds a ratio-0 row the baseline returned'
+    for pid, ut in products.items():
         for u in BILL_UNITS:
             assert (_call(old._bundle_buy_ratio, conn, pid, u, ut)
                     == _call(price_lookup._bundle_buy_ratio, conn, pid, u, ut)), (pid, u)
@@ -137,7 +156,7 @@ def test_resolve_and_bundle(world):
 def test_resolve_price_end_to_end(world):
     conn, products = world
     old = _old('inventory_app/price_lookup.py', '_old_price_lookup')
-    answered = fixed_716 = 0
+    answered = fixed_716 = fixed_720 = 0
     for pid in products:
         for u in [None, 'โหล', 'หล', 'กุรุส', 'แผง']:
             for cust in (None, 'ร้านทดสอบ'):
@@ -147,10 +166,15 @@ def test_resolve_price_end_to_end(world):
                 if want == 'raises ZeroDivisionError' and not got.startswith('raises'):
                     fixed_716 += 1
                     continue
+                if want != got and _asks_a_ratio_zero_word(conn, pid, u):   # #720
+                    assert got == 'raises ValueError' or not got.startswith('raises'), (pid, u, got)
+                    fixed_720 += 1
+                    continue
                 assert want == got, (pid, u)
                 answered += not got.startswith('raises')
     assert answered > 100, 'control: most asks must resolve, not raise'
     assert fixed_716 > 0, 'control: the seed still holds a ratio-0 bill the baseline divided by'
+    assert fixed_720 > 0, 'control: an ask on a ratio-0 product moved'
 
 
 def _sql_rows(conn, sf):

@@ -104,7 +104,7 @@ def test_conversion_family(conn):
 RESOLVE = {'ตัว': (5.0, 'unit_conversions'), ' ตัว': (1.0, 'none'),
            'โหล': (12.0, 'unit_conversions'), 'หล': (1.0, 'none'),
            'กุรุส': (144.0, 'unit_conversions'), 'กร': (144.0, 'unit_conversions'),
-           'แผง': (0.0, 'unit_conversions'), 'กล่อง': (1.0, 'none')}
+           'แผง': (None, 'unknown'), 'กล่อง': (1.0, 'none')}   # แผง: ratio-0 row is no row (#720)
 
 
 def test_resolve_family(conn):
@@ -112,8 +112,9 @@ def test_resolve_family(conn):
     pid = _product(conn, 'resolve')
     got = {u: price_lookup._resolve_unit(conn, pid, u, 'ตัว')[:2] for u in RESOLVE}
     assert got == RESOLVE
-    with pytest.raises(ValueError):
-        price_lookup._resolve_unit(conn, pid, 'กล่อง', 'ตัว', strict=True)
+    for u in ('กล่อง', 'แผง'):
+        with pytest.raises(ValueError):
+            price_lookup._resolve_unit(conn, pid, u, 'ตัว', strict=True)
 
 
 def test_resolve_tier_implied_dozen(conn):
