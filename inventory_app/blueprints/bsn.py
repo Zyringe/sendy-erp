@@ -1590,6 +1590,15 @@ def express_dbf_upload():
                 if not claimed:
                     raise RuntimeError(
                         'express import watermark changed while import lock was held')
+            # Every import_log row past this mark was created by the import
+            # below. If it raises after committing sales lines, the batch id
+            # never comes back, so the failure path rescans by this mark (#695).
+            _wconn = get_connection()
+            try:
+                _log_mark = _wconn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM import_log").fetchone()[0]
+            finally:
+                _wconn.close()
             try:
                 # since_days defaults to 60 inside commit_express_dbf — a
                 # daily upload only ever needs the recent window, and that window
@@ -1745,6 +1754,12 @@ def express_dbf_upload():
             except Exception as exc:
                 results['bsn'] = {'ok': False, 'error': str(exc)[:400]}
                 flashes.append(('danger', f'BSN5657 นำเข้าไม่สำเร็จ: {exc}'))
+                # Lines committed before the raise are real and stay; without
+                # this they never reach ตรวจบิล, and a retry changes no lines.
+                try:
+                    rr.scan_batches_after(_log_mark)
+                except Exception as _scan_exc:
+                    flashes.append(('warning', f'สแกนตรวจบิลไม่สำเร็จ: {_scan_exc}'))
         if 'vat' in classified:
             results['vat'] = {'ok': None, 'status': 'building'}
 

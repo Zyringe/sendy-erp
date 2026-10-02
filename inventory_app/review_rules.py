@@ -451,14 +451,26 @@ def scan_after_import(batch_id: int, conn=None, db_path=None) -> dict:
     plus every doc holding a flag whose line no longer exists. A line the
     importer removes leaves no row carrying the new batch_id, so without the
     second half its flag would outlive it (#683)."""
+    return _scan_batches("batch_id = ?", batch_id, conn, db_path)
+
+
+def scan_batches_after(last_log_id: int, conn=None, db_path=None) -> dict:
+    """scan_after_import for every batch with import_log.id > last_log_id.
+
+    For an import that raised after committing its lines: the batch id never
+    reaches the caller, so it reads a watermark before starting instead (#695)."""
+    return _scan_batches("batch_id > ?", last_log_id, conn, db_path)
+
+
+def _scan_batches(batch_predicate, arg, conn, db_path) -> dict:
     with _ConnCtx(conn, db_path) as c:
         rows = c.execute(
             "SELECT doc_base FROM sales_transactions"
-            " WHERE batch_id=? AND doc_base IS NOT NULL"
+            f" WHERE {batch_predicate} AND doc_base IS NOT NULL"
             " UNION"
             " SELECT f.doc_base FROM txn_review_flags f"
             " WHERE f.txn_id IS NOT NULL AND NOT EXISTS"
-            " (SELECT 1 FROM sales_transactions s WHERE s.id = f.txn_id)", (batch_id,)
+            " (SELECT 1 FROM sales_transactions s WHERE s.id = f.txn_id)", (arg,)
         ).fetchall()
         result = scan_docs([r['doc_base'] for r in rows], conn=c)
         if conn is None:
