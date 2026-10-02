@@ -159,3 +159,33 @@ def test_route_label_with_a_number_is_accepted(admin_client, tmp_db):
     resp = _post(admin_client, pid, bundle_condition='ยกลัง', min_qty='20', min_qty_unit='อัน')
     assert resp.status_code == 302
     assert _promos(tmp_db, pid) == [('percent', 5.0, 20.0, 'อัน', 'ยกลัง')]
+
+
+# ── fix round (/interrogate on the PR 1 diff, item 5): the writers refuse too ─
+# The route was the only gate; create_promotion / replace_promotion are called
+# by scripts as well, and accepted 1 ลัง on an อัน product with no ลัง ratio.
+
+def test_create_promotion_refuses_a_unit_with_no_ratio(tmp_db):
+    import models
+    pid = _product(tmp_db)
+    with pytest.raises(ValueError, match='หน่วยที่ใช้ได้'):
+        models.create_promotion({'product_id': pid, 'promo_name': 'c', 'promo_type': 'percent',
+                                 'discount_value': 5, 'min_qty': 1, 'min_qty_unit': 'ลัง'})
+    assert _promos(tmp_db, pid) == []
+
+
+@pytest.mark.parametrize('extra,needle', [
+    (dict(min_qty=1, min_qty_unit='ลัง'), 'หน่วยที่ใช้ได้'),
+    (dict(bundle_condition='ยกลัง'), 'ยกลัง'),
+    (dict(min_qty=0, min_qty_unit='อัน'), 'มากกว่า 0'),
+    (dict(min_qty=20), 'ขั้นต่ำ'),
+], ids=['no ratio', 'label without number', 'zero', 'qty without unit'])
+def test_replace_promotion_refuses_and_writes_nothing(tmp_db, extra, needle):
+    import models
+    pid = _product(tmp_db)
+    ok, msg, new_id = models.replace_promotion(
+        pid, {'promo_name': 'r', 'promo_type': 'percent', 'discount_value': 5, **extra},
+        today='2026-10-02')
+    assert (ok, new_id) == (False, None)
+    assert needle in msg
+    assert _promos(tmp_db, pid) == []
