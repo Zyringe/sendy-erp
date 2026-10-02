@@ -785,6 +785,11 @@ ALLOWED = {
             'to this function already carries the หน่วย word for '
             'bundle_unit. Same control test, which asserts BOTH columns '
             'in one run.'),
+        'promotions.min_qty_unit': ('through_map_transitive',
+            '#673: `min_qty_unit` sits in `_UNIT_COLUMNS` beside bundle_unit, '
+            'so the same unconditional `_translate_units` call turns it into '
+            'its word before the intent is built. Same control test, '
+            'which carries a second row with a min_qty_unit code.'),
     },
 
     # ── #610 cleared its four writers (the DBF sales-order-lines writer, both
@@ -1278,6 +1283,8 @@ THROUGH_MAP_TRANSITIVE_CONTROLS = {
         'test_catalog_pricing_build_ops_translates_before_execute_ops',
     (_ICP, 'promotions.bundle_unit'):
         'test_catalog_pricing_build_ops_translates_before_execute_ops',
+    (_ICP, 'promotions.min_qty_unit'):
+        'test_catalog_pricing_build_ops_translates_before_execute_ops',
     ('express_registers.py::replace', 'DYNAMIC-TABLE'):
         'test_dbf_sales_order_lines_store_the_word_of_their_book',
 }
@@ -1319,6 +1326,15 @@ def test_catalog_pricing_build_ops_translates_before_execute_ops(empty_db):
             "  opening_cost, base_sell_price, low_stock_threshold, sku_code) "
             "VALUES ('census control', 1, 1, 'ตัว', 0, 1, 1, 2, 10, "
             "        'SK-CENSUS-CTRL')").lastrowid
+        # #673: a second product whose price promo carries a minimum in a code
+        pid_min = conn.execute(
+            "INSERT INTO products(product_name, units_per_carton, "
+            "  units_per_box, unit_type, hard_to_sell, cost_price, "
+            "  opening_cost, base_sell_price, low_stock_threshold, sku_code) "
+            "VALUES ('census control min', 1, 1, 'ตัว', 0, 1, 1, 2, 10, "
+            "        'SK-CENSUS-CTRL-MIN')").lastrowid
+        conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) "
+                     "VALUES (?, 'โหล', 12)", (pid_min,))
         conn.commit()
         ops, _meta = icp._build_ops(conn, [{
             'product_id': str(pid), 'base_sell_price': '',
@@ -1326,6 +1342,10 @@ def test_catalog_pricing_build_ops_translates_before_execute_ops(empty_db):
             'tier2_qty_label': '1 ห่วงพิเศษ', 'tier2_price': '5', 'tier2_note': '',
             'promo_type': 'bundle', 'promo_value': '',
             'bundle_buy': '10', 'bundle_free': '1', 'bundle_unit': 'บล',
+        }, {
+            'product_id': str(pid_min), 'base_sell_price': '',
+            'promo_type': 'percent', 'promo_value': '5',
+            'min_qty': '2', 'min_qty_unit': 'หล',
         }], '2026-09-21', None)
     finally:
         conn.close()
@@ -1333,7 +1353,8 @@ def test_catalog_pricing_build_ops_translates_before_execute_ops(empty_db):
     labels = [t[3] for t in ops['tiers']]
     assert '1 โหล' in labels, labels
     assert '1 ห่วงพิเศษ' in labels, labels   # CONTROL: unknown survives
-    assert [pr[1]['bundle_unit'] for pr in ops['promo_insert']] == ['แผง']
+    assert [pr[1]['bundle_unit'] for pr in ops['promo_insert']] == ['แผง', None]
+    assert [pr[1]['min_qty_unit'] for pr in ops['promo_insert']] == [None, 'โหล']
 
     # and `_build_ops` really is the only caller of `_execute_ops`
     src = open(os.path.join(SCRIPTS, 'import_catalog_pricing.py')).read()
