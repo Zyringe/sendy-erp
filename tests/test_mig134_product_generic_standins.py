@@ -27,6 +27,7 @@ Tests (deterministic, on the schema-only empty_db):
      consuming it" until that lands).
 """
 import os
+import re
 import sqlite3
 import subprocess
 
@@ -179,9 +180,21 @@ def test_audit_log_records_seed_inserts(pre134_conn):
     assert n == 18
 
 
+def _only_upload_diff_entry(app_dir, rel):
+    """#680: admin.py names the table only as a bare entry in the upload gate's
+    _UPLOAD_DIFF_TABLES, which COUNTs rows and never reads the mapping. Any
+    other line naming it there is a consumer and fails."""
+    if rel != os.path.join('blueprints', 'admin.py'):
+        return False
+    with open(os.path.join(app_dir, rel), encoding='utf-8') as f:
+        lines = [ln for ln in f if 'product_generic_standins' in ln]
+    return len(lines) == 1 and re.fullmatch(r"\s*('\w+',\s*)+", lines[0]) is not None
+
+
 def test_invariant_no_consumer_outside_marketplace_match_yet():
     """Pin: today, the only application source file referencing
-    product_generic_standins is marketplace_match.py (Pass 1.5, 2026-07-11).
+    product_generic_standins is marketplace_match.py (Pass 1.5, 2026-07-11),
+    plus admin.py's row-count entry (#680, see _only_upload_diff_entry).
     This allow-list must stay single-file forever (the invariant this pins:
     never consulted by stock-deduction paths — see the migration's own
     invariant note)."""
@@ -200,10 +213,8 @@ def test_invariant_no_consumer_outside_marketplace_match_yet():
     hits = [
         os.path.relpath(p, app_dir) for p in result.stdout.splitlines() if p.strip()
     ]
-    # admin.py (#680) only COUNTs the table's rows in the full-replace upload
-    # gate (_UPLOAD_DIFF_TABLES); it never reads the mapping.
-    allowed = {'marketplace_match.py', 'blueprints/admin.py'}
-    unexpected = [h for h in hits if h not in allowed]
+    allowed = {'marketplace_match.py'}
+    unexpected = [h for h in hits if h not in allowed and not _only_upload_diff_entry(app_dir, h)]
     assert not unexpected, (
         f"product_generic_standins is referenced outside the allowed set: {unexpected} "
         "— if this is the Pass 1.5 matcher change, update `allowed` above; if it's a "

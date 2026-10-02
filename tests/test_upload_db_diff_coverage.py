@@ -70,16 +70,21 @@ def _upload_missing_one_row(tmp_db, tmp_path, table):
 
 @pytest.mark.parametrize('table', SIX)
 def test_fewer_rows_in_upload_lands_on_confirmation(tmp_db, tmp_path, table):
+    # The first `import app` migrates tmp_db: copy the upload only after it,
+    # or migration-seeded tables (unit_map) differ too.
+    c = _client()
     before = _count(tmp_db, table)
     assert before >= 1, f'precondition: current DB needs a {table} row to lose'
     upload = _upload_missing_one_row(tmp_db, tmp_path, table)
 
-    c = _client()
     resp = c.post('/admin/upload-db',
                   data={'db_file': (io.BytesIO(upload), 'inventory.db'), 'mode': 'full'},
                   content_type='multipart/form-data')
 
     assert resp.status_code == 200, 'expected the confirmation page, got a swap'
+    html = resp.get_data(as_text=True)
+    assert f'<code>{table}</code>' in html
+    assert '<code>brands</code>' not in html, 'unchanged tables stay off the page'
     with c.session_transaction() as sess:
         assert sess.get('pending_upload_path')
     assert _count(tmp_db, table) == before, 'current DB must be untouched'

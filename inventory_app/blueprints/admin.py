@@ -426,7 +426,7 @@ _UPLOAD_DIFF_TABLES = (
     'unit_conversions', 'unit_map', 'conversion_formulas', 'conversion_formula_inputs',
     'companies', 'label_company_block',
     # System
-    'users', 'system_alerts',
+    'users',
 )
 
 # Tables deliberately NOT compared, each with the reason a higher current count
@@ -440,6 +440,8 @@ _UPLOAD_DIFF_EXEMPT = {
                     'products and transactions are both diffed',
     'audit_log': 'written by every app write, so prod is always ahead and diffing it would '
                  'put every upload on the confirmation page; the rows it describes are diffed',
+    'system_alerts': 'prod raises these on its own (slow requests, Express drift), so it is '
+                     'always ahead; they are notices about the data, not the data',
 }
 
 # MASTER_TABLES = tables Put owns on local — replaced from upload in
