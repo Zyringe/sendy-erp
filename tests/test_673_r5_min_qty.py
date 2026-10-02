@@ -95,7 +95,10 @@ def test_below_minimum_at_promo_price_is_flagged_with_its_own_message(db):
 
 
 def test_a_matching_tier_does_not_excuse_a_below_minimum_discount(db):
-    pid = _product(db, tiers=[('10 อัน', 95.0)])
+    # A tier in ANOTHER unit whose price happens to equal the promo price. (A
+    # '10 อัน' tier would be the canonical list of an อัน line itself, the way
+    # the resolver reads a bare ask — fix round, item 3.)
+    pid = _product(db, tiers=[('1 กล่อง', 95.0)])
     _promo(db, pid, min_qty=20, min_qty_unit='อัน')
     flags = _r5(db, _line(pid, 19, 95.0))
     assert len(flags) == 1

@@ -59,6 +59,12 @@ def _make_db(tmp_path, name="test.db"):
             min_qty_unit TEXT
         );
 
+        -- read by R5 through price_lookup.measure_ratio (#673 fix round)
+        CREATE TABLE IF NOT EXISTS unit_map (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            book TEXT, spelling TEXT, word TEXT, created_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS product_price_tiers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product_id INTEGER,

@@ -527,7 +527,7 @@ def gate_for_ask(conn, product_id, unit_type, promo, qty, unit):
 
 
 _GATE_TEXT = {
-    'not_met': 'ยังไม่ถึงขั้นต่ำ',
+    'not_met': 'ไม่ถึงขั้นต่ำ',
     'qty_unknown': 'ยังไม่ระบุจำนวน',
     'unconvertible': 'แปลงหน่วยขั้นต่ำเป็นชิ้นไม่ได้',
     'missing': 'ไม่ได้ระบุจำนวนขั้นต่ำ',
