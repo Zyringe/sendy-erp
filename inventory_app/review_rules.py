@@ -675,6 +675,10 @@ def _r5_flags(conn, product_id, unit_type, base_sell_price, row) -> List[dict]:
         if line_price < list_per_sold * (1 - R5_TOLERANCE):
             if gate == 'missing':
                 why = f'{price_lookup.gate_text(gate)} ({promo["bundle_condition"]})'
+            elif gate == 'qty_unknown':
+                # the line HAS a quantity; its unit just has no piece ratio
+                why = (f'หน่วย{unit}นี้แปลงเป็นชิ้นไม่ได้ เทียบขั้นต่ำ '
+                       f'{promo["min_qty"]:g} {promo["min_qty_unit"]}ไม่ได้')
             else:
                 why = f'{price_lookup.gate_text(gate)} {promo["min_qty"]:g} {promo["min_qty_unit"]}'
             return [{
