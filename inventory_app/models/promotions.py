@@ -183,6 +183,38 @@ def effective_price(product, conn=None) -> float:
             conn.close()
 
 
+def min_qty_problem(conn, product_id, data):
+    """Why `data`'s minimum quantity (#673, mig 199) cannot be saved on this
+    product, or None. Every promotion writer asks this first (#673 fix round:
+    the route was the only gate). The DB CHECK is the final gate; this names
+    the problem and refuses what the CHECK cannot see: a unit with no ratio
+    for this product, and a ยกลัง/ยกล่อง label with no number (Put 2026-10-02).
+    """
+    import math
+    import price_lookup   # here, not at module level: price_lookup imports this module
+    min_qty, min_unit = data.get('min_qty'), (data.get('min_qty_unit') or '').strip() or None
+    shaped = {'promo_type': data.get('promo_type'), 'discount_value': data.get('discount_value')}
+    if min_qty is None and min_unit is None:
+        if data.get('bundle_condition') and affects_price(shaped):
+            return (f'เงื่อนไข "{data["bundle_condition"]}" ต้องระบุจำนวนขั้นต่ำ '
+                    f'(จำนวน + หน่วย) ไม่อย่างนั้นระบบใช้โปรนี้ไม่ได้')
+        return None
+    if min_qty is None or min_unit is None:
+        return 'ระบุจำนวนขั้นต่ำและหน่วยให้ครบทั้งคู่ (หรือเว้นว่างทั้งคู่)'
+    try:
+        min_qty = float(min_qty)
+    except (TypeError, ValueError):
+        return 'จำนวนขั้นต่ำต้องเป็นตัวเลข'
+    if not (math.isfinite(min_qty) and min_qty > 0):
+        return 'จำนวนขั้นต่ำต้องมากกว่า 0'
+    if not affects_price(shaped) or data.get('bundle_buy') is not None or data.get('gift_desc'):
+        return 'จำนวนขั้นต่ำใช้ได้กับโปรลดราคาเท่านั้น (ลด % / ราคาพิเศษ) ไม่ใช้กับโปรแถม'
+    row = conn.execute("SELECT unit_type FROM products WHERE id = ?", (product_id,)).fetchone()
+    if row is None:
+        return None   # the products FK refuses the insert anyway
+    return price_lookup.min_qty_unit_problem(conn, product_id, row['unit_type'], min_unit)
+
+
 def create_promotion(data: dict) -> int:
     """Insert a promotions row. Accepts any subset of the extended fields
     introduced in mig 086 (bundle_*, gift_*). Missing keys default to None
@@ -192,9 +224,14 @@ def create_promotion(data: dict) -> int:
     Optional: discount_value, date_start, date_end, bundle_buy, bundle_free,
               bundle_unit, bundle_condition, bundle_tiers_json,
               gift_desc, gift_qty, min_qty, min_qty_unit (#673; the unit is
-              stored as its หน่วย word, like bundle_unit).
+              stored as its หน่วย word, like bundle_unit). An invalid
+              minimum raises ValueError (min_qty_problem) before any write.
     """
     conn = get_connection()
+    problem = min_qty_problem(conn, data["product_id"], data)
+    if problem:
+        conn.close()
+        raise ValueError(problem)
     full = {
         "product_id":        data["product_id"],
         "promo_name":        data["promo_name"],
@@ -379,6 +416,10 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
         if new_start < today:
             return False, 'ไม่สามารถตั้งวันเริ่มโปรย้อนหลังได้ (การย้อนวันจะเขียนทับหลักฐานราคาที่ผ่านมา)', None
         new_end = data.get('date_end')
+
+        problem = min_qty_problem(conn, product_id, data)
+        if problem:
+            return False, problem, None
 
         occupies_price, occupies_qty = promo_slots_for(
             conn, data['promo_type'], data.get('discount_value'),
