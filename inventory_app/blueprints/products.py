@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 import sqlite3
@@ -12,6 +13,7 @@ import form_options
 import line_unit_correction
 import models
 import name_builder
+from models import promotions as promo_models
 import sku_code_utils
 from database import get_connection
 from paging import paging
@@ -896,6 +898,8 @@ def promotion_new(product_id):
                 'bundle_condition': _opt_str(f.get('bundle_condition')),
                 'gift_desc':        _opt_str(f.get('gift_desc')),
                 'gift_qty':         _opt_str(f.get('gift_qty')),
+                'min_qty':          _opt_float(f.get('min_qty')),
+                'min_qty_unit':     _opt_str(f.get('min_qty_unit')),
             }
             # Parse the dates here so a non-ISO value lands in THIS handler with
             # a friendly message. Without it, replace_promotion's date maths
@@ -939,6 +943,11 @@ def promotion_new(product_id):
             flash(f'ไม่รองรับ promo_type {t!r}', 'danger')
             return render_template('promotions/form.html', product=product, form=f)
 
+        min_problem = _min_qty_problem(product, data)
+        if min_problem:
+            flash(min_problem, 'danger')
+            return render_template('promotions/form.html', product=product, form=f)
+
         # 2a: creating a promo REPLACES whatever occupies the same slot
         # (price / qty / both) over the same dates — closes the old row by date
         # (date_end = new_start − 1, is_active untouched) and inserts this one
@@ -977,6 +986,34 @@ def promotion_new(product_id):
         return redirect(url_for('products.product_detail', product_id=product_id))
 
     return render_template('promotions/form.html', product=product, form=None)
+
+
+def _min_qty_problem(product, data):
+    """Why this promo's minimum quantity (#673) cannot be saved, or None.
+    The DB CHECK (mig 199) is the final gate; this names the problem first,
+    and refuses what the CHECK cannot see: a unit with no ratio for this
+    product, and a ยกลัง/ยกล่อง label with no number (Put 2026-10-02)."""
+    import price_lookup
+    min_qty, min_unit = data['min_qty'], data['min_qty_unit']
+    price_only = (promo_models.affects_price(data)
+                  and data['bundle_buy'] is None and not data['gift_desc'])
+    if min_qty is None and min_unit is None:
+        if data['bundle_condition'] and promo_models.affects_price(data):
+            return (f'เงื่อนไข "{data["bundle_condition"]}" ต้องระบุจำนวนขั้นต่ำ '
+                    f'(จำนวน + หน่วย) ไม่อย่างนั้นระบบใช้โปรนี้ไม่ได้')
+        return None
+    if min_qty is None or min_unit is None:
+        return 'ระบุจำนวนขั้นต่ำและหน่วยให้ครบทั้งคู่ (หรือเว้นว่างทั้งคู่)'
+    if not (math.isfinite(min_qty) and min_qty > 0):
+        return 'จำนวนขั้นต่ำต้องมากกว่า 0'
+    if not price_only:
+        return 'จำนวนขั้นต่ำใช้ได้กับโปรลดราคาเท่านั้น (ลด % / ราคาพิเศษ) ไม่ใช้กับโปรแถม'
+    conn = get_connection()
+    try:
+        return price_lookup.min_qty_unit_problem(conn, product['id'], product['unit_type'],
+                                                 min_unit)
+    finally:
+        conn.close()
 
 
 @bp_products.route('/promotions/<int:promo_id>/deactivate', methods=['POST'])

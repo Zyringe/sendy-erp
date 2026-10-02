@@ -191,7 +191,8 @@ def create_promotion(data: dict) -> int:
     Required keys: product_id, promo_name, promo_type.
     Optional: discount_value, date_start, date_end, bundle_buy, bundle_free,
               bundle_unit, bundle_condition, bundle_tiers_json,
-              gift_desc, gift_qty.
+              gift_desc, gift_qty, min_qty, min_qty_unit (#673; the unit is
+              stored as its หน่วย word, like bundle_unit).
     """
     conn = get_connection()
     full = {
@@ -209,6 +210,9 @@ def create_promotion(data: dict) -> int:
         "bundle_tiers_json": data.get("bundle_tiers_json"),
         "gift_desc":         data.get("gift_desc"),
         "gift_qty":          data.get("gift_qty"),
+        "min_qty":           data.get("min_qty"),
+        "min_qty_unit":      bsn_units.normalize_unit(
+            (data.get("min_qty_unit") or "").strip(), conn=conn) or None,
     }
     try:
         cur = conn.execute("""
@@ -216,12 +220,12 @@ def create_promotion(data: dict) -> int:
                 product_id, promo_name, promo_type, discount_value,
                 date_start, date_end,
                 bundle_buy, bundle_free, bundle_unit, bundle_condition,
-                bundle_tiers_json, gift_desc, gift_qty
+                bundle_tiers_json, gift_desc, gift_qty, min_qty, min_qty_unit
             ) VALUES (
                 :product_id, :promo_name, :promo_type, :discount_value,
                 :date_start, :date_end,
                 :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
-                :bundle_tiers_json, :gift_desc, :gift_qty
+                :bundle_tiers_json, :gift_desc, :gift_qty, :min_qty, :min_qty_unit
             )
         """, full)
         conn.commit()
@@ -426,6 +430,9 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
                 "bundle_tiers_json": data.get("bundle_tiers_json"),
                 "gift_desc":         data.get("gift_desc"),
                 "gift_qty":          data.get("gift_qty"),
+                "min_qty":           data.get("min_qty"),
+                "min_qty_unit":      bsn_units.normalize_unit(
+                    (data.get("min_qty_unit") or "").strip(), conn=conn) or None,
                 "source":            "manual",
             }
             cur = conn.execute("""
@@ -433,12 +440,13 @@ def replace_promotion(product_id, data, today, conn=None, cancel_conflicts=False
                     product_id, promo_name, promo_type, discount_value,
                     date_start, date_end,
                     bundle_buy, bundle_free, bundle_unit, bundle_condition,
-                    bundle_tiers_json, gift_desc, gift_qty, source
+                    bundle_tiers_json, gift_desc, gift_qty, min_qty, min_qty_unit, source
                 ) VALUES (
                     :product_id, :promo_name, :promo_type, :discount_value,
                     :date_start, :date_end,
                     :bundle_buy, :bundle_free, :bundle_unit, :bundle_condition,
-                    :bundle_tiers_json, :gift_desc, :gift_qty, :source
+                    :bundle_tiers_json, :gift_desc, :gift_qty, :min_qty, :min_qty_unit,
+                    :source
                 )
             """, full)
             new_id = cur.lastrowid

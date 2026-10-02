@@ -468,6 +468,23 @@ def _chain_ratio(conn, product_id, unit_word, unit_type_word):
     return ratio
 
 
+def min_qty_unit_problem(conn, product_id, unit_type, min_qty_unit):
+    """Why `min_qty_unit` cannot carry a promo minimum on this product, or
+    None when it can (#673 write-time refusal: the route and the catalog
+    importer refuse it, the resolver's promo_min_unconvertible flag is only
+    the backstop). The message lists the units that DO resolve."""
+    unit_type_word = _unit_word(conn, unit_type)
+    word = _unit_word(conn, (min_qty_unit or '').strip())
+    if word and _chain_ratio(conn, product_id, word, unit_type_word) is not None:
+        return None
+    resolves = []
+    for u in [unit_type_word] + _known_ratio_units(conn, product_id) + ['โหล']:
+        if u not in resolves and _chain_ratio(conn, product_id, u, unit_type_word) is not None:
+            resolves.append(u)
+    return (f"หน่วยขั้นต่ำ '{min_qty_unit}' แปลงเป็น{unit_type_word}ไม่ได้สำหรับสินค้านี้ "
+            f"— หน่วยที่ใช้ได้: {', '.join(resolves)}")
+
+
 def promo_min_measure(conn, product_id, unit_type, promo, qty, unit):
     """(qty_pieces, min_pieces) for models.promotions.promo_gate / promo_price
     — the ONE unit chain both sides of the minimum go through (#673).

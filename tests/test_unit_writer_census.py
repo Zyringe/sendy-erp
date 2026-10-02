@@ -657,6 +657,11 @@ ALLOWED = {
             'the same reason as create_product above. Behaviour pinned by '
             'test_602_units_through_map.py::'
             'test_create_promotion_stores_the_bundle_unit_word.'),
+        'promotions.min_qty_unit': ('through_map',
+            'Same `full` dict, same normalize_unit call on '
+            'data.get("min_qty_unit") (#673, mig 199). Pinned by '
+            'test_673_persist_min_qty.py::'
+            'test_create_promotion_stores_the_minimum_as_a_word.'),
     },
     'models/promotions.py::replace_promotion': {
         'promotions.bundle_unit': ('through_map',
@@ -669,6 +674,11 @@ ALLOWED = {
             'test_replace_promotion_stores_the_bundle_unit_word, with '
             'test_promotion_bundle_unit_unknown_word_survives as the '
             'control that an unknown word is still stored as typed.'),
+        'promotions.min_qty_unit': ('through_map',
+            'Same `full` dict, same normalize_unit call on '
+            'data.get("min_qty_unit") (#673); the route hands the raw form '
+            'value. Pinned by test_673_persist_min_qty.py::'
+            'test_replace_promotion_stores_the_minimum_as_a_word.'),
     },
     'models/bsn_sync.py::upsert_unit_conversion': {
         'unit_conversions.bsn_unit': ('through_map',
