@@ -649,6 +649,7 @@
                 {% if r.today and r.today.has_list_price %}
                   {% if r.today.promo_affects_price %}
                     {{ r.today.list_for_unit | fmt_price }} −{{ '%g' | format(r.today.promo.discount_value) }}% = {{ r.today.price_per_unit | fmt_price }}
+                    {% if r.today.promo.min_qty %}<div class="text-subtle small">ซื้อ ≥ {{ '%g' | format(r.today.promo.min_qty) }} {{ r.today.promo.min_qty_unit }}</div>{% endif %}
                   {% else %}
                     {{ r.today.price_per_unit | fmt_price }}
                   {% endif %}
@@ -847,6 +848,7 @@
                   <td data-label="ราคาวันนี้" class="text-end font-mono"><div>
                     {% if r.promo_affects_price %}
                       {{ r.list_for_unit | fmt_price }} −{{ '%g' | format(r.promo.discount_value) }}% = {{ r.price_per_unit | fmt_price }}
+                      {% if r.promo.min_qty %}<div class="text-subtle small">ซื้อ ≥ {{ '%g' | format(r.promo.min_qty) }} {{ r.promo.min_qty_unit }}</div>{% endif %}
                     {% else %}
                       {{ r.price_per_unit | fmt_price }}
                     {% endif %}
