@@ -443,3 +443,20 @@ def test_no_quantity_and_a_gated_last_bill_never_says_not_met(db):
     assert 'promo_min_not_met' not in _codes(out)
     text = _flag(out, 'last_paid_was_min_promo')
     assert 'ยังไม่ระบุจำนวน' in text and 'ไม่ถึง' not in text
+
+
+def test_gated_last_bill_answers_list_even_with_an_older_own_bill(db):
+    """Put's last_paid rule (A): the latest in-window bill met the minimum at
+    the gated price, today's ask is below it → LIST answers. The resolver must
+    not fall back to an OLDER bill (lead repro, Opus e2/e3: ฿385.2 from a
+    2025 bill, above the ฿350 list)."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน', date_start=_ago(60))
+    cust = _customer(db, 'TST673-OLD')
+    _bill(db, pid, date_iso=_ago(200), qty=5, unit='อัน', price=110.0, customer=cust)
+    _bill(db, pid, date_iso=_ago(10), qty=20, unit='อัน', price=95.0, customer=cust)
+    for q in (10, None):
+        out = rp(db, pid, customer_code=cust, qty=q)
+        assert out['answer']['price_per_unit'] == 100.0, q
+        assert out['answer']['basis'] == 'list_after_promo', q
+        assert 'last_paid_was_min_promo' in _codes(out), q
