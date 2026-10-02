@@ -239,3 +239,22 @@ def test_alert_builder_cannot_remove_existing_packaging(desk):
     assert response.status_code == 200
     assert list(map(tuple, c.execute('SELECT * FROM conversion_formula_inputs'))) == before
     assert c.execute('SELECT COUNT(*) FROM conversion_formulas WHERE is_active=1').fetchone()[0] == 1
+
+
+def test_same_product_with_equivalent_id_spelling_is_rejected(desk):
+    client, c = desk
+    response = client.post('/conversions/pair?alert_product_id=609', data={
+        'source_id': '0609', 'ratio': '1', 'alert_direction': 'unpack'})
+    assert response.status_code == 200
+    assert c.execute('SELECT COUNT(*) FROM conversion_formulas').fetchone()[0] == 0
+    assert c.execute('SELECT COUNT(*) FROM transactions').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('deficit,expected', [(-6.000000000000001, '1'), (-6.25, '2')])
+def test_suggestion_respects_ledger_precision_without_losing_fractional_deficits(desk, deficit, expected):
+    client, c = desk
+    fid = formula(c)
+    c.execute('UPDATE stock_levels SET quantity=? WHERE product_id=609', (deficit,))
+    c.commit()
+    doc = page(client.get(f'/conversions/{fid}/run?alert_product_id=609'))
+    assert doc.xpath('string(//input[@name="multiplier"]/@value)') == expected

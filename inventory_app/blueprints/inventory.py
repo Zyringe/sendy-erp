@@ -266,6 +266,7 @@ def conversion_pair():
                 flash('กรุณาเลือกสินค้าต้นทางที่ใช้งานอยู่', 'danger')
                 return render_template('conversions/pair_form.html', prefill=None,
                                        alert_product=alert_product, alert_direction=alert_direction)
+            source_id = str(source['id'])
             pack_id, loose_id = ((str(alert_product_id), source_id) if alert_direction == 'pack'
                                  else (source_id, str(alert_product_id)))
             direction, packaging_id, packaging_qty = 'both', '', '1'
@@ -358,7 +359,8 @@ def conversion_run(formula_id):
         flash('สูตรแปลงสินค้าไม่ถูกต้อง กรุณาตรวจสอบสูตร', 'danger')
         return redirect(url_for('inventory.alerts_view' if alert_product_id
                                 else 'inventory.conversion_list'))
-    multiplier = (max(1, math.ceil(-formula['output_stock'] / formula['output_qty']))
+    # Match the stock ledger's four-decimal precision before rounding up rounds.
+    multiplier = (max(1, math.ceil(-round(formula['output_stock'], 4) / formula['output_qty']))
                   if alert_product_id else 1)
     if request.method == 'POST':
         if not session.get('role'):
