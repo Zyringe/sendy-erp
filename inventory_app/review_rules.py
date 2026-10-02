@@ -96,21 +96,18 @@ def _get_ratio(conn, product_id: int, bsn_unit: str, unit_type: str):
 # ── Promo helper (date-parameterized, NOT get_active_promotion()) ─────────────
 
 def _get_active_promo_on_date(conn, product_id: int, date_iso: str):
-    """Return the most recent active promo for product on date_iso.
+    """The PRICE-slot promo active for product on date_iso, or None.
 
-    Mirrors get_active_promotion() semantics but uses date_iso instead of
-    today — R5 must check historical data, not the current catalog state.
+    R5 checks historical data, so it asks for date_iso rather than today. It
+    reads the same slot-aware selection the resolver uses
+    (promo_models.get_active_promos_by_class): until #673 this took the newest
+    row of ANY type, so a later bundle/gift promo hid an earlier percent one
+    and R5 never checked the discount (behaviour change, its own commit).
+    SELECT * carries min_qty / min_qty_unit / bundle_condition for the gate.
     """
-    return conn.execute("""
-        SELECT id, promo_name, promo_type, discount_value,
-               bundle_condition, min_qty, min_qty_unit
-        FROM promotions
-        WHERE product_id = ? AND is_active = 1
-          AND (date_start IS NULL OR date_start <= ?)
-          AND (date_end   IS NULL OR date_end   >= ?)
-        ORDER BY id DESC
-        LIMIT 1
-    """, (product_id, date_iso, date_iso)).fetchone()
+    price_promo, _qty_promo = promo_models.get_active_promos_by_class(
+        product_id, date_iso, conn)
+    return price_promo
 
 
 def _promo_expected_per_base_unit(product, promo) -> Optional[float]:
