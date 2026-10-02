@@ -192,7 +192,11 @@ def min_qty_problem(conn, product_id, data):
     """
     import math
     import price_lookup   # here, not at module level: price_lookup imports this module
-    min_qty, min_unit = data.get('min_qty'), (data.get('min_qty_unit') or '').strip() or None
+    # validate the word create/replace will STORE, not the raw spelling typed:
+    # 'หล' with its own row could pass while the stored 'โหล' cannot be measured
+    raw_unit = (data.get('min_qty_unit') or '').strip()
+    min_qty = data.get('min_qty')
+    min_unit = bsn_units.normalize_unit(raw_unit, conn=conn) if raw_unit else None
     shaped = {'promo_type': data.get('promo_type'), 'discount_value': data.get('discount_value')}
     if min_qty is None and min_unit is None:
         if data.get('bundle_condition') and affects_price(shaped):
