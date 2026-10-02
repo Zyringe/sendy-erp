@@ -223,6 +223,15 @@ def empty_db(tmp_path, monkeypatch):
     # database.py imports DATABASE_PATH at module load time — patch there too.
     import database
     monkeypatch.setattr(database, 'DATABASE_PATH', str(db_path))
+    # Same stale-snapshot trap as tmp_db above: a route test on this fixture
+    # (/ar via `cf_mod.ar_aging()`) would otherwise read whichever torn-down
+    # path the first `import cashflow` of the session captured.
+    import cashflow
+    monkeypatch.setattr(cashflow, 'DATABASE_PATH', str(db_path))
+    import payments_alloc
+    monkeypatch.setattr(payments_alloc, 'DATABASE_PATH', str(db_path))
+    import revenue
+    monkeypatch.setattr(revenue, 'DATABASE_PATH', str(db_path))
 
     return str(db_path)
 

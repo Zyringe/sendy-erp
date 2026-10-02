@@ -423,6 +423,13 @@
           <td class="text-end pe-3 text-danger fw-medium">{{ b.outstanding | fmt_price }}</td>
         </tr>
         {% endfor %}
+        {# #708: chaseable credits, so the bills above plus this line = รวม. #}
+        {% if unpaid_credit %}
+        <tr data-row="credit">
+          <td colspan="2" class="ps-3 text-subtle">หักเครดิต</td>
+          <td class="text-end pe-3 text-success">{{ unpaid_credit | fmt_price }}</td>
+        </tr>
+        {% endif %}
       </tbody>
       <tfoot class="table-light fw-bold">
         <tr>

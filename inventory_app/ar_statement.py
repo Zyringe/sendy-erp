@@ -192,7 +192,9 @@ def customer_statement(code: str,
                      outstanding, is_anomalous, has_warning, age_days
       bills          the chaseable rows with outstanding > 0. A bill LIST drops
                      credit rows on purpose (ADR 0012); the total does not.
-      excluded       the rest of the customer's snapshot rows, with excluded_by
+      credits        the chaseable rows with outstanding < 0, which a page shows
+                     as its หักเครดิต line so bills + credits = total (#708)
+      excluded      the rest of the customer's snapshot rows, with excluded_by
       total          sum of chaseable outstanding, credits included
       freshness      freshness() today
 
@@ -214,6 +216,7 @@ def customer_statement(code: str,
         'snapshot_date': snap,
         'chaseable': chaseable,
         'bills': [r for r in chaseable if r['outstanding'] > 0],
+        'credits': [r for r in chaseable if r['outstanding'] < 0],
         'excluded': excluded,
         'total': round(sum(r['outstanding'] for r in chaseable), 2),
         'freshness': fresh,

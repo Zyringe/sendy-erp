@@ -94,7 +94,9 @@ def customer_detail(customer_code):
     statement = ar_statement.customer_statement(customer_code)
     unpaid_bills = sorted(statement['bills'], key=lambda b: b['doc_date_iso'] or '',
                           reverse=True)
-    unpaid_total = sum(b['outstanding'] for b in unpaid_bills)
+    # The chaseable NET, as /ar shows it (#708); credits get their own line.
+    unpaid_total = statement['total']
+    unpaid_credit = round(sum(c['outstanding'] for c in statement['credits']), 2)
     unpaid_snapshot_date = statement['snapshot_date']
     # The bills REMOVED from that total, so a forgiven / already-paid / pre-2024
     # bill does not simply vanish from this page (ADR 0012, #468).
@@ -141,6 +143,7 @@ def customer_detail(customer_code):
                            days_quiet=days_quiet,
                            audit_history=models.get_customer_audit_history(customer_code),
                            unpaid_bills=unpaid_bills, unpaid_total=unpaid_total,
+                           unpaid_credit=unpaid_credit,
                            unpaid_snapshot_date=unpaid_snapshot_date,
                            excluded_docs=excluded_docs,
                            aging=aging,

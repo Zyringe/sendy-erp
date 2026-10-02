@@ -131,7 +131,9 @@ def customer_detail(customer_code):
     unpaid_full = sorted(statement['bills'], key=lambda b: b['doc_date_iso'] or '',
                          reverse=True)
     unpaid = unpaid_full[:5]
-    unpaid_total = sum(b['outstanding'] for b in unpaid_full)
+    # The chaseable NET, as /ar shows it (#708); credits get their own line.
+    unpaid_total = statement['total']
+    unpaid_credit = round(sum(c['outstanding'] for c in statement['credits']), 2)
     unpaid_snapshot_date = statement['snapshot_date']
     # What was REMOVED from that total (ADR 0012, #468). This surface renders
     # only the phone-sized count.
@@ -167,6 +169,7 @@ def customer_detail(customer_code):
         region=region_row,
         unpaid=unpaid,
         unpaid_total=unpaid_total,
+        unpaid_credit=unpaid_credit,
         unpaid_snapshot_date=unpaid_snapshot_date,
         excluded_docs=excluded_docs,
         aging=aging,
