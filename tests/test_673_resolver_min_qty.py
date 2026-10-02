@@ -331,3 +331,28 @@ def test_r6_control_ungated_promo_counts_every_bill(db):
               customer=f'TST673-R6c{i}')
     out = rp(db, pid, qty=20)
     assert out['context']['promo_stale'] is True
+
+
+# ── the quote CLI passes "no quantity" through ───────────────────────────────
+
+def _cli():
+    import importlib.util
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          'scripts', 'price_lookup_cli.py')
+    spec = importlib.util.spec_from_file_location('price_lookup_cli_673', script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_cli_line_without_qty_has_no_quantity(db):
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    cli = _cli()
+    no_qty = cli._resolve_line(db, {'product_id': pid}, TODAY)['result']
+    assert no_qty['list']['promo_gate'] == 'qty_unknown'
+    assert no_qty['answer']['qty'] is None
+    assert no_qty['answer']['price_per_unit'] == 100.0
+    # control: an explicit qty that meets the minimum is priced with the promo
+    met = cli._resolve_line(db, {'product_id': pid, 'qty': 20}, TODAY)['result']
+    assert met['answer']['price_per_unit'] == 95.0

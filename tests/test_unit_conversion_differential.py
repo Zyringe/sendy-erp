@@ -168,6 +168,16 @@ def test_resolve_and_bundle(world):
                     == _call(price_lookup._bundle_buy_ratio, conn, pid, u, ut)), (pid, u)
 
 
+def _without_673_keys(out):
+    """#673 added two keys to `list`. The world holds no promo with a minimum,
+    so they must say exactly that (gate 'none', the promo in effect IS the
+    promo offered); then they are dropped so the rest compares by repr."""
+    lst = out['list']
+    assert lst.pop('promo_gate') == 'none'
+    assert lst.pop('price_promo_in_effect') == lst['price_promo']
+    return out
+
+
 def test_resolve_price_end_to_end(world):
     conn, products = world
     old = _old('inventory_app/price_lookup.py', '_old_price_lookup')
@@ -176,7 +186,7 @@ def test_resolve_price_end_to_end(world):
         for u in [None, 'โหล', 'หล', 'กุรุส', 'แผง']:
             for cust in (None, 'ร้านทดสอบ'):
                 args = dict(product_id=pid, customer_code=cust, unit=u, qty=2, today='2026-09-29')
-                got = _call(lambda: price_lookup.resolve_price(conn, **args))
+                got = _call(lambda: _without_673_keys(price_lookup.resolve_price(conn, **args)))
                 want = _call(lambda: old.resolve_price(conn, **args))
                 if want == 'raises ZeroDivisionError' and not got.startswith('raises'):
                     fixed_716 += 1

@@ -2066,7 +2066,7 @@ def test_512_resolve_price_output_keys_pinned(db):
     assert set(out['list']) == {'base_per_piece', 'list_for_unit', 'list_source',
                                 'tier_equals_base_x_ratio', 'price_promo', 'qty_promo',
                                 'list_after_promo', 'price_promo_applied', 'promo_since',
-                                'promo_source'}
+                                'promo_source', 'price_promo_in_effect', 'promo_gate'}  # +2: #673
     assert set(out['customer']) == {'code', 'name', 'last', 'typical_disc_pct', 'n_products_12m'}
     assert set(out['customer']['last']) == {'cash_per_unit', 'unit', 'qty', 'date', 'doc_no',
                                             'in_window'}
