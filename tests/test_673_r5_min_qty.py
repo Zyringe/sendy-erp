@@ -136,3 +136,67 @@ def test_r5_reads_the_price_slot_not_the_newest_row(db):
     assert len(flags) == 1
     assert 'โปร percent' in flags[0]['message_th']
     assert _r5(db, _line(pid, 1, 95.0)) == []                        # control
+
+
+# ── fix round (/interrogate on the PR 1 diff, item 3) ────────────────────────
+# R5 prices the line from the CANONICAL list of the sold unit (a tier first,
+# as the resolver does), flags ANY below-list discount on a below-minimum
+# line, and still runs when R4's exact-ratio path misses (tier-implied โหล).
+
+def _product_x66(conn):
+    """pid 1102's shape: base 54.17/ตัว (×12 = 650.04), a '1 โหล' tier at 670."""
+    _pid[0] += 1
+    pid = conn.execute(
+        "INSERT INTO products (product_name, unit_type, base_sell_price, cost_price, is_active) "
+        "VALUES (?, 'ตัว', 54.17, 30, 1)", (f'r5 x66 #{_pid[0]}',)).lastrowid
+    conn.execute("INSERT INTO unit_conversions (product_id, bsn_unit, ratio) VALUES (?, 'โหล', 12)",
+                 (pid,))
+    conn.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) "
+                 "VALUES (?, '1 โหล', 670)", (pid,))
+    conn.commit()
+    return pid
+
+
+def test_tier_list_below_minimum_promo_price_is_flagged(db):
+    """Opus e8: 1 โหล at 649.90 (670 − 3%) below a 3 โหล minimum."""
+    pid = _product_x66(db)
+    _promo(db, pid, discount_value=3.0, min_qty=3, min_qty_unit='โหล')
+    flags = _r5(db, _line(pid, 1, 649.90, unit='โหล'))
+    assert len(flags) == 1 and 'ไม่ถึงขั้นต่ำ 3 โหล' in flags[0]['message_th']
+    assert _r5(db, _line(pid, 1, 670.0, unit='โหล')) == []                 # list: clean
+
+
+def test_tier_list_met_minimum_at_list_says_promo_not_used(db):
+    """Opus e8: 3 โหล at the tier list 670 met the minimum — the tier is the
+    list, not an excuse."""
+    pid = _product_x66(db)
+    _promo(db, pid, discount_value=3.0, min_qty=3, min_qty_unit='โหล')
+    flags = _r5(db, _line(pid, 3, 670.0, unit='โหล'))
+    assert len(flags) == 1 and 'ไม่ได้ใช้โปร' in flags[0]['message_th']
+    assert _r5(db, _line(pid, 3, 649.90, unit='โหล')) == []                # promo: clean
+
+
+def test_any_below_list_discount_below_minimum_is_flagged(db):
+    """Fable d: 5 pieces at 93 (list 100, promo would be 95)."""
+    pid = _product(db)
+    _promo(db, pid, min_qty=20, min_qty_unit='อัน')
+    flags = _r5(db, _line(pid, 5, 93.0))
+    assert len(flags) == 1 and 'ไม่ถึงขั้นต่ำ 20 อัน' in flags[0]['message_th']
+
+
+def test_r5_runs_on_a_tier_implied_dozen_line(db):
+    """No โหล row (R4 fires: stock will not cut), but the '1 โหล' tier makes
+    the dozen measurable — R5 must still judge the promo."""
+    _pid[0] += 1
+    pid = db.execute(
+        "INSERT INTO products (product_name, unit_type, base_sell_price, cost_price, is_active) "
+        "VALUES (?, 'ดอก', 10, 4, 1)", (f'r5 dozen #{_pid[0]}',)).lastrowid
+    db.execute("INSERT INTO product_price_tiers (product_id, qty_label, price) "
+               "VALUES (?, '1 โหล', 120)", (pid,))
+    db.commit()
+    _promo(db, pid, discount_value=25.0, min_qty=5, min_qty_unit='โหล')
+    rules = {f['rule_code'] for f in review_rules._check_row_rules(db, _line(pid, 1, 90.0, unit='โหล'))}
+    assert 'R4_UNUSUAL_UNIT' in rules                                         # control
+    assert 'ไม่ถึงขั้นต่ำ 5 โหล' in _r5(db, _line(pid, 1, 90.0, unit='โหล'))[0]['message_th']
+    assert 'ไม่ได้ใช้โปร' in _r5(db, _line(pid, 5, 120.0, unit='โหล'))[0]['message_th']
+    assert _r5(db, _line(pid, 5, 90.0, unit='โหล')) == []
