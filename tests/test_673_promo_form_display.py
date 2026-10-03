@@ -354,7 +354,7 @@ def _promo(**kw):
 def test_promo_detail_macro_prints_the_minimum(tmp_db):
     html = _promo_detail(_promo(min_qty=2.5, min_qty_unit='โหล'))
     assert 'card673' in html and 'ส่วนลด 5%' in html
-    assert 'ต้องซื้อขั้นต่ำ 2.5 โหล' in html
+    assert 'ซื้อ ≥ 2.5 โหล' in html and 'ต้องซื้อขั้นต่ำ' not in html
 
 
 def test_promo_detail_macro_without_a_minimum_prints_the_label(tmp_db):
@@ -366,5 +366,113 @@ def test_promo_detail_macro_without_a_minimum_prints_the_label(tmp_db):
 
 def test_promo_detail_macro_prefers_the_minimum_over_a_label(tmp_db):
     html = _promo_detail(_promo(min_qty=20.0, min_qty_unit='อัน', bundle_condition='ยกลัง'))
-    assert 'ต้องซื้อขั้นต่ำ 20 อัน' in html
+    assert 'ซื้อ ≥ 20 อัน' in html
     assert 'ต้องซื้อยกลัง' not in html
+
+
+# ── one condition text on every site (S2: macros.promo_condition) ───────────
+
+_CUST = 'TEST673S'
+_CUST_NAME = 'ลูกค้าทดสอบ 673 เงื่อนไข'
+
+
+def _render_macro(name, promo):
+    from app import app as flask_app
+    with flask_app.test_request_context():
+        tpl = flask_app.jinja_env.from_string(
+            "{% from 'macros.html' import " + name + " %}{{ " + name + "(p) }}")
+        return tpl.render(p=promo)
+
+
+def _site_promos(tmp_db):
+    """One gated price promo (met by the customer's last bill) and one
+    label-only bundle, each on its own fresh product."""
+    gated_pid = _product(tmp_db, unit_type='ตัว')
+    bundle_pid = _product(tmp_db, unit_type='ตัว')
+    c = _conn(tmp_db)
+    c.execute("INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+              "min_qty, min_qty_unit, date_start) "
+              "VALUES (?, 'site-gated', 'percent', 10, 20, 'ตัว', '2024-01-01')", (gated_pid,))
+    c.execute("INSERT INTO promotions (product_id, promo_name, promo_type, bundle_buy, bundle_free, "
+              "bundle_unit, bundle_condition, date_start) "
+              "VALUES (?, 'site-bundle', 'bundle', 10, 1, 'ตัว', 'ยกลัง', '2024-01-01')",
+              (bundle_pid,))
+    c.execute("INSERT INTO customers (code, name) VALUES (?, ?) "
+              "ON CONFLICT(code) DO UPDATE SET name = excluded.name", (_CUST, _CUST_NAME))
+    c.execute("INSERT INTO sales_transactions (date_iso, doc_no, doc_base, product_id, customer, "
+              "customer_code, qty, unit, unit_price, vat_type, total, net) "
+              "VALUES ('2026-01-01', 'IV67399-1', 'IV67399', ?, ?, ?, 20, 'ตัว', 90, 0, 1800, 1800)",
+              (gated_pid, _CUST_NAME, _CUST))
+    c.commit()
+    promos = {r['promo_name']: dict(r) for r in c.execute(
+        "SELECT * FROM promotions WHERE product_id IN (?, ?)", (gated_pid, bundle_pid))}
+    c.close()
+    return gated_pid, bundle_pid, promos['site-gated'], promos['site-bundle']
+
+
+def test_promo_condition_is_the_one_rule():
+    gated = _promo(min_qty=20.0, min_qty_unit='ตัว')
+    assert _render_macro('promo_condition', gated) == 'ซื้อ ≥ 20 ตัว'
+    assert _render_macro('promo_condition', dict(gated, bundle_condition='ยกลัง')) == 'ซื้อ ≥ 20 ตัว'
+    assert _render_macro('promo_condition', _promo(bundle_condition='ยกลัง')) == 'ต้องซื้อยกลัง'
+    assert _render_macro('promo_condition', _promo()) == ''
+
+
+def test_every_site_renders_the_same_condition_text(admin_client, tmp_db):
+    """promo_summary, promo_detail, product detail (active row + history) and
+    the customer page's % formula cell all print promo_condition's text and
+    only their own wrapper. The customer page shows price promos only, so the
+    label-only bundle has no site there; its cross-sell formula cell (line
+    ~851) cannot render a minimum (cross-sell asks with no quantity, so a
+    gated promo never applies) and is held by the template sweep below."""
+    gated_pid, bundle_pid, gated, bundle = _site_promos(tmp_db)
+    cases = [(gated_pid, gated, 'ซื้อ ≥ 20 ตัว'), (bundle_pid, bundle, 'ต้องซื้อยกลัง')]
+    for pid, promo, text in cases:
+        assert _render_macro('promo_condition', promo) == text
+        assert _render_macro('promo_summary', promo).strip().endswith(' · ' + text)
+        assert f'<div class="text-muted small">{text}</div>' in _render_macro('promo_detail', promo)
+        page = admin_client.get(f'/products/{pid}').get_data(as_text=True)
+        assert f' · {text}</small>' in _active_row(page)
+        assert f'({text})' in _history_row(page, promo['promo_name'])
+        assert 'ต้องซื้อขั้นต่ำ' not in page
+
+    from urllib.parse import quote
+    html = admin_client.get(f'/customer/code/{quote(_CUST)}').get_data(as_text=True)
+    rows = [r for r in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.S)
+            if re.search(rf'/products/{gated_pid}[?"]', r)]
+    cells = [c for r in rows
+             for c in re.findall(r'<td data-label="ราคาวันนี้"[^>]*>(.*?)</td>', r, re.S)]
+    formula = [c for c in cells if '−10%' in c]
+    assert len(formula) == 1, 'CONTROL: the % formula rendered for the gated product'
+    assert '<div class="text-subtle small">ซื้อ ≥ 20 ตัว</div>' in formula[0]
+
+
+def test_no_template_spells_the_condition_by_hand():
+    """The condition is written once, in macros.promo_condition. Exempt:
+    promotions/form.html, whose 'ซื้อ ≥' is the input's own label and its live
+    preview of a promo not yet saved, not a render of a stored one."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / 'inventory_app' / 'templates'
+    files = sorted(root.rglob('*.html'))
+    assert len(files) > 50, 'control: the sweep sees the template tree'
+    hits = []
+    macro_body = None
+    for f in files:
+        rel = f.relative_to(root).as_posix()
+        if rel == 'promotions/form.html':
+            continue
+        text = re.sub(r'\{#.*?#\}', '', f.read_text(encoding='utf-8'), flags=re.S)
+        if rel == 'macros.html':
+            m = re.search(r'\{% macro promo_condition\(promo\) -?%\}(.*?)\{%-? endmacro', text, re.S)
+            assert m, 'macros.html defines promo_condition'
+            macro_body = m.group(1)
+            text = text.replace(m.group(0), '')
+            assert 'promo_condition(' in text, 'control: the comment strip kept the code'
+        for needle in ('ซื้อ ≥', 'ต้องซื้อ'):
+            if needle in text:
+                hits.append((rel, needle))
+    assert hits == []
+    assert 'ซื้อ ≥' in macro_body and 'ต้องซื้อ' in macro_body
+    calls = {rel: (root / rel).read_text(encoding='utf-8').count('promo_condition(')
+             for rel in ('customer_summary.html', 'products/detail.html')}
+    assert calls == {'customer_summary.html': 2, 'products/detail.html': 2}

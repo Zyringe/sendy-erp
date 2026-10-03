@@ -80,7 +80,7 @@ def test_promo_detail_lists_tiers_and_condition():
         'min_qty': 20.0, 'min_qty_unit': 'อัน', 'bundle_condition': 'ยกลัง',
         'bundle_tiers_json': None, 'date_start': None, 'date_end': None,
     })
-    assert 'ต้องซื้อขั้นต่ำ 20 อัน' in gated
+    assert 'ซื้อ ≥ 20 อัน' in gated and 'ต้องซื้อขั้นต่ำ' not in gated
     assert 'ต้องซื้อยกลัง' not in gated
 
 
