@@ -70,9 +70,20 @@
 {% endmacro %}
 
 
-{# One-line promotion summary for a table cell: discount and/or freebie, the
-   enforced minimum quantity (#673, "ซื้อ ≥ N <unit>"), plus a "🎁 N ระดับ" pill
-   when a bundle has multiple tiers. Covers all promo_types. #}
+{# A promo's purchase condition, written once (#673): the minimum quantity when
+   one is set, else the legacy ยกลัง/ยกล่อง label (a bundle / gift / mixed-with-
+   freebie row cannot carry a minimum; a labelled price row with none is priced
+   at list, promo_min_missing), else nothing. Call sites add only their wrapper. #}
+{% macro promo_condition(promo) -%}
+{%- if promo.min_qty -%}ซื้อ ≥ {{ '%g' | format(promo.min_qty) }} {{ promo.min_qty_unit }}
+{%- elif promo.bundle_condition -%}ต้องซื้อ{{ promo.bundle_condition }}
+{%- endif -%}
+{%- endmacro %}
+
+
+{# One-line promotion summary for a table cell: discount and/or freebie, its
+   promo_condition, plus a "🎁 N ระดับ" pill when a bundle has multiple tiers.
+   Covers all promo_types. #}
 {% macro promo_summary(promo) %}
 {%- if promo -%}
   {%- if promo.promo_type == 'percent' -%}ลด {{ '%g' | format(promo.discount_value) }}%
@@ -81,14 +92,15 @@
   {%- elif promo.promo_type == 'gift' -%}🎁 แถม {{ promo.gift_desc }}{% if promo.gift_qty %} ({{ promo.gift_qty }}){% endif %}
   {%- elif promo.promo_type == 'mixed' -%}{% if promo.discount_value %}ลด {{ '%g' | format(promo.discount_value) }}%{% endif %}{% if promo.bundle_buy %} · 🎁 ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% endif %}{% if promo.gift_desc %} · 🎁 {{ promo.gift_desc }}{% endif %}
   {%- endif -%}
-  {%- if promo.min_qty %} · ซื้อ ≥ {{ '%g' | format(promo.min_qty) }} {{ promo.min_qty_unit }}{% endif -%}
+  {%- set _cond = promo_condition(promo) -%}
+  {%- if _cond %} · {{ _cond }}{% endif -%}
   {%- if promo.bundle_tiers_json -%}{%- set tiers = promo.bundle_tiers_json | from_json -%}{%- if tiers and tiers | length > 1 %} <span class="cc-freebie">🎁 {{ tiers | length }} ระดับ</span>{%- endif -%}{%- endif -%}
 {%- endif -%}
 {% endmacro %}
 
 
-{# Full promotion detail block for the modal: name + terms + minimum quantity
-   (#673; else the legacy ยกลัง/ยกล่อง label) + all freebie tiers + date range. #}
+{# Full promotion detail block for the modal: name + terms + promo_condition +
+   all freebie tiers + date range. #}
 {% macro promo_detail(promo) %}
 {%- if promo -%}
   <div class="mb-1"><span class="badge bg-danger">{{ promo.promo_name }}</span></div>
@@ -100,8 +112,8 @@
     {%- elif promo.promo_type == 'mixed' -%}{% if promo.discount_value %}ลด {{ '%g' | format(promo.discount_value) }}%{% endif %}{% if promo.bundle_buy %} · ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% endif %}{% if promo.gift_desc %} · แถม {{ promo.gift_desc }}{% endif %}
     {%- endif -%}
   </div>
-  {%- if promo.min_qty %}<div class="text-muted small">ต้องซื้อขั้นต่ำ {{ '%g' | format(promo.min_qty) }} {{ promo.min_qty_unit }}</div>
-  {%- elif promo.bundle_condition %}<div class="text-muted small">ต้องซื้อ{{ promo.bundle_condition }}</div>{% endif -%}
+  {%- set _cond = promo_condition(promo) -%}
+  {%- if _cond %}<div class="text-muted small">{{ _cond }}</div>{% endif -%}
   {%- if promo.bundle_tiers_json -%}{%- set tiers = promo.bundle_tiers_json | from_json -%}
     {%- if tiers and tiers | length > 0 -%}
       <div class="small mt-1">หลายระดับ:

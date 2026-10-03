@@ -1,4 +1,4 @@
-{% from 'macros.html' import doc_link %}
+{% from 'macros.html' import doc_link, promo_condition %}
 {% extends 'base.html' %}
 {% block title %}{{ product.product_name }} – ERP{% endblock %}
 {% block page_title %}{{ product.product_name }}{% endblock %}
@@ -338,8 +338,8 @@
                       {% if active_promo.bundle_buy %} · ซื้อ {{ active_promo.bundle_buy }} แถม {{ active_promo.bundle_free }}{% if active_promo.bundle_unit %} {{ active_promo.bundle_unit }}{% endif %}{% endif %}
                       {% if active_promo.gift_desc %} · แถม {{ active_promo.gift_desc }} ({{ active_promo.gift_qty }}){% endif %}
                     {%- endif -%}
-                    {%- if active_promo.min_qty %} · ซื้อ ≥ {{ '%g'|format(active_promo.min_qty) }} {{ active_promo.min_qty_unit }}
-                    {%- elif active_promo.bundle_condition %} · ต้องซื้อ{{ active_promo.bundle_condition }}{%- endif -%}
+                    {%- set _cond = promo_condition(active_promo) -%}
+                    {%- if _cond %} · {{ _cond }}{%- endif -%}
                   </small>
                 </td></tr>
             {% endif %}
@@ -697,10 +697,8 @@
                   {% if promo.bundle_buy %}<br>ซื้อ {{ promo.bundle_buy }} แถม {{ promo.bundle_free }}{% if promo.bundle_unit %} {{ promo.bundle_unit }}{% endif %}{% endif %}
                   {% if promo.gift_desc %}<br>+ {{ promo.gift_desc }} ({{ promo.gift_qty }}){% endif %}
                 {% endif %}
-                {# no minimum: the legacy label still says what the promo requires (a bundle / gift row cannot
-                   carry a minimum; a labelled price row with none is priced at list, promo_min_missing) #}
-                {% if promo.min_qty %}<br><span class="text-subtle">(ซื้อ ≥ {{ '%g'|format(promo.min_qty) }} {{ promo.min_qty_unit }})</span>
-                {% elif promo.bundle_condition %}<br><span class="text-subtle">(ต้องซื้อ{{ promo.bundle_condition }})</span>{% endif %}
+                {% set _cond = promo_condition(promo) %}
+                {% if _cond %}<br><span class="text-subtle">({{ _cond }})</span>{% endif %}
                 {% if promo.bundle_tiers_json %}
                   {% set tiers = promo.bundle_tiers_json | from_json %}
                   {% if tiers %}
