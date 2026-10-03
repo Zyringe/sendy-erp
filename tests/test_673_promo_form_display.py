@@ -1,11 +1,13 @@
 """#673 PR 2: the promo minimum in the UI.
 
 - `price_lookup.min_qty_units` is THE list of units a minimum may be written
-  in for a product (the ones `measure_ratio` resolves, base unit first);
-  `min_qty_unit_problem` refuses everything outside it.
-- The promo form offers exactly that list in its unit <select>, has no
-  `bundle_condition` select any more, and a blank quantity means no minimum
-  (the select always posts a unit).
+  in for a product, as (word, pieces per unit) pairs (the ones `measure_ratio`
+  resolves, base unit first); `min_qty_unit_problem` refuses everything
+  outside it.
+- The promo form offers exactly that list in its unit <select>, each option
+  labelled with its ratio, behind an empty placeholder that stays selected
+  unless the posted unit is in the list (a stale unit falls back to blank,
+  never to the first real unit). It has no `bundle_condition` select.
 - One rule in every render (product detail's active row and history, the
   call card's promo_detail macro): the minimum when there is one, else the
   legacy ยกลัง/ยกล่อง label when there is one, whatever the promo type (a
@@ -67,6 +69,10 @@ def _units(tmp_db, pid):
         c.close()
 
 
+def _words(tmp_db, pid):
+    return [w for w, _ratio in _units(tmp_db, pid)]
+
+
 @pytest.fixture
 def admin_client(tmp_db):
     from app import app as flask_app
@@ -85,9 +91,16 @@ def _post(client, pid, **form):
 
 
 def _select_options(html, name):
+    """[(value, label, selected)] of the <select name=...>."""
     m = re.search(rf'<select[^>]*name="{name}"[^>]*>(.*?)</select>', html, re.S)
     assert m, f'no <select name="{name}"> in the page'
-    return re.findall(r'<option value="([^"]*)"', m.group(1))
+    return [(v, ' '.join(label.split()), bool(sel.strip()))
+            for v, sel, label in re.findall(r'<option value="([^"]*)"([^>]*)>(.*?)</option>',
+                                            m.group(1), re.S)]
+
+
+def _selected(html, name):
+    return [v for v, _label, sel in _select_options(html, name) if sel]
 
 
 def _active_row(html):
@@ -120,13 +133,13 @@ def test_min_qty_units_is_base_first_and_only_measurable_units(tmp_db):
     """A ลัง tier with no ratio answers a price but cannot measure a minimum,
     so it is not offered; the dozen row is."""
     pid = _product(tmp_db, rows=[('โหล', 12.0)], tiers=[('1 ลัง', 900.0)])
-    assert _units(tmp_db, pid) == ['อัน', 'โหล']
+    assert _units(tmp_db, pid) == [('อัน', 1.0), ('โหล', 12.0)]
 
 
 def test_min_qty_units_includes_a_tier_implied_dozen(tmp_db):
     """pid 307's shape: no โหล row, a '1 โหล' tier: the dozen measures as 12."""
     pid = _product(tmp_db, unit_type='ดอก', tiers=[('1 โหล', 120.0)])
-    assert _units(tmp_db, pid) == ['ดอก', 'โหล']
+    assert _units(tmp_db, pid) == [('ดอก', 1.0), ('โหล', 12.0)]
 
 
 def test_min_qty_units_equals_what_min_qty_unit_problem_accepts(tmp_db):
@@ -141,11 +154,14 @@ def test_min_qty_units_equals_what_min_qty_unit_problem_accepts(tmp_db):
         words = {bsn_units.normalize_unit(u, conn=c) for u in candidates}
         accepted = {w for w in words
                     if price_lookup.min_qty_unit_problem(c, pid, 'อัน', w) is None}
-        listed = price_lookup.min_qty_units(c, pid, 'อัน')
+        pairs = price_lookup.min_qty_units(c, pid, 'อัน')
+        ratios = {w: price_lookup.measure_ratio(c, pid, 'อัน', w) for w, _r in pairs}
         refusal = price_lookup.min_qty_unit_problem(c, pid, 'อัน', 'ม้วน')
     finally:
         c.close()
-    assert listed[0] == 'อัน'
+    listed = [w for w, _r in pairs]
+    assert dict(pairs) == ratios                   # each ratio is measure_ratio's own
+    assert listed[0] == 'อัน' and pairs[0][1] == 1.0
     assert len(listed) == len(set(listed))
     assert set(listed) == accepted
     assert {'อัน', 'โหล', 'แผง'} <= accepted and 'ลัง' not in accepted and 'กล่อง' not in accepted
@@ -162,7 +178,9 @@ def test_form_offers_exactly_the_measurable_units(admin_client, tmp_db):
     html = resp.get_data(as_text=True)
     assert re.search(r'<input[^>]*name="min_qty"', html)
     options = _select_options(html, 'min_qty_unit')
-    assert options == _units(tmp_db, pid) == ['อัน', 'โหล']
+    assert [v for v, _l, _s in options] == [''] + _words(tmp_db, pid) == ['', 'อัน', 'โหล']
+    assert [label for _v, label, _s in options] == ['— หน่วย —', 'อัน', 'โหล (= 12 อัน)']
+    assert _selected(html, 'min_qty_unit') == ['']     # placeholder until a unit is picked
     group = re.search(r'id="minQtyGroup"(.*?)</div>\s*</div>', html, re.S)
     assert group, 'no minimum group on the form'
     assert 'ขั้นต่ำ (ไม่บังคับ)' in group.group(1)
@@ -183,8 +201,20 @@ def test_form_repopulates_the_minimum_after_a_refusal(admin_client, tmp_db):
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
     assert re.search(r'<input[^>]*name="min_qty"[^>]*value="20"', html)
-    assert re.search(r'<option value="โหล"\s+selected', html)
-    assert not re.search(r'<option value="อัน"\s+selected', html)
+    assert _selected(html, 'min_qty_unit') == ['โหล']
+    assert _promos(tmp_db, pid) == []
+
+
+def test_form_re_render_drops_a_unit_not_in_the_list(admin_client, tmp_db):
+    """Sol: a refused '2 ลัง' re-rendered as '2 อัน' (the first real option),
+    one click from saving a minimum the operator never typed. A posted unit
+    outside the list falls back to the blank placeholder."""
+    pid = _product(tmp_db, rows=[('โหล', 12.0)])
+    resp = _post(admin_client, pid, min_qty='2', min_qty_unit='ลัง')
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert re.search(r'<input[^>]*name="min_qty"[^>]*value="2"', html)   # control: re-rendered
+    assert _selected(html, 'min_qty_unit') == ['']
     assert _promos(tmp_db, pid) == []
 
 
@@ -222,11 +252,10 @@ def test_post_a_unit_that_does_not_resolve_is_refused(admin_client, tmp_db):
     assert _promos(tmp_db, pid) == []
 
 
-def test_post_blank_quantity_means_no_minimum(admin_client, tmp_db):
-    """The unit <select> always posts its first option; a blank quantity is
-    'no minimum', never a half-filled minimum."""
+def test_post_blank_quantity_and_placeholder_unit_means_no_minimum(admin_client, tmp_db):
+    """What the form posts when the group is left alone: '' and ''."""
     pid = _product(tmp_db, rows=[('โหล', 12.0)])
-    resp = _post(admin_client, pid, min_qty='', min_qty_unit='อัน')
+    resp = _post(admin_client, pid, min_qty='', min_qty_unit='')
     assert resp.status_code == 302
     assert _promos(tmp_db, pid) == [('percent', 5.0, None, None, None)]
 

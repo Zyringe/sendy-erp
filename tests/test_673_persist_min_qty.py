@@ -3,9 +3,7 @@
 create_promotion / replace_promotion persist min_qty + min_qty_unit (the unit
 as its หน่วย word, like bundle_unit). The /products/<id>/promotions/new route
 parses both and refuses, before anything is written:
-  - a quantity without a unit, or a number that is not > 0 (a unit with no
-    quantity is "no minimum" at the route since PR 2: the form's unit
-    <select> always posts one);
+  - one without the other, or a number that is not > 0;
   - a minimum on a promo that does not change the price (bundle / gift, or a
     row that also carries buy-N-get-M / a gift);
   - a ยกลัง/ยกล่อง label on a price promo with no number (Put 2026-10-02: never
@@ -123,6 +121,9 @@ def test_route_saves_a_minimum_in_a_tier_implied_dozen(admin_client, tmp_db):
 
 REFUSED = {
     'qty without unit': (dict(min_qty='20'), 'ขั้นต่ำ'),
+    'qty with the placeholder unit': (dict(min_qty='20', min_qty_unit=''), 'ขั้นต่ำ'),
+    'unit without qty': (dict(min_qty_unit='อัน'), 'ขั้นต่ำ'),
+    'unit with a blank qty': (dict(min_qty='', min_qty_unit='อัน'), 'ขั้นต่ำ'),
     'zero': (dict(min_qty='0', min_qty_unit='อัน'), 'มากกว่า 0'),
     'negative': (dict(min_qty='-3', min_qty_unit='อัน'), 'มากกว่า 0'),
     'not a number': (dict(min_qty='ยี่สิบ', min_qty_unit='อัน'), 'ข้อมูลไม่ถูกต้อง'),
