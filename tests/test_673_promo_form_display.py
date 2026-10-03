@@ -6,10 +6,11 @@
 - The promo form offers exactly that list in its unit <select>, has no
   `bundle_condition` select any more, and a blank quantity means no minimum
   (the select always posts a unit).
-- Product detail shows "ซื้อ ≥ N <unit>" on the active promo row and in the
-  promo history; a closed legacy row that carries only a ยกลัง/ยกล่อง label
-  keeps saying what it required. The call card's promo_detail macro prints
-  the minimum.
+- One rule in every render (product detail's active row and history, the
+  call card's promo_detail macro): the minimum when there is one, else the
+  legacy ยกลัง/ยกล่อง label when there is one, whatever the promo type (a
+  bundle / gift / mixed-with-freebie row cannot carry a minimum; a labelled
+  price row with none is priced at list, promo_min_missing).
 
 Every product is fresh (mig 177 allows one current price promo per product).
 """
@@ -271,9 +272,9 @@ def test_detail_history_keeps_a_legacy_label_with_no_minimum(admin_client, tmp_d
     assert 'form673' in active and 'ต้องซื้อ' not in active
 
 
-def test_detail_active_row_drops_a_bare_label(admin_client, tmp_db):
+def test_detail_active_row_keeps_a_label_with_no_minimum(admin_client, tmp_db):
     """A current labelled row with no number (fail-closed: priced at list)
-    shows no 'ต้องซื้อยกลัง' on the info card."""
+    still says what it requires."""
     pid = _product(tmp_db)
     c = _conn(tmp_db)
     c.execute("INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
@@ -282,8 +283,24 @@ def test_detail_active_row_drops_a_bare_label(admin_client, tmp_db):
     c.commit()
     c.close()
     active = _active_row(admin_client.get(f'/products/{pid}').get_data(as_text=True))
-    assert 'bare-ยกลัง' in active and 'ลด 5.0%' in active   # control: the row rendered
+    assert 'bare-ยกลัง' in active and 'ลด 5.0% · ต้องซื้อยกลัง' in active
+
+
+def test_detail_shows_the_minimum_instead_of_a_label(admin_client, tmp_db):
+    """A row carrying both: the number is the rule, the label is not shown."""
+    pid = _product(tmp_db)
+    c = _conn(tmp_db)
+    c.execute("INSERT INTO promotions (product_id, promo_name, promo_type, discount_value, "
+              "bundle_condition, min_qty, min_qty_unit, date_start) "
+              "VALUES (?, 'both-ยกลัง', 'percent', 5, 'ยกลัง', 20, 'อัน', '2026-01-01')", (pid,))
+    c.commit()
+    c.close()
+    html = admin_client.get(f'/products/{pid}').get_data(as_text=True)
+    active = _active_row(html)
+    assert 'both-ยกลัง' in active and 'ลด 5.0% · ซื้อ ≥ 20 อัน' in active
     assert 'ต้องซื้อ' not in active
+    history = _history_row(html, 'both-ยกลัง')
+    assert '(ซื้อ ≥ 20 อัน)' in history and 'ต้องซื้อ' not in history
 
 
 # ── promo_detail macro (call card modal) ─────────────────────────────────────
@@ -311,7 +328,14 @@ def test_promo_detail_macro_prints_the_minimum(tmp_db):
     assert 'ต้องซื้อขั้นต่ำ 2.5 โหล' in html
 
 
-def test_promo_detail_macro_without_a_minimum_prints_no_condition(tmp_db):
-    html = _promo_detail(_promo(bundle_condition='ยกลัง'))
-    assert 'card673' in html                       # control: the macro rendered
-    assert 'ต้องซื้อ' not in html
+def test_promo_detail_macro_without_a_minimum_prints_the_label(tmp_db):
+    html = _promo_detail(_promo(promo_type='bundle', discount_value=None, bundle_buy=10,
+                                bundle_free=1, bundle_condition='ยกลัง'))
+    assert 'card673' in html and 'ต้องซื้อยกลัง' in html
+    assert 'ขั้นต่ำ' not in html
+
+
+def test_promo_detail_macro_prefers_the_minimum_over_a_label(tmp_db):
+    html = _promo_detail(_promo(min_qty=20.0, min_qty_unit='อัน', bundle_condition='ยกลัง'))
+    assert 'ต้องซื้อขั้นต่ำ 20 อัน' in html
+    assert 'ต้องซื้อยกลัง' not in html

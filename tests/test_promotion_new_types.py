@@ -358,12 +358,10 @@ class TestProductDetailRendersAllTypes:
 
         # Active badge MUST show the latest promo (render-mixed-ยกลัง)
         assert 'render-mixed-ยกลัง' in info_section
-        # Its value rendering. discount_value is a Python float so renders as
-        # "5.0" — substring "ลด 5.0%" is the literal output. The bare ยกลัง label
-        # (no number) is no longer rendered here (#673 PR 2); the promo history
-        # below still shows it.
+        # Its value rendering (5% + condition). discount_value is a Python
+        # float so renders as "5.0" — substring "ลด 5.0%" is the literal output.
         assert 'ลด 5.0%' in info_section
-        assert 'ต้องซื้อยกลัง' not in info_section
+        assert 'ต้องซื้อยกลัง' in info_section
         # The OTHER promos must NOT leak into the info section
         # (only the active row is shown there, not the full list)
         assert 'render-bundle' not in info_section

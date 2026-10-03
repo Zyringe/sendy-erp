@@ -71,11 +71,17 @@ def test_promo_detail_lists_tiers_and_condition():
         'date_start': '2026-06-01', 'date_end': None,
     })
     assert 'โปรลัง' in out
-    # #673 PR 2: the bare ยกลัง label is no longer rendered; a minimum is
-    # (test_673_promo_form_display.py)
-    assert 'ต้องซื้อยกลัง' not in out
+    assert 'ต้องซื้อยกลัง' in out
     assert 'ซื้อ 20 แถม 3' in out          # second tier listed in full detail
     assert _render(app, src, p=None).strip()  # None promo → "ไม่มีโปรโมชัน" (non-empty)
+    # #673: a minimum carries the rule, so it shows instead of the label
+    gated = _render(app, src, p={
+        'promo_name': 'โปรขั้นต่ำ', 'promo_type': 'percent', 'discount_value': 5.0,
+        'min_qty': 20.0, 'min_qty_unit': 'อัน', 'bundle_condition': 'ยกลัง',
+        'bundle_tiers_json': None, 'date_start': None, 'date_end': None,
+    })
+    assert 'ต้องซื้อขั้นต่ำ 20 อัน' in gated
+    assert 'ต้องซื้อยกลัง' not in gated
 
 
 def test_disc_label_formats():
