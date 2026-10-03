@@ -12,6 +12,7 @@ import form_options
 import line_unit_correction
 import models
 import name_builder
+import price_lookup
 import sku_code_utils
 from database import get_connection
 from paging import paging
@@ -866,6 +867,11 @@ def promotion_new(product_id):
     if not product:
         flash('ไม่พบสินค้า', 'danger')
         return redirect(url_for('products.product_list'))
+    conn = get_connection()
+    try:
+        min_units = price_lookup.min_qty_units(conn, product_id, product['unit_type'])
+    finally:
+        conn.close()
 
     if request.method == 'POST':
         f = request.form
@@ -893,12 +899,14 @@ def promotion_new(product_id):
                 'bundle_buy':       _opt_int(f.get('bundle_buy')),
                 'bundle_free':      _opt_int(f.get('bundle_free')),
                 'bundle_unit':      _opt_str(f.get('bundle_unit')),
-                'bundle_condition': _opt_str(f.get('bundle_condition')),
                 'gift_desc':        _opt_str(f.get('gift_desc')),
                 'gift_qty':         _opt_str(f.get('gift_qty')),
                 'min_qty':          _opt_float(f.get('min_qty')),
                 'min_qty_unit':     _opt_str(f.get('min_qty_unit')),
             }
+            # the unit <select> always posts a unit: a blank quantity is no minimum
+            if data['min_qty'] is None:
+                data['min_qty_unit'] = None
             # Parse the dates here so a non-ISO value lands in THIS handler with
             # a friendly message. Without it, replace_promotion's date maths
             # raises ValueError uncaught and the route 500s — and the backdate
@@ -910,7 +918,8 @@ def promotion_new(product_id):
                     date.fromisoformat(data[_k])
         except ValueError as e:
             flash(f'ข้อมูลไม่ถูกต้อง: {e}', 'danger')
-            return render_template('promotions/form.html', product=product, form=f)
+            return render_template('promotions/form.html', product=product, form=f,
+                                   min_units=min_units)
 
         # Validate per-type required fields (DB CHECK is the final gate; this
         # gives a friendlier error before hitting it)
@@ -918,28 +927,34 @@ def promotion_new(product_id):
         if t == 'percent':
             if data['discount_value'] is None or not (0 < data['discount_value'] <= 100):
                 flash('ส่วนลด % ต้องอยู่ระหว่าง 1–100', 'danger')
-                return render_template('promotions/form.html', product=product, form=f)
+                return render_template('promotions/form.html', product=product, form=f,
+                                       min_units=min_units)
         elif t == 'fixed':
             if not data['discount_value'] or data['discount_value'] <= 0:
                 flash('ราคาตายตัวต้องมากกว่า 0', 'danger')
-                return render_template('promotions/form.html', product=product, form=f)
+                return render_template('promotions/form.html', product=product, form=f,
+                                       min_units=min_units)
         elif t == 'bundle':
             if data['bundle_buy'] is None or data['bundle_free'] is None:
                 flash('โปรโมชันแถมของต้องระบุทั้ง "ซื้อ" และ "แถม"', 'danger')
-                return render_template('promotions/form.html', product=product, form=f)
+                return render_template('promotions/form.html', product=product, form=f,
+                                       min_units=min_units)
         elif t == 'gift':
             if not data['gift_desc'] or not data['gift_qty']:
                 flash('โปรโมชันของแถมต้องระบุชื่อและจำนวน', 'danger')
-                return render_template('promotions/form.html', product=product, form=f)
+                return render_template('promotions/form.html', product=product, form=f,
+                                       min_units=min_units)
         elif t == 'mixed':
             if (data['discount_value'] is None
                 and data['bundle_buy'] is None
                 and not data['gift_desc']):
                 flash('โปรโมชันแบบผสมต้องระบุอย่างน้อย 1 อย่าง (ส่วนลด / แถม / ของแถม)', 'danger')
-                return render_template('promotions/form.html', product=product, form=f)
+                return render_template('promotions/form.html', product=product, form=f,
+                                       min_units=min_units)
         else:
             flash(f'ไม่รองรับ promo_type {t!r}', 'danger')
-            return render_template('promotions/form.html', product=product, form=f)
+            return render_template('promotions/form.html', product=product, form=f,
+                                   min_units=min_units)
 
         # 2a: creating a promo REPLACES whatever occupies the same slot
         # (price / qty / both) over the same dates — closes the old row by date
@@ -971,14 +986,17 @@ def promotion_new(product_id):
             else:
                 msg = f'บันทึกไม่สำเร็จ (CHECK constraint): {e}'
             flash(msg, 'danger')
-            return render_template('promotions/form.html', product=product, form=f)
+            return render_template('promotions/form.html', product=product, form=f,
+                                   min_units=min_units)
         if not ok:
             flash(msg, 'danger')
-            return render_template('promotions/form.html', product=product, form=f)
+            return render_template('promotions/form.html', product=product, form=f,
+                                   min_units=min_units)
         flash(msg, 'success')
         return redirect(url_for('products.product_detail', product_id=product_id))
 
-    return render_template('promotions/form.html', product=product, form=None)
+    return render_template('promotions/form.html', product=product, form=None,
+                           min_units=min_units)
 
 
 @bp_products.route('/promotions/<int:promo_id>/deactivate', methods=['POST'])

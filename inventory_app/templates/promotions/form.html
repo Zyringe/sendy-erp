@@ -61,6 +61,23 @@
             <div id="pricePreview" class="form-text text-success fw-500 mt-1"></div>
           </div>
 
+          <!-- minimum quantity (#673): percent / fixed / mixed only; units = price_lookup.min_qty_units -->
+          <div class="mb-3" id="minQtyGroup">
+            <label class="form-label small">ขั้นต่ำ (ไม่บังคับ)</label>
+            <div class="input-group input-group-sm">
+              <span class="input-group-text">ซื้อ ≥</span>
+              <input type="number" name="min_qty" id="minQty" value="{{ form.get('min_qty', '') if form else '' }}"
+                     class="form-control" step="any" min="0.0001" placeholder="เว้นว่าง = ไม่มีขั้นต่ำ">
+              {% set _mu = form.get('min_qty_unit', '') if form else '' %}
+              <select name="min_qty_unit" id="minQtyUnit" class="form-select">
+                {% for u in min_units %}
+                <option value="{{ u }}" {{ 'selected' if u == _mu }}>{{ u }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-text">ซื้อไม่ถึงขั้นต่ำ ลูกค้าจ่ายราคาปกติ</div>
+          </div>
+
           <!-- bundle group — for bundle / mixed -->
           <div class="mb-3 border rounded p-3 bg-light" id="bundleGroup" style="display:none">
             <div class="text-subtle small mb-2"><i class="bi bi-gift me-1"></i>รายละเอียดแถมของ</div>
@@ -95,17 +112,6 @@
               </div>
             </div>
             <div class="form-text mt-2">สำหรับสินค้าที่แถมเป็นของคนละชนิดกับสินค้าหลัก</div>
-          </div>
-
-          <!-- bundle_condition — applies to any type -->
-          <div class="mb-3">
-            <label class="form-label small">เงื่อนไขซื้อขั้นต่ำ (optional)</label>
-            <select name="bundle_condition" class="form-select form-select-sm">
-              <option value="">— ไม่มี —</option>
-              <option value="ยกลัง">ต้องซื้อยกลัง</option>
-              <option value="ยกล่อง">ต้องซื้อยกล่อง</option>
-            </select>
-            <div class="form-text">โปรโมชันจะใช้ได้เมื่อลูกค้าซื้อตามเงื่อนไขนี้เท่านั้น</div>
           </div>
 
           <div class="row g-3 mb-4">
@@ -157,6 +163,11 @@ function togglePromoType() {
   const dvGroup = document.getElementById('discountValueGroup');
   const bundleGroup = document.getElementById('bundleGroup');
   const giftGroup = document.getElementById('giftGroup');
+  // a minimum only gates a price; disabled inputs post nothing on bundle / gift
+  const minOn = t === 'percent' || t === 'fixed' || t === 'mixed';
+  document.getElementById('minQtyGroup').style.display = minOn ? '' : 'none';
+  document.getElementById('minQty').disabled = !minOn;
+  document.getElementById('minQtyUnit').disabled = !minOn;
 
   // Reset visibility + required flags
   dvGroup.style.display = '';
@@ -203,17 +214,24 @@ function updatePreview() {
   const t = document.getElementById('promoType').value;
   const v = parseFloat(document.getElementById('discountValue').value) || 0;
   const el = document.getElementById('pricePreview');
+  const minQty = parseFloat(document.getElementById('minQty').value) || 0;
+  const minUnit = document.getElementById('minQtyUnit').value;
+  const baht = n => n.toLocaleString('th-TH',{minimumFractionDigits:2});
+  const cond = minQty > 0 ? ` เมื่อซื้อ ≥ ${minQty} ${minUnit} · ต่ำกว่านั้นราคาปกติ ฿${baht(basePrice)}` : '';
   if (!v) { el.textContent = ''; return; }
   if (t === 'percent' || t === 'mixed') {
-    el.textContent = `ราคาขายจริง: ฿${(basePrice*(1-v/100)).toLocaleString('th-TH',{minimumFractionDigits:2})}`;
+    el.textContent = cond ? `ราคาขายจริง ฿${baht(basePrice*(1-v/100))}${cond}`
+                          : `ราคาขายจริง: ฿${baht(basePrice*(1-v/100))}`;
   } else if (t === 'fixed') {
     const s = basePrice - v;
-    el.textContent = s > 0 ? `ประหยัด: ฿${s.toLocaleString('th-TH',{minimumFractionDigits:2})}` : '';
+    el.textContent = s > 0 ? (cond ? `ประหยัด ฿${baht(s)}${cond}` : `ประหยัด: ฿${baht(s)}`) : '';
   } else {
     el.textContent = '';
   }
 }
 document.getElementById('discountValue').addEventListener('input', updatePreview);
+document.getElementById('minQty').addEventListener('input', updatePreview);
+document.getElementById('minQtyUnit').addEventListener('change', updatePreview);
 togglePromoType();  // initial setup
 </script>
 {% endblock %}
