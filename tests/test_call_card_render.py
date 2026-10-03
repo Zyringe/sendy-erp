@@ -71,7 +71,9 @@ def test_promo_detail_lists_tiers_and_condition():
         'date_start': '2026-06-01', 'date_end': None,
     })
     assert 'โปรลัง' in out
-    assert 'ต้องซื้อยกลัง' in out
+    # #673 PR 2: the bare ยกลัง label is no longer rendered; a minimum is
+    # (test_673_promo_form_display.py)
+    assert 'ต้องซื้อยกลัง' not in out
     assert 'ซื้อ 20 แถม 3' in out          # second tier listed in full detail
     assert _render(app, src, p=None).strip()  # None promo → "ไม่มีโปรโมชัน" (non-empty)
 
