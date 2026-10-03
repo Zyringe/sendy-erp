@@ -219,7 +219,8 @@ function updatePreview() {
   const minQty = parseFloat(document.getElementById('minQty').value) || 0;
   const minUnit = document.getElementById('minQtyUnit').value;
   const baht = n => n.toLocaleString('th-TH',{minimumFractionDigits:2});
-  const cond = minQty > 0 && minUnit ? ` เมื่อซื้อ ≥ ${minQty} ${minUnit} · ต่ำกว่านั้นราคาปกติ ฿${baht(basePrice)}` : '';
+  const listClause = basePrice > 0 ? ` · ต่ำกว่านั้นราคาปกติ ฿${baht(basePrice)}` : '';
+  const cond = minQty > 0 && minUnit ? ` เมื่อซื้อ ≥ ${minQty} ${minUnit}${listClause}` : '';
   if (!v) { el.textContent = ''; return; }
   if (t === 'percent' || t === 'mixed') {
     el.textContent = cond ? `ราคาขายจริง ฿${baht(basePrice*(1-v/100))}${cond}`
