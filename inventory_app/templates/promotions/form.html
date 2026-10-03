@@ -68,10 +68,12 @@
               <span class="input-group-text">ซื้อ ≥</span>
               <input type="number" name="min_qty" id="minQty" value="{{ form.get('min_qty', '') if form else '' }}"
                      class="form-control" step="any" min="0.0001" placeholder="เว้นว่าง = ไม่มีขั้นต่ำ">
+              {# a posted unit outside the list falls back to the placeholder, never to the first real unit #}
               {% set _mu = form.get('min_qty_unit', '') if form else '' %}
               <select name="min_qty_unit" id="minQtyUnit" class="form-select">
-                {% for u in min_units %}
-                <option value="{{ u }}" {{ 'selected' if u == _mu }}>{{ u }}</option>
+                <option value="" {{ 'selected' if _mu not in min_units | map('first') | list }}>— หน่วย —</option>
+                {% for u, ratio in min_units %}
+                <option value="{{ u }}" {{ 'selected' if u == _mu }}>{{ u }}{% if not loop.first %} (= {{ '%g' | format(ratio) }} {{ min_units[0][0] }}){% endif %}</option>
                 {% endfor %}
               </select>
             </div>
@@ -217,7 +219,7 @@ function updatePreview() {
   const minQty = parseFloat(document.getElementById('minQty').value) || 0;
   const minUnit = document.getElementById('minQtyUnit').value;
   const baht = n => n.toLocaleString('th-TH',{minimumFractionDigits:2});
-  const cond = minQty > 0 ? ` เมื่อซื้อ ≥ ${minQty} ${minUnit} · ต่ำกว่านั้นราคาปกติ ฿${baht(basePrice)}` : '';
+  const cond = minQty > 0 && minUnit ? ` เมื่อซื้อ ≥ ${minQty} ${minUnit} · ต่ำกว่านั้นราคาปกติ ฿${baht(basePrice)}` : '';
   if (!v) { el.textContent = ''; return; }
   if (t === 'percent' || t === 'mixed') {
     el.textContent = cond ? `ราคาขายจริง ฿${baht(basePrice*(1-v/100))}${cond}`

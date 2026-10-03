@@ -495,13 +495,17 @@ def measure_ratio(conn, product_id, unit_type, unit, cache=None):
 
 
 def min_qty_units(conn, product_id, unit_type):
-    """The หน่วย words a promo minimum can be written in for this product,
-    base unit first: the ones `measure_ratio` resolves. The promo form offers
-    exactly these, and `min_qty_unit_problem` names them when it refuses one."""
+    """[(word, pieces per one word)] a promo minimum can be written in for this
+    product, base unit first (ratio 1.0): the units `measure_ratio` resolves.
+    The promo form offers exactly these, and `min_qty_unit_problem` names them
+    when it refuses one."""
     units = []
     for u in [_unit_word(conn, unit_type)] + _known_ratio_units(conn, product_id) + ['โหล']:
-        if u not in units and measure_ratio(conn, product_id, unit_type, u) is not None:
-            units.append(u)
+        if u in (w for w, _r in units):
+            continue
+        ratio = measure_ratio(conn, product_id, unit_type, u)
+        if ratio is not None:
+            units.append((u, ratio))
     return units
 
 
@@ -513,7 +517,7 @@ def min_qty_unit_problem(conn, product_id, unit_type, min_qty_unit):
     unit = (min_qty_unit or '').strip()
     if unit and measure_ratio(conn, product_id, unit_type, unit) is not None:
         return None
-    resolves = min_qty_units(conn, product_id, unit_type)
+    resolves = [w for w, _ratio in min_qty_units(conn, product_id, unit_type)]
     return (f"หน่วยขั้นต่ำ '{min_qty_unit}' แปลงเป็น{_unit_word(conn, unit_type)}ไม่ได้"
             f"สำหรับสินค้านี้ — หน่วยที่ใช้ได้: {', '.join(resolves)}")
 

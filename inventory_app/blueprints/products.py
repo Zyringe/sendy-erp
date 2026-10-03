@@ -904,9 +904,6 @@ def promotion_new(product_id):
                 'min_qty':          _opt_float(f.get('min_qty')),
                 'min_qty_unit':     _opt_str(f.get('min_qty_unit')),
             }
-            # the unit <select> always posts a unit: a blank quantity is no minimum
-            if data['min_qty'] is None:
-                data['min_qty_unit'] = None
             # Parse the dates here so a non-ISO value lands in THIS handler with
             # a friendly message. Without it, replace_promotion's date maths
             # raises ValueError uncaught and the route 500s — and the backdate
