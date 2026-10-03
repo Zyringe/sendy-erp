@@ -228,6 +228,17 @@ def test_form_preview_script_states_the_minimum(admin_client, tmp_db):
     assert "getElementById('minQtyUnit').addEventListener" in js
 
 
+def test_form_preview_omits_the_list_clause_without_a_list_price(admin_client, tmp_db):
+    """An unpriced product (basePrice <= 0) must not read 'ต่ำกว่านั้นราคาปกติ
+    ฿0.00': the clause is guarded on basePrice > 0. The script's behaviour is
+    driven in a browser by verify-sendy; this pins the guard's place."""
+    pid = _product(tmp_db)
+    js = _script(admin_client.get(f'/products/{pid}/promotions/new').get_data(as_text=True))
+    stmts = [line for line in js.splitlines() if 'ต่ำกว่านั้นราคาปกติ' in line]
+    assert len(stmts) == 1
+    assert 'basePrice > 0' in stmts[0]
+
+
 # ── the form (POST) ──────────────────────────────────────────────────────────
 
 def test_post_percent_with_a_minimum_saves_it(admin_client, tmp_db):
