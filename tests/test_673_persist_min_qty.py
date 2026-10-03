@@ -7,11 +7,11 @@ parses both and refuses, before anything is written:
   - a minimum on a promo that does not change the price (bundle / gift, or a
     row that also carries buy-N-get-M / a gift);
   - a ยกลัง/ยกล่อง label on a price promo with no number (Put 2026-10-02: never
-    a valid state);
+    a valid state; the writers refuse it, the route no longer reads a label);
   - a unit with no ratio for THIS product — the message lists the units that
     do resolve (write-time refusal; the resolver's flag is only the backstop).
 
-The form inputs themselves are PR 2; the route contract is pinned here by POST.
+The form itself is pinned in test_673_promo_form_display.py.
 Every product is fresh (mig 177 allows one current price promo per product).
 """
 import os
@@ -121,7 +121,9 @@ def test_route_saves_a_minimum_in_a_tier_implied_dozen(admin_client, tmp_db):
 
 REFUSED = {
     'qty without unit': (dict(min_qty='20'), 'ขั้นต่ำ'),
+    'qty with the placeholder unit': (dict(min_qty='20', min_qty_unit=''), 'ขั้นต่ำ'),
     'unit without qty': (dict(min_qty_unit='อัน'), 'ขั้นต่ำ'),
+    'unit with a blank qty': (dict(min_qty='', min_qty_unit='อัน'), 'ขั้นต่ำ'),
     'zero': (dict(min_qty='0', min_qty_unit='อัน'), 'มากกว่า 0'),
     'negative': (dict(min_qty='-3', min_qty_unit='อัน'), 'มากกว่า 0'),
     'not a number': (dict(min_qty='ยี่สิบ', min_qty_unit='อัน'), 'ข้อมูลไม่ถูกต้อง'),
@@ -129,7 +131,6 @@ REFUSED = {
                          bundle_free='1', min_qty='20', min_qty_unit='อัน'), 'โปรลดราคา'),
     'on mixed with bundle': (dict(promo_type='mixed', bundle_buy='10', bundle_free='1',
                                   min_qty='20', min_qty_unit='อัน'), 'โปรลดราคา'),
-    'label without number': (dict(bundle_condition='ยกลัง'), 'ยกลัง'),
 }
 
 
@@ -150,15 +151,6 @@ def test_route_refuses_a_unit_with_no_ratio_and_lists_the_ones_that_resolve(admi
     html = resp.get_data(as_text=True)
     assert 'ลัง' in html and 'อัน' in html and 'โหล' in html
     assert _promos(tmp_db, pid) == []
-
-
-def test_route_label_with_a_number_is_accepted(admin_client, tmp_db):
-    """CONTROL for 'label without number': the label is fine once a number
-    carries the rule."""
-    pid = _product(tmp_db)
-    resp = _post(admin_client, pid, bundle_condition='ยกลัง', min_qty='20', min_qty_unit='อัน')
-    assert resp.status_code == 302
-    assert _promos(tmp_db, pid) == [('percent', 5.0, 20.0, 'อัน', 'ยกลัง')]
 
 
 # ── fix round (/interrogate on the PR 1 diff, item 5): the writers refuse too ─

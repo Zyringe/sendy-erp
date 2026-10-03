@@ -1,4 +1,4 @@
-{% from 'macros.html' import phone_lines, promo_summary, invoice_formula_prefix %}
+{% from 'macros.html' import phone_lines, promo_summary, promo_condition, invoice_formula_prefix %}
 {% extends 'base.html' %}
 {% block title %}{{ data.customer }} – ลูกค้า{% endblock %}
 {% block page_title %}ลูกค้า: {{ data.customer }}{% endblock %}
@@ -649,7 +649,8 @@
                 {% if r.today and r.today.has_list_price %}
                   {% if r.today.promo_affects_price %}
                     {{ r.today.list_for_unit | fmt_price }} −{{ '%g' | format(r.today.promo.discount_value) }}% = {{ r.today.price_per_unit | fmt_price }}
-                    {% if r.today.promo.min_qty %}<div class="text-subtle small">ซื้อ ≥ {{ '%g' | format(r.today.promo.min_qty) }} {{ r.today.promo.min_qty_unit }}</div>{% endif %}
+                    {% set _cond = promo_condition(r.today.promo) %}
+                    {% if _cond %}<div class="text-subtle small">{{ _cond }}</div>{% endif %}
                   {% else %}
                     {{ r.today.price_per_unit | fmt_price }}
                   {% endif %}
@@ -848,7 +849,8 @@
                   <td data-label="ราคาวันนี้" class="text-end font-mono"><div>
                     {% if r.promo_affects_price %}
                       {{ r.list_for_unit | fmt_price }} −{{ '%g' | format(r.promo.discount_value) }}% = {{ r.price_per_unit | fmt_price }}
-                      {% if r.promo.min_qty %}<div class="text-subtle small">ซื้อ ≥ {{ '%g' | format(r.promo.min_qty) }} {{ r.promo.min_qty_unit }}</div>{% endif %}
+                      {% set _cond = promo_condition(r.promo) %}
+                      {% if _cond %}<div class="text-subtle small">{{ _cond }}</div>{% endif %}
                     {% else %}
                       {{ r.price_per_unit | fmt_price }}
                     {% endif %}
