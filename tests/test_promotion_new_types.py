@@ -195,8 +195,9 @@ class TestPromotionNewRoute:
         assert found == ('ดจ.สแตนเลส', '20 ดอก')
 
     def test_post_mixed_with_condition(self, admin_client, tmp_db):
-        """#673: a ยกลัง label on a price promo now needs its number (a label
-        alone is refused, test_673_persist_min_qty.py); with one it saves."""
+        """#673: a mixed % promo with a minimum saves. The form no longer posts
+        a ยกลัง label (PR 2) and the route ignores a stray one: the number
+        carries the rule."""
         pid = _first_active_product_id(tmp_db)
         conn = sqlite3.connect(tmp_db)
         unit_type = conn.execute("SELECT unit_type FROM products WHERE id = ?",
@@ -221,7 +222,7 @@ class TestPromotionNewRoute:
             "WHERE product_id = ? AND promo_name = 'route ยกลัง'",
             (pid,)).fetchone()
         conn.close()
-        assert found == (5.0, 'ยกลัง', 20.0)
+        assert found == (5.0, None, 20.0)
 
     def test_post_bundle_missing_buy_rerenders_form(self, admin_client, tmp_db):
         """Server-side validation catches missing bundle_buy before DB."""
@@ -357,10 +358,12 @@ class TestProductDetailRendersAllTypes:
 
         # Active badge MUST show the latest promo (render-mixed-ยกลัง)
         assert 'render-mixed-ยกลัง' in info_section
-        # Its value rendering (5% + condition). discount_value is a Python
-        # float so renders as "5.0" — substring "ลด 5.0%" is the literal output.
+        # Its value rendering. discount_value is a Python float so renders as
+        # "5.0" — substring "ลด 5.0%" is the literal output. The bare ยกลัง label
+        # (no number) is no longer rendered here (#673 PR 2); the promo history
+        # below still shows it.
         assert 'ลด 5.0%' in info_section
-        assert 'ต้องซื้อยกลัง' in info_section
+        assert 'ต้องซื้อยกลัง' not in info_section
         # The OTHER promos must NOT leak into the info section
         # (only the active row is shown there, not the full list)
         assert 'render-bundle' not in info_section
